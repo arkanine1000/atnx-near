@@ -1,0 +1,15 @@
+[package]
+name = "usdg"
+description = "ATNX test USD (USDG): a NEP-141 test token whose minter is the rounds contract"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { workspace = true }
+near-contract-standards = { workspace = true }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
