@@ -1,6 +1,9 @@
 import { loadMarketMeta } from "@/lib/bm/market-meta";
 import { OnchainPortfolio } from "@/components/bm/OnchainPortfolio";
 import { RoundsPortfolio, type PortfolioSeries } from "@/components/rounds/RoundsPortfolio";
+import { NearRoundsPortfolio, type NearPortfolioSeries } from "@/components/rounds/NearRoundsPortfolio";
+import { isNearChain, isNearRoundsDeployed } from "@/lib/near/config";
+import { listNearSeries } from "@/lib/near/registry";
 import { listSeriesWithPubkey } from "@/lib/bm/rounds-registry";
 import { listAll } from "@/lib/bm/registry";
 import { BM_CHAINS, isRoundsDeployed } from "@/lib/bm/chains";
@@ -61,7 +64,25 @@ async function loadSeries(): Promise<PortfolioSeries[]> {
   }
 }
 
+// The NEAR series by registry reference (positions_of names the series by
+// its on-chain id; the ticket reads the reference back from the chain).
+async function loadNearSeries(): Promise<NearPortfolioSeries[]> {
+  if (!isNearRoundsDeployed()) return [];
+  try {
+    const rows = await listNearSeries();
+    const names = await loadMarketMeta(Array.from(new Set(rows.map((s) => s.atnx_market_id))));
+    return rows.map((s) => {
+      const m = names.get(s.atnx_market_id);
+      return { reference: s.reference, atnxMarketId: s.atnx_market_id, name: m?.name ?? "Unknown market", thumb: m?.thumb ?? null, fast: s.fast };
+    });
+  } catch (err) {
+    console.error("[portfolio] NEAR rounds series failed", err);
+    return [];
+  }
+}
+
 export default async function PortfolioPage() {
+  if (isNearChain()) return <NearPortfolioPage />;
   const [markets, series] = await Promise.all([loadListing(), loadSeries()]);
   return (
     <section>
@@ -77,6 +98,34 @@ export default async function PortfolioPage() {
         </div>
       )}
       {isRoundsDeployed() && (
+        <h3 className="font-display text-lg font-bold text-primary mb-3">
+          Bounded markets <span className="font-sans text-sm font-normal text-tertiary">· EVM testnets</span>
+        </h3>
+      )}
+      <OnchainPortfolio markets={markets} />
+    </section>
+  );
+}
+
+// NEXT_PUBLIC_BM_CHAIN=near: the rounds on NEAR testnet, then the bounded
+// markets as before.
+async function NearPortfolioPage() {
+  const [markets, series] = await Promise.all([loadListing(), loadNearSeries()]);
+  const rounds = isNearRoundsDeployed();
+  return (
+    <section>
+      <div className="mb-5">
+        <h2 className="font-display text-xl sm:text-2xl font-bold text-primary tracking-tight">Portfolio</h2>
+      </div>
+      {rounds && (
+        <div className="mb-10">
+          <h3 className="font-display text-lg font-bold text-primary mb-3">
+            Rounds <span className="font-sans text-sm font-normal text-tertiary">· NEAR testnet</span>
+          </h3>
+          <NearRoundsPortfolio series={series} />
+        </div>
+      )}
+      {rounds && (
         <h3 className="font-display text-lg font-bold text-primary mb-3">
           Bounded markets <span className="font-sans text-sm font-normal text-tertiary">· EVM testnets</span>
         </h3>

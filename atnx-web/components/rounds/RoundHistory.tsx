@@ -1,20 +1,25 @@
 "use client";
 
 import { solAddressUrl, solTxUrl } from "@/lib/bm/chains";
+import { nearTxUrl } from "@/lib/near/config";
 import type { BmRoundRow, BmSeriesRow } from "@/lib/supabase/database-bm";
 import { fmtSpan } from "./time";
 
 // The series' finished rounds, newest first, from the registry: the
 // target the round opened at, the settlement average, who won, the
-// presale pots, and the transactions on the Solana explorer.
+// presale pots, and the transactions on the Solana explorer (a NEAR
+// series: on NearBlocks, with no account links, since a NEAR series and its
+// rounds live inside the one rounds contract).
 export function RoundHistory({ series, rounds }: { series: BmSeriesRow; rounds: BmRoundRow[] }) {
   const done = rounds.filter((r) => r.state === "settled" || r.state === "void").sort((a, b) => b.idx - a.idx);
+  const near = series.chain.startsWith("near:");
+  const txUrl = near ? nearTxUrl : (h: string) => solTxUrl(h);
 
   return (
     <div>
       <p className="text-[11px] text-tertiary mb-3">
         {fmtSpan(series.round_secs)} rounds{series.fast ? " (fast demo series)" : ""}, settled on the index averaged over the last {fmtSpan(series.settle_window_secs)}.
-        {series.series_pubkey && (
+        {!near && series.series_pubkey && (
           <>
             {" "}
             <a href={solAddressUrl(series.series_pubkey)} target="_blank" rel="noreferrer" className="link-quiet">
@@ -44,7 +49,7 @@ export function RoundHistory({ series, rounds }: { series: BmSeriesRow; rounds: 
                 return (
                   <tr key={r.id}>
                     <td className="px-1 py-2 text-secondary">
-                      {r.round_pubkey ? (
+                      {!near && r.round_pubkey ? (
                         <a href={solAddressUrl(r.round_pubkey)} target="_blank" rel="noreferrer" className="link-quiet">
                           {r.idx}
                         </a>
@@ -66,12 +71,12 @@ export function RoundHistory({ series, rounds }: { series: BmSeriesRow; rounds: 
                     </td>
                     <td className="px-1 py-2 text-right whitespace-nowrap">
                       {r.open_tx && (
-                        <a href={solTxUrl(r.open_tx)} target="_blank" rel="noreferrer" className="text-tertiary link-quiet" title="Open transaction">
+                        <a href={txUrl(r.open_tx)} target="_blank" rel="noreferrer" className="text-tertiary link-quiet" title="Open transaction">
                           open ↗
                         </a>
                       )}
                       {tx && (
-                        <a href={solTxUrl(tx)} target="_blank" rel="noreferrer" className="ml-2 text-tertiary link-quiet" title={r.state === "void" ? "Void transaction" : "Settle transaction"}>
+                        <a href={txUrl(tx)} target="_blank" rel="noreferrer" className="ml-2 text-tertiary link-quiet" title={r.state === "void" ? "Void transaction" : "Settle transaction"}>
                           {r.state === "void" ? "void" : "settle"} ↗
                         </a>
                       )}
