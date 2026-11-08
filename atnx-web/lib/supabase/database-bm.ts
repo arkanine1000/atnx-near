@@ -1,4 +1,5 @@
-// Types for the `bm` schema (supabase/bm/001_schema.sql, 002_rounds.sql):
+// Types for the `bm` schema (supabase/bm/001_schema.sql, 002_rounds.sql,
+// 003_near.sql):
 // the registry of bounded VI markets, the rolling rounds and the keeper's
 // log. Hand-maintained like database.ts. Read through
 // createAdminClient().schema('bm') on the server and
@@ -79,6 +80,9 @@ export interface BmSeriesRow {
   error: string | null;
   created_at: string;
   updated_at: string;
+  // 003_near.sql: the contract's numeric series id on NEAR (null on Solana
+  // rows, which have series_pubkey). Optional until 003 is applied.
+  onchain_series_id?: number | null;
 }
 
 export interface BmRoundRow {
@@ -105,6 +109,11 @@ export interface BmRoundRow {
   error: string | null;
   created_at: string;
   updated_at: string;
+  // 003_near.sql: the oracle inputs a NEAR settle committed to (canonical
+  // JSON, lib/bm/commitment.ts) and their sha256, as posted on chain.
+  // Null on Solana rows. Optional until 003 is applied.
+  settle_inputs?: Json | null;
+  settle_commitment?: string | null;
 }
 
 type Optional<T> = { [K in keyof T]?: T[K] };
@@ -146,7 +155,15 @@ export type BmSchema = {
       Row: BmRoundRow;
       Insert: Optional<BmRoundRow> & { series_id: string; idx: number; opens_at: string };
       Update: Optional<BmRoundRow>;
-      Relationships: [];
+      Relationships: [
+        {
+          foreignKeyName: 'rounds_series_id_fkey';
+          columns: ['series_id'];
+          isOneToOne: false;
+          referencedRelation: 'series';
+          referencedColumns: ['id'];
+        },
+      ];
     };
   };
   Views: Record<string, never>;

@@ -12,11 +12,12 @@ import {
 } from './evm';
 import { finishCreate, openBoundedMarket } from './open';
 import * as registry from './registry';
+import { NEAR_ROUNDS_CHAIN } from './rounds-registry';
 import type { BmMarketRow, BmSide } from '@/lib/supabase/database-bm';
 
 // One keeper tick, for both kinds of on-chain market: the bounded markets
 // of the first iteration (EVM testnets, steps 1–3) and the rolling VI
-// rounds on Solana devnet (step 4). Runs from the cron route
+// rounds on Solana devnet and NEAR testnet (step 4). Runs from the cron route
 // (/api/bm/keeper) every five minutes and by hand from
 // scripts/bm-keeper-dry.ts and scripts/rounds-tick.ts. In dry mode nothing
 // is sent and nothing in the registry changes; the log says what would
@@ -31,10 +32,16 @@ import type { BmMarketRow, BmSide } from '@/lib/supabase/database-bm';
 //      the touch rule, advance the cursor; on a touch, resolve on-chain,
 //      then auto-roll a new market from the current VI (unless
 //      BM_AUTO_ROLL=0).
-//   4. rolling rounds (BM_ROUNDS_ENABLED=1): see tickRounds in rounds.ts
-//      (reconcile, create pending series, settle or void, ante and open,
-//      void the presale of paused series). It stops starting new work 45
-//      seconds into the tick; the next tick picks up where it left off.
+//   4. rolling rounds: Solana devnet with BM_ROUNDS_ENABLED=1 (tickRounds
+//      in rounds.ts), NEAR testnet with BM_NEAR_ROUNDS_ENABLED=1
+//      (tickNearRounds in rounds-near.ts), each on its own registry rows and
+//      run side by side, so one chain's trouble or slowness never holds up
+//      the other. Both share the orchestration in rounds-core.ts (reconcile,
+//      create pending series, settle or void, ante and open, void the
+//      presale of paused series, claim the keeper's antes). Each stops
+//      starting new work 45 seconds into the tick; the next tick picks up
+//      where it left off. NEAR's counts are also reported on their own
+//      under `near`, and its log entries carry chain 'near:testnet'.
 //
 // Every non-dry entry lands in bm.keeper_log: bounded entries carry
 // bm_market_id, rounds entries series_id and round_id. A failure on one
@@ -44,9 +51,13 @@ export const TOUCH_PRINTS = Number(process.env.BM_TOUCH_PRINTS ?? 3);
 export const AUTO_ROLL = (process.env.BM_AUTO_ROLL ?? '1') !== '0';
 const RESEND_AFTER_MS = 10 * 60_000;
 const ROUNDS_BUDGET_MS = 45_000;
-// Same test as roundsEnabled() in rounds.ts, kept here so the bounded
-// keeper only loads the Solana client (through rounds.ts) when rounds are on.
+// Same tests as roundsEnabled() in rounds.ts and nearRoundsEnabled() in
+// rounds-near.ts, kept here so the bounded keeper only loads a chain's
+// client when its rounds are on.
 const ROUNDS_ON = () => process.env.BM_ROUNDS_ENABLED === '1';
+const NEAR_ROUNDS_ON = () => process.env.BM_NEAR_ROUNDS_ENABLED === '1';
+
+type RoundsCountsLike = Pick<KeeperReport, 'settled' | 'opened' | 'anted' | 'voided' | 'claimed' | 'reconciled' | 'errors'>;
 
 export interface KeeperReport {
   runId: string;
@@ -56,12 +67,16 @@ export interface KeeperReport {
   rolled: number;
   reconciled: number;
   errors: number;
-  // Rolling rounds (zero unless BM_ROUNDS_ENABLED=1).
+  // Rolling rounds, both chains together (zero unless BM_ROUNDS_ENABLED=1
+  // or BM_NEAR_ROUNDS_ENABLED=1).
   settled: number;
   opened: number;
   anted: number;
   voided: number;
   claimed: number;
+  // NEAR's part of the rounds counts (and of reconciled and errors), when
+  // its step ran.
+  near?: RoundsCountsLike;
   notes: string[];
 }
 
@@ -115,7 +130,7 @@ export async function runKeeper(opts: { dry?: boolean } = {}): Promise<KeeperRep
     return Promise.resolve();
   };
 
-  await log({ action: 'tick', detail: { dry, touchPrints: TOUCH_PRINTS, autoRoll: AUTO_ROLL, rounds: ROUNDS_ON() } });
+  await log({ action: 'tick', detail: { dry, touchPrints: TOUCH_PRINTS, autoRoll: AUTO_ROLL, rounds: ROUNDS_ON(), nearRounds: NEAR_ROUNDS_ON() } });
 
   // 1. pending
   for (const row of await registry.listByState(['pending'])) {
@@ -199,16 +214,40 @@ export async function runKeeper(opts: { dry?: boolean } = {}): Promise<KeeperRep
     }
   }
 
-  // 4. rolling rounds
+  // 4. rolling rounds, Solana and NEAR side by side
+  const roundsSteps: Promise<void>[] = [];
   if (ROUNDS_ON()) {
-    try {
-      const { tickRounds } = await import('./rounds');
-      await tickRounds({ dry, log, rep, deadline: startedAt + ROUNDS_BUDGET_MS });
-    } catch (err) {
-      rep.errors++;
-      await log({ action: 'rounds', error: (err as Error).message });
-    }
+    roundsSteps.push(
+      (async () => {
+        try {
+          const { tickRounds } = await import('./rounds');
+          await tickRounds({ dry, log, rep, deadline: startedAt + ROUNDS_BUDGET_MS });
+        } catch (err) {
+          rep.errors++;
+          await log({ action: 'rounds', error: (err as Error).message });
+        }
+      })()
+    );
   }
+  if (NEAR_ROUNDS_ON()) {
+    roundsSteps.push(
+      (async () => {
+        const near: RoundsCountsLike = { settled: 0, opened: 0, anted: 0, voided: 0, claimed: 0, reconciled: 0, errors: 0 };
+        const nearLog: Log = (entry) => log({ ...entry, detail: { chain: NEAR_ROUNDS_CHAIN, ...(entry.detail ?? {}) } });
+        try {
+          const { tickNearRounds } = await import('./rounds-near');
+          await tickNearRounds({ dry, log: nearLog, rep: near, deadline: startedAt + ROUNDS_BUDGET_MS });
+        } catch (err) {
+          near.errors++;
+          await nearLog({ action: 'near-rounds', error: (err as Error).message });
+        } finally {
+          for (const k of Object.keys(near) as (keyof RoundsCountsLike)[]) rep[k] += near[k];
+          rep.near = near;
+        }
+      })()
+    );
+  }
+  await Promise.all(roundsSteps);
 
   await log({ action: 'done', detail: { ...rep, notes: undefined } });
   return rep;
