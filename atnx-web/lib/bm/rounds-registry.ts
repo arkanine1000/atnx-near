@@ -1,4 +1,6 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { createAdminClient } from '@/lib/supabase/admin';
+import type { Database } from '@/lib/supabase/database';
 import type { BmRoundRow, BmRoundState, BmSeriesRow, BmSeriesState } from '@/lib/supabase/database-bm';
 
 // The registry of rolling VI rounds (supabase/bm/002_rounds.sql): which
@@ -11,14 +13,54 @@ import type { BmRoundRow, BmRoundState, BmSeriesRow, BmSeriesState } from '@/lib
 // Every move is a compare-and-set on the current state, so two
 // overlapping keeper runs cannot both send the same transaction; the
 // partial unique indexes keep one presale and one live round per series.
+//
+// Both rounds chains share these tables: bm.series.chain says which one a
+// series runs on ('solana:devnet', 'near:testnet'), and every list the
+// keeper works from takes the chain, so one chain's step never sees the
+// other's rows. Rounds are filtered through an inner join on their series
+// inside the query, so one chain's rows never crowd the other's out of a
+// limit. On NEAR a series is found by bm.series.onchain_series_id (the
+// contract's numeric id) rather than series_pubkey, which stays Solana's
+// (supabase/bm/003_near.sql).
 
 export type { BmRoundRow, BmRoundState, BmSeriesRow, BmSeriesState };
 
 const RUNNING_SERIES: BmSeriesState[] = ['active', 'paused'];
 const IN_FLIGHT: BmRoundState[] = ['opening', 'live', 'settling'];
 
+export const SOLANA_ROUNDS_CHAIN = 'solana:devnet';
+export const NEAR_ROUNDS_CHAIN = 'near:testnet';
+
+// The chain whose rounds the site shows: NEXT_PUBLIC_BM_CHAIN=near reads
+// the NEAR testnet rows, anything else (or nothing) the Solana devnet rows,
+// as before NEAR existed. The market page and the list badges read through
+// it, so one build never shows the other chain's series.
+export function activeRoundsChain(value: string | undefined = process.env.NEXT_PUBLIC_BM_CHAIN): string {
+  return (value ?? '').trim().toLowerCase().startsWith('near') ? NEAR_ROUNDS_CHAIN : SOLANA_ROUNDS_CHAIN;
+}
+
+let clientOverride: SupabaseClient<Database> | null = null;
+
+// Tests only: run the registry against a fake client.
+export function setRegistryClientForTests(client: SupabaseClient<Database> | null): void {
+  clientOverride = client;
+}
+
 function bm() {
-  return createAdminClient().schema('bm');
+  return (clientOverride ?? createAdminClient()).schema('bm');
+}
+
+// The rounds of one chain's series. The embedded series column is dropped
+// again by withSeries, which attaches the full series row.
+function roundsOf(chain: string) {
+  return bm().from('rounds').select('*, series!inner(chain)').eq('series.chain', chain);
+}
+
+function plainRounds(rows: unknown[] | null): BmRoundRow[] {
+  return ((rows ?? []) as Array<BmRoundRow & { series?: unknown }>).map(({ series: _embedded, ...r }) => {
+    void _embedded;
+    return r as BmRoundRow;
+  });
 }
 
 function now() {
@@ -78,8 +120,27 @@ export async function updateSeries(id: string, patch: Partial<BmSeriesRow>): Pro
   if (error) throw error;
 }
 
-export async function markSeriesActive(id: string, patch: { series_pubkey: string; create_tx?: string | null }): Promise<void> {
+// Where an active series lives on chain: its account on Solana, its
+// numeric id in the contract on NEAR.
+export type SeriesActivePatch = { series_pubkey: string } | { onchain_series_id: number };
+
+export async function markSeriesActive(id: string, patch: SeriesActivePatch & { create_tx?: string | null }): Promise<void> {
   return updateSeries(id, { ...patch, state: 'active', error: null });
+}
+
+// Whether a market already runs a series of this chain and speed (the one
+// bm_series_one_active allows).
+export async function hasRunningSeries(atnxMarketId: string, chain: string, fast: boolean): Promise<boolean> {
+  const { data, error } = await bm()
+    .from('series')
+    .select('id')
+    .eq('atnx_market_id', atnxMarketId)
+    .eq('chain', chain)
+    .eq('fast', fast)
+    .in('state', ['pending', 'active', 'paused'])
+    .limit(1);
+  if (error) throw error;
+  return (data?.length ?? 0) > 0;
 }
 
 export async function markSeriesFailed(id: string, reason: string): Promise<void> {
@@ -102,26 +163,30 @@ async function seriesByIds(ids: string[]): Promise<Map<string, BmSeriesRow>> {
   return out;
 }
 
-export async function listPendingSeries(): Promise<BmSeriesRow[]> {
+export async function listPendingSeries(chain: string): Promise<BmSeriesRow[]> {
   const { data, error } = await bm()
     .from('series')
     .select('*')
     .eq('state', 'pending')
+    .eq('chain', chain)
     .order('created_at', { ascending: true })
     .limit(100);
   if (error) throw error;
   return (data ?? []) as BmSeriesRow[];
 }
 
-// The running series of one atnx market (the daily one first, then the
-// fast demo one) with its rounds, newest first, for the market page.
+// The running series of one atnx market on the site's chain (the daily one
+// first, then the fast demo one) with its rounds, newest first, for the
+// market page.
 export async function getSeriesForMarket(
-  atnxMarketId: string
+  atnxMarketId: string,
+  chain: string = activeRoundsChain()
 ): Promise<{ series: BmSeriesRow; rounds: BmRoundRow[] } | null> {
   const { data, error } = await bm()
     .from('series')
     .select('*')
     .eq('atnx_market_id', atnxMarketId)
+    .eq('chain', chain)
     .in('state', RUNNING_SERIES)
     .order('fast', { ascending: true })
     .order('created_at', { ascending: false })
@@ -222,31 +287,27 @@ async function withSeries(rows: BmRoundRow[]): Promise<RoundWithSeries[]> {
 
 // Live rounds whose close is at least `delaySecs` behind: the settlement
 // window has closed and the last prints in it have had time to land.
-export async function listDueLive(at: Date, delaySecs: number): Promise<RoundWithSeries[]> {
+export async function listDueLive(chain: string, at: Date, delaySecs: number): Promise<RoundWithSeries[]> {
   const cutoff = new Date(at.getTime() - delaySecs * 1000).toISOString();
-  const { data, error } = await bm()
-    .from('rounds')
-    .select('*')
+  const { data, error } = await roundsOf(chain)
     .eq('state', 'live')
     .lte('close_at', cutoff)
     .order('close_at', { ascending: true })
     .limit(100);
   if (error) throw error;
-  return withSeries((data ?? []) as BmRoundRow[]);
+  return withSeries(plainRounds(data));
 }
 
 // Presale rounds that may open now: their time has come, their series is
 // active, and the series has no round opening, live or settling.
-export async function listPresaleReady(at: Date): Promise<RoundWithSeries[]> {
-  const { data, error } = await bm()
-    .from('rounds')
-    .select('*')
+export async function listPresaleReady(chain: string, at: Date): Promise<RoundWithSeries[]> {
+  const { data, error } = await roundsOf(chain)
     .eq('state', 'presale')
     .lte('opens_at', at.toISOString())
     .order('opens_at', { ascending: true })
     .limit(100);
   if (error) throw error;
-  const rows = await withSeries((data ?? []) as BmRoundRow[]);
+  const rows = await withSeries(plainRounds(data));
   const active = rows.filter((r) => r.series.state === 'active');
   if (active.length === 0) return [];
   const { data: busy, error: busyErr } = await bm()
@@ -260,21 +321,19 @@ export async function listPresaleReady(at: Date): Promise<RoundWithSeries[]> {
 }
 
 // Rounds a keeper run left mid-transaction.
-export async function listInFlight(): Promise<RoundWithSeries[]> {
-  const { data, error } = await bm()
-    .from('rounds')
-    .select('*')
+export async function listInFlight(chain: string): Promise<RoundWithSeries[]> {
+  const { data, error } = await roundsOf(chain)
     .in('state', ['opening', 'settling'])
     .order('updated_at', { ascending: true })
     .limit(100);
   if (error) throw error;
-  return withSeries((data ?? []) as BmRoundRow[]);
+  return withSeries(plainRounds(data));
 }
 
 // Paused series that still hold a presale round (to be voided, which
 // ends the series on chain).
-export async function listPausedWithPresale(): Promise<RoundWithSeries[]> {
-  const { data: paused, error } = await bm().from('series').select('*').eq('state', 'paused').limit(100);
+export async function listPausedWithPresale(chain: string): Promise<RoundWithSeries[]> {
+  const { data: paused, error } = await bm().from('series').select('*').eq('state', 'paused').eq('chain', chain).limit(100);
   if (error) throw error;
   const series = (paused ?? []) as BmSeriesRow[];
   if (series.length === 0) return [];
@@ -293,18 +352,27 @@ export async function listPausedWithPresale(): Promise<RoundWithSeries[]> {
 // still hold a payout or refund and the account's rent. Rounds already
 // claimed stay in the list; the caller skips them when the position
 // account is gone.
-export async function listRoundsToClaim(sinceDays = 7): Promise<RoundWithSeries[]> {
+export async function listRoundsToClaim(chain: string, sinceDays = 7): Promise<RoundWithSeries[]> {
   const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString();
-  const { data, error } = await bm()
-    .from('rounds')
-    .select('*')
+  const { data, error } = await roundsOf(chain)
     .in('state', ['settled', 'void'])
     .not('ante_side', 'is', null)
     .gte('updated_at', since)
     .order('updated_at', { ascending: false })
     .limit(50);
   if (error) throw error;
-  return withSeries((data ?? []) as BmRoundRow[]);
+  return withSeries(plainRounds(data));
+}
+
+// One series by its registry id or its 64-hex reference (for
+// rounds:verify).
+export async function findSeries(idOrReference: string): Promise<BmSeriesRow | null> {
+  const key = idOrReference.trim().toLowerCase().replace(/^0x/, '');
+  const column = /^[0-9a-f]{64}$/.test(key) ? 'reference' : 'id';
+  if (column === 'id' && !/^[0-9a-f-]{36}$/.test(key)) return null;
+  const { data, error } = await bm().from('series').select('*').eq(column, key).limit(1).maybeSingle();
+  if (error) throw error;
+  return (data as BmSeriesRow | null) ?? null;
 }
 
 // Whether a series still has a round that is not finished.
@@ -319,8 +387,6 @@ export async function hasOpenRounds(seriesId: string): Promise<boolean> {
   return (data?.length ?? 0) > 0;
 }
 
-// The live and presale rounds of every running series, for the listing
-// badges and /api/bm/rounds.
 // Every series that reached the chain, whatever its state, so a position
 // found on chain can always be named by its market.
 export async function listSeriesWithPubkey(limit = 500): Promise<BmSeriesRow[]> {
@@ -334,14 +400,14 @@ export async function listSeriesWithPubkey(limit = 500): Promise<BmSeriesRow[]> 
   return (data ?? []) as BmSeriesRow[];
 }
 
-export async function listLiveRounds(): Promise<RoundWithSeries[]> {
-  const { data, error } = await bm()
-    .from('rounds')
-    .select('*')
+// The presale and in-flight rounds of every running series on the site's
+// chain (the list badges, /api/bm/rounds).
+export async function listLiveRounds(chain: string = activeRoundsChain()): Promise<RoundWithSeries[]> {
+  const { data, error } = await roundsOf(chain)
     .in('state', ['presale', ...IN_FLIGHT])
     .order('opens_at', { ascending: true })
     .limit(500);
   if (error) throw error;
-  const rows = await withSeries((data ?? []) as BmRoundRow[]);
+  const rows = await withSeries(plainRounds(data));
   return rows.filter((r) => RUNNING_SERIES.includes(r.series.state));
 }
