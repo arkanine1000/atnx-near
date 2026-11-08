@@ -108,13 +108,13 @@ impl T {
         self.by(&keeper()).create_series(reference.to_string(), round_secs, window, U128(10 * USDG as u128), finder())
     }
 
-    fn commit(&mut self, who: &AccountId, sid: u32, side: Side, amount: u64) {
-        self.by(who).commit(sid, side, U128(amount as u128));
+    fn commit(&mut self, who: &AccountId, sid: u32, ri: u32, side: Side, amount: u64) {
+        self.by(who).commit(sid, ri, side, U128(amount as u128));
     }
 
-    fn buy(&mut self, who: &AccountId, sid: u32, side: Side, amount: u64) -> BuyQuote {
-        let q = self.by(who).quote_buy(sid, side, U128(amount as u128));
-        self.by(who).buy(sid, side, U128(amount as u128), q.shares);
+    fn buy(&mut self, who: &AccountId, sid: u32, ri: u32, side: Side, amount: u64) -> BuyQuote {
+        let q = self.by(who).quote_buy(sid, ri, side, U128(amount as u128));
+        self.by(who).buy(sid, ri, side, U128(amount as u128), q.shares);
         q
     }
 
@@ -158,10 +158,10 @@ fn worked_example_setup(ups: &[(AccountId, u64)]) -> (T, u32) {
     let sid = t.series(REF_A, DAY, WINDOW);
     for (who, gross) in ups {
         t.fund(who, *gross);
-        t.commit(who, sid, Side::Up, *gross);
+        t.commit(who, sid, 1, Side::Up, *gross);
     }
     t.fund(&bob(), G400);
-    t.commit(&bob(), sid, Side::Down, G400);
+    t.commit(&bob(), sid, 1, Side::Down, G400);
     let r = t.round(sid, 1);
     assert_eq!((n(r.presale_up), n(r.presale_down)), (600 * USDG, 400 * USDG), "U = 600, D = 400 net");
     t.now = T0 + 3_600;
@@ -192,7 +192,7 @@ fn worked_example_with_the_fee_on() {
 
     // A live buy of UP netting exactly 100.
     t.fund(&carol(), G100);
-    let q = t.buy(&carol(), sid, Side::Up, G100);
+    let q = t.buy(&carol(), sid, 1, Side::Up, G100);
     assert_eq!(q, BuyQuote { shares: U128(154_150_679), fee: U128(1_010_102), finder_fee: U128(202_020), net: U128(100_000_000) });
     let r = t.round(sid, 1);
     assert_eq!([n(r.m_up), n(r.n_up), n(r.m_down), n(r.n_down)], [700 * USDG, 1_154_150_679, 400 * USDG, 1_000 * USDG]);
@@ -230,7 +230,7 @@ fn worked_example_presale_commit_of_60() {
     let p = t.pos(sid, 1, &dave()).unwrap();
     assert_eq!(n(p.presale_up), 60 * USDG);
     t.fund(&carol(), G100);
-    assert_eq!(n(t.buy(&carol(), sid, Side::Up, G100).shares), 154_150_679);
+    assert_eq!(n(t.buy(&carol(), sid, 1, Side::Up, G100).shares), 154_150_679);
     t.now = t.round(sid, 1).close_at;
     t.settle(sid, TARGET + 1);
     // 60 · 1,000/600 = 100 shares; paid 60 + 100 · 400/1,154.150679.
@@ -269,8 +269,8 @@ fn solana_e2e_replay() {
     assert_eq!(t.round(sid, 1).state, RoundState::Presale);
 
     // Round 1 presale.
-    t.commit(&alice(), sid, Side::Up, 600 * USDG);
-    t.commit(&bob(), sid, Side::Down, 400 * USDG);
+    t.commit(&alice(), sid, 1, Side::Up, 600 * USDG);
+    t.commit(&bob(), sid, 1, Side::Down, 400 * USDG);
     let r1 = t.round(sid, 1);
     assert_eq!((n(r1.presale_up), n(r1.presale_down)), (594 * USDG, 396 * USDG));
     let s = t.ser(sid);
@@ -287,13 +287,13 @@ fn solana_e2e_replay() {
     assert_eq!((s.live_round, s.presale_round), (1, 2));
 
     // Live buys, each equal to the dpm.ts quote.
-    let qa = t.buy(&alice(), sid, Side::Up, 101_010_102);
+    let qa = t.buy(&alice(), sid, 1, Side::Up, 101_010_102);
     assert_eq!((n(qa.fee), n(qa.net), n(qa.shares)), (1_010_102, 100 * USDG, 154_036_714));
-    let qb = t.buy(&bob(), sid, Side::Down, 50 * USDG);
+    let qb = t.buy(&bob(), sid, 1, Side::Down, 50 * USDG);
     assert_eq!((n(qb.fee), n(qb.net), n(qb.shares)), (500_000, 49_500_000, 134_748_117));
     let r1 = t.round(sid, 1);
     assert_eq!([n(r1.m_up), n(r1.m_down), n(r1.n_up), n(r1.n_down)], [694_000_000, 445_500_000, 1_144_036_714, 1_124_748_117]);
-    t.commit(&bob(), sid, Side::Up, 20 * USDG); // round 2
+    t.commit(&bob(), sid, 2, Side::Up, 20 * USDG); // round 2
 
     // Negatives.
     expect_err("round has not reached its close", || t.settle(sid, 10_000));
@@ -302,7 +302,7 @@ fn solana_e2e_replay() {
     });
     t.now = r1.trade_until;
     expect_err("trading closed for the settlement window", || {
-        t.by(&alice()).buy(sid, Side::Up, U128(USDG as u128), U128(0));
+        t.by(&alice()).buy(sid, 1, Side::Up, U128(USDG as u128), U128(0));
     });
 
     // Settle round 1 on a tie: UP.
@@ -334,7 +334,7 @@ fn solana_e2e_replay() {
     let r2 = t.round(sid, 2);
     assert_eq!((n(r2.presale_up), n(r2.presale_down)), (19_800_000 + 1_128_105_000, 0));
     let ante = n(t.ser(sid).ante);
-    t.commit(&keeper(), sid, Side::Down, ante);
+    t.commit(&keeper(), sid, 2, Side::Down, ante);
     t.open(sid, 10_000);
     let r2 = t.round(sid, 2);
     assert_eq!((r2.state, n(r2.presale_up), n(r2.presale_down)), (RoundState::Live, 1_147_905_000, 9_900_000));
@@ -384,10 +384,10 @@ fn simple_round(carol_side: Side) -> (T, u32) {
     for who in [alice(), bob(), carol()] {
         t.fund(&who, 1_000 * USDG);
     }
-    t.commit(&alice(), sid, Side::Up, 100 * USDG);
-    t.commit(&bob(), sid, Side::Down, 100 * USDG);
+    t.commit(&alice(), sid, 1, Side::Up, 100 * USDG);
+    t.commit(&bob(), sid, 1, Side::Down, 100 * USDG);
     t.open(sid, TARGET);
-    t.buy(&carol(), sid, carol_side, 50 * USDG);
+    t.buy(&carol(), sid, 1, carol_side, 50 * USDG);
     (t, sid)
 }
 
@@ -447,8 +447,8 @@ fn void_refunds_net_stakes_and_keeps_the_fees() {
     assert_eq!(n(t.round(sid, 1).paid_out), 99 * USDG * 2 + 49_500_000);
     assert_eq!(t.bal(&carol()), 950 * USDG + 49_500_000);
     // Round 2 can still open once both sides have money.
-    t.commit(&alice(), sid, Side::Up, USDG);
-    t.commit(&bob(), sid, Side::Down, USDG);
+    t.commit(&alice(), sid, 2, Side::Up, USDG);
+    t.commit(&bob(), sid, 2, Side::Down, USDG);
     t.open(sid, TARGET);
     assert_eq!(t.ser(sid).live_round, 2);
 }
@@ -456,8 +456,8 @@ fn void_refunds_net_stakes_and_keeps_the_fees() {
 #[test]
 fn a_rollover_lands_in_round_n_plus_2() {
     let (mut t, sid) = simple_round(Side::Up);
-    t.commit(&bob(), sid, Side::Up, 10 * USDG); // round 2 presale
-    t.commit(&carol(), sid, Side::Down, 10 * USDG);
+    t.commit(&bob(), sid, 2, Side::Up, 10 * USDG); // round 2 presale
+    t.commit(&carol(), sid, 2, Side::Down, 10 * USDG);
     // The keeper settles round 1 and opens round 2 in the same tick.
     let r1 = t.round(sid, 1);
     t.now = r1.close_at + 300;
@@ -508,17 +508,17 @@ fn a_rollover_lands_in_round_n_plus_2() {
 #[test]
 fn pause_voids_the_presale_round_and_stops_trading() {
     let (mut t, sid) = simple_round(Side::Up);
-    t.commit(&alice(), sid, Side::Down, 5 * USDG); // round 2 presale
+    t.commit(&alice(), sid, 2, Side::Down, 5 * USDG); // round 2 presale
     expect_err("not the authority or the keeper", || t.by(&alice()).set_series(sid, Some(true), None, None));
     t.by(&owner()).set_series(sid, Some(true), None, None);
     assert!(t.ser(sid).paused);
 
-    expect_err("series is paused", || t.commit(&bob(), sid, Side::Up, USDG));
+    expect_err("series is paused", || t.commit(&bob(), sid, 2, Side::Up, USDG));
     expect_err("series is paused", || {
-        t.by(&bob()).buy(sid, Side::Up, U128(USDG as u128), U128(0));
+        t.by(&bob()).buy(sid, 1, Side::Up, U128(USDG as u128), U128(0));
     });
     expect_err("series is paused", || {
-        t.by(&bob()).quote_buy(sid, Side::Up, U128(USDG as u128));
+        t.by(&bob()).quote_buy(sid, 1, Side::Up, U128(USDG as u128));
     });
 
     // The presale round is voided; its commits are refunded.
@@ -539,7 +539,8 @@ fn pause_voids_the_presale_round_and_stops_trading() {
 
     // Resuming does not bring back a presale round: the series has ended.
     t.by(&keeper()).set_series(sid, Some(false), None, None);
-    expect_err("round is not the series' presale round", || t.commit(&bob(), sid, Side::Up, USDG));
+    expect_err("round is not the series' presale round", || t.commit(&bob(), sid, 2, Side::Up, USDG));
+    expect_err("round is not the series' presale round", || t.commit(&bob(), sid, 3, Side::Up, USDG));
     expect_err("round is not the series' presale round", || t.open(sid, TARGET));
 }
 
@@ -549,7 +550,7 @@ fn fees_go_to_the_finder_and_the_treasury() {
     let sid = t.series(REF_A, DAY, WINDOW);
     expect_err("nothing to claim", || t.by(&alice()).withdraw_fees(sid));
     t.fund(&alice(), 1_000 * USDG);
-    t.commit(&alice(), sid, Side::Up, 50 * USDG);
+    t.commit(&alice(), sid, 1, Side::Up, 50 * USDG);
     // docs/rounds.md: a commit of 50 puts 49.50 in the pot, 0.10 to the finder, 0.40 to the platform.
     assert_eq!(n(t.round(sid, 1).presale_up), 49_500_000);
     let s = t.ser(sid);
@@ -569,13 +570,13 @@ fn fees_go_to_the_finder_and_the_treasury() {
 
     // A config change does not touch a running series.
     t.by(&owner()).set_config(None, None, Some(200), Some(5000));
-    t.commit(&alice(), sid, Side::Up, 100 * USDG);
+    t.commit(&alice(), sid, 1, Side::Up, 100 * USDG);
     let s = t.ser(sid);
     assert_eq!((s.fee_bps, s.finder_bps, n(s.finder_fees), n(s.platform_fees)), (100, 2000, 200_000, 800_000));
     let sid2 = t.series(REF_B, DAY, WINDOW);
     let s2 = t.ser(sid2);
     assert_eq!((s2.fee_bps, s2.finder_bps), (200, 5000));
-    t.commit(&alice(), sid2, Side::Up, 100 * USDG);
+    t.commit(&alice(), sid2, 1, Side::Up, 100 * USDG);
     let s2 = t.ser(sid2);
     assert_eq!((n(s2.finder_fees), n(s2.platform_fees)), (1_000_000, 1_000_000));
 }
@@ -585,28 +586,95 @@ fn fees_go_to_the_finder_and_the_treasury() {
 #[test]
 fn slippage_and_the_ratio_cap() {
     let (mut t, sid) = simple_round(Side::Up);
-    let q = t.by(&carol()).quote_buy(sid, Side::Down, U128(10 * USDG as u128));
+    let q = t.by(&carol()).quote_buy(sid, 1, Side::Down, U128(10 * USDG as u128));
     expect_err("fewer shares than the minimum you set", || {
-        t.by(&carol()).buy(sid, Side::Down, U128(10 * USDG as u128), U128(q.shares.0 + 1));
+        t.by(&carol()).buy(sid, 1, Side::Down, U128(10 * USDG as u128), U128(q.shares.0 + 1));
     });
-    t.by(&carol()).buy(sid, Side::Down, U128(10 * USDG as u128), q.shares);
+    t.by(&carol()).buy(sid, 1, Side::Down, U128(10 * USDG as u128), q.shares);
 
     // Thin pots: 0.99 a side. A net spend above 1,000 × 0.99 is refused.
     let mut t = T::new();
     let sid = t.series(REF_A, DAY, WINDOW);
     t.fund(&alice(), 5_000 * USDG);
-    t.commit(&alice(), sid, Side::Up, USDG);
-    t.commit(&alice(), sid, Side::Down, USDG);
+    t.commit(&alice(), sid, 1, Side::Up, USDG);
+    t.commit(&alice(), sid, 1, Side::Down, USDG);
     t.open(sid, TARGET);
     let cap = "a single buy may not exceed 1000x the money on its side";
     expect_err(cap, || {
-        t.by(&alice()).quote_buy(sid, Side::Up, U128(1_001 * USDG as u128));
+        t.by(&alice()).quote_buy(sid, 1, Side::Up, U128(1_001 * USDG as u128));
     });
     expect_err(cap, || {
-        t.by(&alice()).buy(sid, Side::Up, U128(1_001 * USDG as u128), U128(0));
+        t.by(&alice()).buy(sid, 1, Side::Up, U128(1_001 * USDG as u128), U128(0));
     });
     // 1,000 gross nets 990 = 1,000 × 0.99: allowed.
-    t.by(&alice()).buy(sid, Side::Up, U128(1_000 * USDG as u128), U128(0));
+    t.by(&alice()).buy(sid, 1, Side::Up, U128(1_000 * USDG as u128), U128(0));
+}
+
+/// The race the required `round_index` closes: a commit aimed at round N
+/// reaches the contract after the keeper has opened N. It fails, and
+/// nothing moves, instead of landing in round N+1.
+#[test]
+fn a_commit_naming_a_round_the_keeper_has_opened_fails() {
+    let mut t = T::new();
+    let sid = t.series(REF_A, DAY, WINDOW);
+    for who in [alice(), bob(), carol()] {
+        t.fund(&who, 100 * USDG);
+    }
+    t.commit(&alice(), sid, 1, Side::Up, 10 * USDG);
+    t.commit(&bob(), sid, 1, Side::Down, 10 * USDG);
+    t.open(sid, TARGET); // round 1 live, round 2 in presale
+    let fees = t.ser(sid);
+    let not_presale = "round is not the series' presale round";
+    expect_err(not_presale, || t.commit(&carol(), sid, 1, Side::Up, 10 * USDG));
+    assert_eq!(t.bal(&carol()), 100 * USDG, "no balance moved");
+    let r2 = t.round(sid, 2);
+    assert_eq!((n(r2.presale_up), n(r2.presale_down)), (0, 0), "nothing landed in round 2");
+    let r1 = t.round(sid, 1);
+    assert_eq!((n(r1.presale_up), n(r1.presale_down)), (9_900_000, 9_900_000));
+    assert!(t.pos(sid, 1, &carol()).is_none() && t.pos(sid, 2, &carol()).is_none());
+    let s = t.ser(sid);
+    assert_eq!((s.finder_fees, s.platform_fees), (fees.finder_fees, fees.platform_fees));
+    // Rounds that do not exist are not the presale round either.
+    expect_err(not_presale, || t.commit(&carol(), sid, 0, Side::Up, 10 * USDG));
+    expect_err(not_presale, || t.commit(&carol(), sid, 3, Side::Up, 10 * USDG));
+    // Naming round 2 commits to round 2.
+    t.commit(&carol(), sid, 2, Side::Up, 10 * USDG);
+    assert_eq!(n(t.round(sid, 2).presale_up), 9_900_000);
+    assert_eq!(n(t.pos(sid, 2, &carol()).unwrap().presale_up), 9_900_000);
+}
+
+/// The same guard on `buy` and `quote_buy`: only the live round, by name.
+#[test]
+fn a_buy_or_quote_must_name_the_live_round() {
+    let (mut t, sid) = simple_round(Side::Up);
+    t.commit(&bob(), sid, 2, Side::Up, 10 * USDG);
+    t.commit(&alice(), sid, 2, Side::Down, 10 * USDG);
+    let not_live = "round is not the series' live round";
+    for ri in [0, 2, 3] {
+        expect_err(not_live, || {
+            t.by(&carol()).quote_buy(sid, ri, Side::Up, U128(USDG as u128));
+        });
+        expect_err(not_live, || {
+            t.by(&carol()).buy(sid, ri, Side::Up, U128(USDG as u128), U128(0));
+        });
+    }
+    // The keeper settles round 1 and opens round 2 in one tick. A buy still
+    // naming round 1 fails instead of filling in round 2 at its prices.
+    t.now = t.round(sid, 1).close_at;
+    t.settle(sid, TARGET);
+    t.open(sid, TARGET);
+    let carol_before = t.bal(&carol());
+    let r2 = t.round(sid, 2);
+    expect_err(not_live, || {
+        t.by(&carol()).buy(sid, 1, Side::Up, U128(USDG as u128), U128(0));
+    });
+    expect_err(not_live, || {
+        t.by(&carol()).quote_buy(sid, 1, Side::Up, U128(USDG as u128));
+    });
+    assert_eq!(t.bal(&carol()), carol_before);
+    assert_eq!(t.round(sid, 2), r2, "round 2 untouched");
+    t.buy(&carol(), sid, 2, Side::Up, USDG);
+    assert!(n(t.pos(sid, 2, &carol()).unwrap().shares_up) > 0);
 }
 
 #[test]
@@ -614,17 +682,17 @@ fn trading_and_settling_follow_the_clock() {
     let (mut t, sid) = simple_round(Side::Up);
     let r = t.round(sid, 1);
     t.now = r.trade_until - 1;
-    t.buy(&carol(), sid, Side::Up, USDG);
+    t.buy(&carol(), sid, 1, Side::Up, USDG);
     t.now = r.trade_until;
     expect_err("trading closed for the settlement window", || {
-        t.by(&carol()).quote_buy(sid, Side::Up, U128(USDG as u128));
+        t.by(&carol()).quote_buy(sid, 1, Side::Up, U128(USDG as u128));
     });
     t.now = r.close_at - 1;
     expect_err("round has not reached its close", || t.settle(sid, TARGET));
     t.now = r.close_at;
     t.settle(sid, TARGET);
     expect_err("round is not the series' live round", || {
-        t.by(&carol()).buy(sid, Side::Up, U128(USDG as u128), U128(0));
+        t.by(&carol()).buy(sid, 1, Side::Up, U128(USDG as u128), U128(0));
     });
 }
 
@@ -635,14 +703,14 @@ fn opening_needs_both_sides_and_no_live_round() {
     t.fund(&alice(), 100 * USDG);
     t.fund(&keeper(), 10 * USDG);
     expect_err("both sides need money before a round can open", || t.open(sid, TARGET));
-    t.commit(&alice(), sid, Side::Up, 10 * USDG);
+    t.commit(&alice(), sid, 1, Side::Up, 10 * USDG);
     expect_err("both sides need money before a round can open", || t.open(sid, TARGET));
-    t.commit(&keeper(), sid, Side::Down, 10 * USDG); // the ante
+    t.commit(&keeper(), sid, 1, Side::Down, 10 * USDG); // the ante
     expect_err("not the keeper", || t.by(&alice()).open_round(sid, TARGET));
     expect_err("amount is zero", || t.open(sid, 0));
     t.open(sid, TARGET);
-    t.commit(&alice(), sid, Side::Up, 10 * USDG);
-    t.commit(&alice(), sid, Side::Down, 10 * USDG);
+    t.commit(&alice(), sid, 2, Side::Up, 10 * USDG);
+    t.commit(&alice(), sid, 2, Side::Down, 10 * USDG);
     expect_err("a live round already exists", || t.open(sid, TARGET));
     expect_err("no such series", || t.open(9, TARGET));
 }
@@ -652,15 +720,15 @@ fn amounts_and_balances_are_checked() {
     let mut t = T::new();
     let sid = t.series(REF_A, DAY, WINDOW);
     t.fund(&alice(), 10 * USDG);
-    expect_err("amount is zero", || t.commit(&alice(), sid, Side::Up, 0));
+    expect_err("amount is zero", || t.commit(&alice(), sid, 1, Side::Up, 0));
     // 1 unit: the fee rounds up to 1, nothing is left for the pot.
-    expect_err("amount is zero", || t.commit(&alice(), sid, Side::Up, 1));
-    expect_err("balance too low", || t.commit(&alice(), sid, Side::Up, 10 * USDG + 1));
-    expect_err("balance too low", || t.commit(&bob(), sid, Side::Up, USDG));
+    expect_err("amount is zero", || t.commit(&alice(), sid, 1, Side::Up, 1));
+    expect_err("balance too low", || t.commit(&alice(), sid, 1, Side::Up, 10 * USDG + 1));
+    expect_err("balance too low", || t.commit(&bob(), sid, 1, Side::Up, USDG));
     expect_err("arithmetic overflow", || {
-        t.by(&alice()).commit(sid, Side::Up, U128(u64::MAX as u128 + 1));
+        t.by(&alice()).commit(sid, 1, Side::Up, U128(u64::MAX as u128 + 1));
     });
-    t.commit(&alice(), sid, Side::Up, 10 * USDG);
+    t.commit(&alice(), sid, 1, Side::Up, 10 * USDG);
     assert_eq!(t.bal(&alice()), 0);
     expect_err("round is not settled", || {
         t.by(&alice()).claim(sid, 1);
@@ -819,14 +887,14 @@ fn conservation_run(up_wins: bool) {
     let sid = t.series(REF_C, DAY, WINDOW);
     for h in &holders {
         t.fund(h, 10_000 * USDG);
-        t.commit(h, sid, Side::Up, rnd(50 * USDG) + 1);
-        t.commit(h, sid, Side::Down, rnd(50 * USDG) + 1);
+        t.commit(h, sid, 1, Side::Up, rnd(50 * USDG) + 1);
+        t.commit(h, sid, 1, Side::Down, rnd(50 * USDG) + 1);
     }
     t.open(sid, TARGET);
     for _ in 0..200 {
         let h = holders[rnd(holders.len() as u64) as usize - 1].clone();
         let side = if rnd(2) == 1 { Side::Up } else { Side::Down };
-        t.buy(&h, sid, side, rnd(20 * USDG) + 1);
+        t.buy(&h, sid, 1, side, rnd(20 * USDG) + 1);
     }
     t.now = t.round(sid, 1).close_at;
     t.settle(sid, if up_wins { TARGET + 10 } else { TARGET - 10 });
@@ -874,13 +942,13 @@ fn views_and_events() {
     assert_eq!(t.c.get_round(1, 1).unwrap().commitment, ZEROS);
 
     t.fund(&alice(), 100 * USDG);
-    t.commit(&alice(), 1, Side::Up, 50 * USDG);
+    t.commit(&alice(), 1, 1, Side::Up, 50 * USDG);
     assert_eq!(
         get_logs(),
         vec![r#"EVENT_JSON:{"standard":"atnx_rounds","version":"1.0.0","event":"commit","data":[{"series_id":"1","round_index":"1","account":"alice.near","side":"Up","amount":"50000000","fee":"500000","net":"49500000","presale_up":"49500000","presale_down":"0"}]}"#]
     );
-    t.commit(&alice(), 3, Side::Down, 10 * USDG);
-    t.commit(&alice(), 1, Side::Down, 10 * USDG);
+    t.commit(&alice(), 3, 1, Side::Down, 10 * USDG);
+    t.commit(&alice(), 1, 1, Side::Down, 10 * USDG);
     let mine: Vec<(u32, u32, u64, u64)> =
         t.c.positions_of(alice()).iter().map(|p| (p.series_id, p.round_index, n(p.presale_up), n(p.presale_down))).collect();
     assert_eq!(mine, vec![(1, 1, 49_500_000, 9_900_000), (3, 1, 0, 9_900_000)]);
@@ -901,7 +969,7 @@ fn views_and_events() {
         r#"EVENT_JSON:{"standard":"atnx_rounds","version":"1.0.0","event":"round_opened","data":[{"series_id":"1","round_index":"1","target_e2":"14300""#
     ));
     t.fund(&bob(), 10 * USDG);
-    t.buy(&bob(), 1, Side::Up, 10 * USDG);
+    t.buy(&bob(), 1, 1, Side::Up, 10 * USDG);
     let logs = get_logs();
     assert!(logs[0].contains(r#""event":"buy""#));
     assert!(logs[0].contains(r#""account":"bob.near","side":"Up","amount":"10000000","fee":"100000","net":"9900000""#));

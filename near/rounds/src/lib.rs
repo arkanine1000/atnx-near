@@ -773,15 +773,17 @@ impl Contract {
 
     // ------------------------------------------------------------ trading
 
-    /// Presale: lock `amount` of the caller's balance on UP or DOWN in the
-    /// series' current presale round.
-    pub fn commit(&mut self, series_id: u32, side: Side, amount: U128) {
+    /// Presale: lock `amount` of the caller's balance on UP or DOWN in round
+    /// `round_index`, which must be the series' current presale round. A
+    /// commit aimed at a round the keeper has just opened fails instead of
+    /// landing in the next one.
+    pub fn commit(&mut self, series_id: u32, round_index: u32, side: Side, amount: U128) {
         let amount = to_u64(amount);
         let holder = env::predecessor_account_id();
         let mut s = self.series_or_fail(series_id);
         check(amount > 0, RoundsError::ZeroAmount);
         check(!s.paused, RoundsError::Paused);
-        let ri = s.presale_round;
+        let ri = round_index;
         let mut r = self.rounds.get(&(series_id, ri)).cloned().unwrap_or_else(|| fail(RoundsError::NotPresale));
         check(r.state == RoundState::Presale && r.index == s.presale_round, RoundsError::NotPresale);
         let (fee, finder, platform, net) = fee_split(amount, s.fee_bps, s.finder_bps);
@@ -868,14 +870,15 @@ impl Contract {
         self.series.insert(series_id, s);
     }
 
-    /// Live trading: spend `amount` of the caller's balance on a side.
-    /// Shares come from the pari-mutuel curve; `min_shares` guards against
-    /// a worse fill.
-    pub fn buy(&mut self, series_id: u32, side: Side, amount: U128, min_shares: U128) {
+    /// Live trading: spend `amount` of the caller's balance on a side in
+    /// round `round_index`, which must be the series' live round. Shares
+    /// come from the pari-mutuel curve; `min_shares` guards against a worse
+    /// fill.
+    pub fn buy(&mut self, series_id: u32, round_index: u32, side: Side, amount: U128, min_shares: U128) {
         let amount = to_u64(amount);
         let holder = env::predecessor_account_id();
         let mut s = self.series_or_fail(series_id);
-        let ri = s.live_round;
+        let ri = round_index;
         let r = self.rounds.get(&(series_id, ri)).cloned();
         let q = price_buy(&s, r.as_ref(), side, amount, now_secs());
         check(q.shares as u128 >= min_shares.0, RoundsError::Slippage);
@@ -1149,11 +1152,12 @@ impl Contract {
         u(self.balances.get(&account_id).copied().unwrap_or(0))
     }
 
-    /// What `buy` would give for `amount` on `side` in the live round now,
-    /// with the same checks and arithmetic (balance and `min_shares` aside).
-    pub fn quote_buy(&self, series_id: u32, side: Side, amount: U128) -> BuyQuote {
+    /// What `buy` would give for `amount` on `side` in round `round_index`
+    /// now, with the same checks and arithmetic (balance and `min_shares`
+    /// aside): the round must be the series' live round.
+    pub fn quote_buy(&self, series_id: u32, round_index: u32, side: Side, amount: U128) -> BuyQuote {
         let s = self.series_or_fail(series_id);
-        let r = self.rounds.get(&(series_id, s.live_round));
+        let r = self.rounds.get(&(series_id, round_index));
         let q = price_buy(&s, r, side, to_u64(amount), now_secs());
         BuyQuote { shares: u(q.shares), fee: u(q.fee), finder_fee: u(q.finder), net: u(q.net) }
     }

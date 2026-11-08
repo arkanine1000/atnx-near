@@ -191,20 +191,30 @@ async fn a_full_round_with_three_accounts() -> anyhow::Result<()> {
     assert_eq!((s["id"].as_u64(), s["presale_round"].as_u64()), (Some(1), Some(1)));
 
     // Presale and open.
-    call_ok(alice, e.rounds.id(), "commit", json!({ "series_id": sid, "side": "Up", "amount": G600.to_string() })).await?;
-    call_ok(bob, e.rounds.id(), "commit", json!({ "series_id": sid, "side": "Down", "amount": G400.to_string() })).await?;
+    call_ok(alice, e.rounds.id(), "commit", json!({ "series_id": sid, "round_index": 1, "side": "Up", "amount": G600.to_string() })).await?;
+    call_ok(bob, e.rounds.id(), "commit", json!({ "series_id": sid, "round_index": 1, "side": "Down", "amount": G400.to_string() })).await?;
     call_ok(keeper, e.rounds.id(), "open_round", json!({ "series_id": sid, "target_e2": 14_300 })).await?;
+    // round_index is required, and a commit still naming the round just opened fails.
+    let r = call(carol, e.rounds.id(), "commit", json!({ "series_id": sid, "side": "Up", "amount": "1000000" })).await?;
+    assert!(format!("{:?}", r.into_result().err()).contains("round_index"));
+    let late = json!({ "series_id": sid, "round_index": 1, "side": "Up", "amount": "1000000" });
+    let r = call(carol, e.rounds.id(), "commit", late).await?;
+    assert!(format!("{:?}", r.into_result().err()).contains("round is not the series' presale round"));
+    let wrong = json!({ "series_id": sid, "round_index": 2, "side": "Up", "amount": "1000000", "min_shares": "0" });
+    let r = call(carol, e.rounds.id(), "buy", wrong).await?;
+    assert!(format!("{:?}", r.into_result().err()).contains("round is not the series' live round"));
+    assert_eq!(balance(&e.rounds, carol.id()).await?, G100);
     let r: Value = view(&e.rounds, "get_round", json!({ "series_id": sid, "round_index": 1 })).await?;
     assert_eq!(r["state"], "Live");
     assert_eq!([&r["m_up"], &r["m_down"], &r["n_up"], &r["n_down"]].map(as_u128), [600 * USDG, 400 * USDG, 1_000 * USDG, 1_000 * USDG]);
 
     // Carol buys UP with a net 100 at the quoted shares.
-    let q: Value = view(&e.rounds, "quote_buy", json!({ "series_id": sid, "side": "Up", "amount": G100.to_string() })).await?;
+    let q: Value = view(&e.rounds, "quote_buy", json!({ "series_id": sid, "round_index": 1, "side": "Up", "amount": G100.to_string() })).await?;
     assert_eq!([&q["shares"], &q["fee"], &q["finder_fee"], &q["net"]].map(as_u128), [154_150_679, 1_010_102, 202_020, 100 * USDG]);
-    let buy = json!({ "series_id": sid, "side": "Up", "amount": G100.to_string(), "min_shares": "154150680" });
+    let buy = json!({ "series_id": sid, "round_index": 1, "side": "Up", "amount": G100.to_string(), "min_shares": "154150680" });
     let r = call(carol, e.rounds.id(), "buy", buy).await?;
     assert!(format!("{:?}", r.into_result().err()).contains("fewer shares than the minimum you set"));
-    let buy = json!({ "series_id": sid, "side": "Up", "amount": G100.to_string(), "min_shares": q["shares"] });
+    let buy = json!({ "series_id": sid, "round_index": 1, "side": "Up", "amount": G100.to_string(), "min_shares": q["shares"] });
     let r = call_ok(carol, e.rounds.id(), "buy", buy).await?;
     assert!(r.logs().iter().any(|l| l.contains(r#""event":"buy""#) && l.contains(r#""shares":"154150679""#)));
     let p: Value = view(&e.rounds, "get_position", json!({ "series_id": sid, "round_index": 1, "account_id": carol.id() })).await?;

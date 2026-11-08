@@ -49,7 +49,7 @@ The integration tests read the wasm files from `$ATNX_NEAR_WASM_DIR/<name>/<name
 
 ## rounds methods
 
-Amounts are `U128` strings in 6-decimal USDG units. Times are unix seconds from the block timestamp. Sides are `"Up"` and `"Down"`. Series ids start at 1, and so do round indexes within a series. `reference` and `commitment` are 64 lowercase hex characters. No method accepts a deposit.
+Amounts are `U128` strings in 6-decimal USDG units. Times are unix seconds from the block timestamp. Sides are `"Up"` and `"Down"`. Series ids start at 1, and so do round indexes within a series. `commit`, `buy` and `quote_buy` take the round they act on, and fail if it is no longer the presale or live round. A commit sent just as the keeper opens round N fails instead of landing in N+1. `reference` and `commitment` are 64 lowercase hex characters. No method accepts a deposit.
 
 | Method | Who | What it does |
 |---|---|---|
@@ -60,9 +60,9 @@ Amounts are `U128` strings in 6-decimal USDG units. Times are unix seconds from 
 | `withdraw(amount)` | anyone | Resolves to the amount sent (0 if the transfer failed and the balance was credited back) |
 | `create_series(reference, round_secs, settle_window_secs, ante, finder)` | keeper | Returns the series id and creates round 1 in presale. The series copies the config's fee terms. `round_secs` ≥ 20 and the window must be shorter than the round |
 | `set_series(series_id, paused?, finder?, ante?)` | owner or keeper | |
-| `commit(series_id, side, amount)` | anyone | Into the series' current presale round, from the internal balance; 1 % fee |
+| `commit(series_id, round_index, side, amount)` | anyone | Into round `round_index`, which must be the series' current presale round, from the internal balance; 1 % fee |
 | `open_round(series_id, target_e2)` | keeper | Opens the presale round (both pots must hold money) and creates the next one in presale |
-| `buy(series_id, side, amount, min_shares)` | anyone | In the live round, until `trade_until`; 1 % fee; at most 1,000 times the money on that side |
+| `buy(series_id, round_index, side, amount, min_shares)` | anyone | In round `round_index`, which must be the live round, until `trade_until`; 1 % fee; at most 1,000 times the money on that side |
 | `settle(series_id, settle_e2, commitment)` | keeper | At or after `close_at`. UP wins if `settle_e2 >= target_e2` |
 | `void_round(series_id, round_index)` | keeper | Either the live round once past its close, or the presale round of a paused series. The second ends the series |
 | `claim(series_id, round_index)` | holder | Credits the payout or refund and deletes the position; returns the amount |
@@ -70,7 +70,7 @@ Amounts are `U128` strings in 6-decimal USDG units. Times are unix seconds from 
 | `withdraw_fees(series_id)` | anyone | Credits the finder's counter to the finder and the platform's counter to the treasury |
 | `on_faucet`, `on_withdraw` | the contract itself | Callbacks |
 
-Views: `get_config()`, `get_series(series_id)`, `get_series_by_reference(reference)`, `list_series(from_index?, limit?)` (`from_index` is an offset, `limit` defaults to 50 and is capped at 100), `get_round(series_id, round_index)`, `get_position(series_id, round_index, account_id)`, `positions_of(account_id)`, `balance_of(account_id)`, and `quote_buy(series_id, side, amount) -> { shares, fee, finder_fee, net }`. `quote_buy` runs the same checks and arithmetic as `buy`, except for the balance and `min_shares`.
+Views: `get_config()`, `get_series(series_id)`, `get_series_by_reference(reference)`, `list_series(from_index?, limit?)` (`from_index` is an offset, `limit` defaults to 50 and is capped at 100), `get_round(series_id, round_index)`, `get_position(series_id, round_index, account_id)`, `positions_of(account_id)`, `balance_of(account_id)`, and `quote_buy(series_id, round_index, side, amount) -> { shares, fee, finder_fee, net }`. `quote_buy` runs the same checks and arithmetic as `buy`, except for the balance and `min_shares`.
 
 ### Events
 
@@ -102,5 +102,4 @@ NEAR adds messages where Anchor's account checks did the work: "not the owner", 
 ## Known limits
 
 - Both contracts pay storage from their own NEAR balance. Anyone can make `rounds` store a position by committing two units, or make `usdg` register an account by sending it one unit. Mainnet would charge storage at deposit time.
-- `commit` and `buy` act on the series' current presale or live round, not on a round the caller names. A commit sent just as the keeper opens round N lands in round N+1.
 - The keeper is the oracle, as on Solana.

@@ -53,9 +53,9 @@ Amounts at the interface are `U128` (6-decimal USDG units); internally they're u
 - `withdraw(amount: U128)`: debit the caller first, then `token.ft_transfer(caller, amount)` with 1 yocto attached from the contract's own balance, then callback `on_withdraw(account_id, amount)`, which re-credits the caller if the transfer failed.
 - `create_series(reference, round_secs, settle_window_secs, ante: U128, finder: AccountId) -> u32`: keeper only. The series is created by the keeper on behalf of the finder (on Solana anyone could call this). It creates round 1 in presale.
 - `set_series(series_id, paused: Option<bool>, finder: Option<AccountId>, ante: Option<U128>)`: keeper or owner.
-- `commit(series_id, side, amount: U128)`: from the caller's internal balance. The fee is split as in lib.rs.
+- `commit(series_id, round_index: u32, side, amount: U128)`: from the caller's internal balance. The fee is split as in lib.rs. `round_index` is required and must be the series' current presale round, otherwise panic with "round is not the series' presale round". As on Solana, where the client names the round account, a commit sent just as the keeper opens round N fails instead of landing in N+1.
 - `open_round(series_id, target_e2: u64)`: keeper only. It opens the presale round and creates the next presale round (the next index is derived; no `next_index` argument).
-- `buy(series_id, side, amount: U128, min_shares: U128)`: from the internal balance.
+- `buy(series_id, round_index: u32, side, amount: U128, min_shares: U128)`: from the internal balance. `round_index` is required and must be the series' live round, otherwise panic with "round is not the series' live round".
 - `settle(series_id, settle_e2: u64, commitment: String)`: keeper only.
 - `void_round(series_id, round_index)`: keeper only, with the same conditions as lib.rs.
 - `claim(series_id, round_index)`: credits the payout or refund to the caller's internal balance; no token transfer. It then removes the position.
@@ -65,7 +65,7 @@ Amounts at the interface are `U128` (6-decimal USDG units); internally they're u
 Views:
 - `get_config`, `get_series(series_id)`, `get_series_by_reference(reference)`, `list_series(from_index, limit)`
 - `get_round(series_id, round_index)`, `get_position(series_id, round_index, account_id)`, `positions_of(account_id)`, `balance_of(account_id)`
-- `quote_buy(series_id, side, amount) -> { shares, fee, finder_fee, net }`, which uses the same math as `buy`.
+- `quote_buy(series_id, round_index, side, amount) -> { shares, fee, finder_fee, net }`, which uses the same math and the same live-round check as `buy`.
 
 Errors: panic with the lib.rs error messages (e.g. `"fewer shares than the minimum you set"`) via `env::panic_str`, so clients can match on them.
 
