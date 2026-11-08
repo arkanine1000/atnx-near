@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -41,9 +42,17 @@ import { sentimentColor, timeAgo, viChange24h } from "@/lib/capture-view";
 import type { Capture, MarketNeighbor, MarketRow } from "@/lib/store";
 import type { BmMarketRow, BmRoundRow, BmSeriesRow } from "@/lib/supabase/database-bm";
 import { isRoundsDeployed } from "@/lib/bm/chains";
+import { isNearChain, isNearRoundsDeployed } from "@/lib/near/config";
 import type { TrendsResult } from "@/lib/trends";
 import { viTier } from "@/lib/vi/score";
 import { startPolling } from "@/lib/poll";
+
+// The rounds ticket for the chain this build trades on. The NEAR one
+// (NEXT_PUBLIC_BM_CHAIN=near) loads in its own chunk, so the Solana build's
+// market page does not carry near-api-js. Both take the same props.
+const RoundsTicket = isNearChain()
+  ? dynamic(() => import("@/components/rounds/NearRoundTicket").then((m) => m.NearRoundTicket))
+  : RoundTicket;
 
 interface Props {
   market: MarketRow;
@@ -58,8 +67,9 @@ interface Props {
   trends: TrendsResult | null;
   // The bounded UP/DOWN markets on this market, every chain, newest first.
   bounded: BmMarketRow[];
-  // The running rounds series on this market (Solana devnet) and its
-  // rounds, newest first; null when none has been started.
+  // The running rounds series on this market (Solana devnet, or NEAR
+  // testnet with NEXT_PUBLIC_BM_CHAIN=near) and its rounds, newest first;
+  // null when none has been started.
   rounds?: { series: BmSeriesRow; rounds: BmRoundRow[] } | null;
 }
 
@@ -275,7 +285,7 @@ export function MarketDetailClient({
   // here. It stays listed in the portfolio's EVM section (which redeems a
   // win but cannot sell) and resolves on its own when the index touches a
   // bound.
-  const roundsOnly = isRoundsDeployed();
+  const roundsOnly = isNearChain() ? isNearRoundsDeployed() : isRoundsDeployed();
   const series = rounds?.series ?? null;
   const roundRows = useMemo(() => rounds?.rounds ?? [], [rounds]);
   const showRounds = !!series || roundsOnly;
@@ -839,7 +849,7 @@ export function MarketDetailClient({
           {/* ------------------------------------------------ side column */}
           <aside className="hidden lg:block lg:sticky lg:top-24">
             {showRounds ? (
-              <RoundTicket
+              <RoundsTicket
                 atnxMarketId={market.id}
                 name={name}
                 score={viralityScore}
@@ -869,7 +879,7 @@ export function MarketDetailClient({
       <TradeDock
         renderTicket={(side) =>
           showRounds ? (
-            <RoundTicket
+            <RoundsTicket
               key={side}
               atnxMarketId={market.id}
               name={name}
