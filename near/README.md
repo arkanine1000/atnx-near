@@ -16,7 +16,7 @@ Both contracts pay their own storage from their NEAR balance, which is fine on t
 
 ## Build and test
 
-Rust 1.99 with the `wasm32-unknown-unknown` target, and cargo-near 0.23. On this machine the compiler crashes under parallel load, so every command runs pinned to four cores with two jobs and its output in `/tmp`. If a build dies with SIGSEGV or "rustc interrupted", run it again; finished crates are kept.
+Rust 1.99.1 with the `wasm32-unknown-unknown` target, pinned in `rust-toolchain.toml`, and cargo-near 0.23.0. rustup installs the pinned toolchain the first time a command runs in `near/`. It counts as a separate toolchain from `stable`, even when `stable` is the same release. On this machine the compiler crashes under parallel load, so every command runs pinned to four cores with two jobs and its output in `/tmp`. If a build dies with SIGSEGV or "rustc interrupted", run it again; finished crates are kept.
 
 ```
 cd near
@@ -34,7 +34,9 @@ taskset -c 0,3-5 cargo test -p usdg
 taskset -c 0,3-5 cargo test -p integration-tests -- --test-threads=1
 ```
 
-The integration tests read the wasm files from `$ATNX_NEAR_WASM_DIR/<name>/<name>.wasm` if that variable is set, otherwise from `$CARGO_TARGET_DIR/near/…`. `cargo test` without `-p` covers `usdg` and `rounds` only: they are the workspace's default members.
+The integration tests read the wasm files from `$ATNX_NEAR_WASM_DIR/<name>/<name>.wasm` if that variable is set, otherwise from `$CARGO_TARGET_DIR/near/…`, and with neither set from `near/target/near/…`, which is where CI builds them. `cargo test` without `-p` covers `usdg` and `rounds` only: they are the workspace's default members.
+
+CI runs the same steps in `.github/workflows/near-build.yml` on every push or pull request that touches `near/`: both unit-test suites, both wasm builds, then the sandbox tests. It uploads `usdg.wasm` and `rounds.wasm` as artifacts and prints their SHA-256 in the job summary.
 
 ## usdg methods
 
