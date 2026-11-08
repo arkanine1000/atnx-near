@@ -19,10 +19,9 @@ import {
   roundsProgram,
   type PositionAccount,
   type RoundAccount,
-  type RoundSide,
   type SeriesAccount,
 } from "@/lib/bm/sol-shared";
-import { payoutIf, type PositionLike, type RoundLike } from "@/lib/bm/dpm";
+import { asOpened, holdsAnything, liveRoundRow, presaleRoundRow, safePayoutIf } from "./round-math";
 import type { BmRoundRow, BmSeriesRow } from "@/lib/supabase/database-bm";
 
 export { fmtLeft, fmtSpan, useNow } from "./time";
@@ -86,15 +85,9 @@ export const MOCK_HINT = "Preview wallet: read-only. Connect a real wallet to tr
 
 // ------------------------------------------------------------- registry
 
-const IN_FLIGHT = new Set(["opening", "live", "settling"]);
-
-export function liveRoundRow(rows: BmRoundRow[]): BmRoundRow | null {
-  return rows.find((r) => IN_FLIGHT.has(r.state)) ?? null;
-}
-
-export function presaleRoundRow(rows: BmRoundRow[]): BmRoundRow | null {
-  return rows.find((r) => r.state === "presale") ?? null;
-}
+// liveRoundRow and presaleRoundRow live in round-math.ts, shared with the
+// NEAR ticket.
+export { liveRoundRow, presaleRoundRow };
 
 export function seriesRef(series: BmSeriesRow): Uint8Array | null {
   try {
@@ -140,24 +133,9 @@ export function dueOf(r: RoundAccount, p: PositionAccount): bigint {
   return safePayoutIf(p, r, r.winner) ?? 0n;
 }
 
-// A presale round read as if it opened now at its current pots, so a
-// commit can be valued before the open.
-export function asOpened(r: RoundAccount): RoundLike {
-  const total = r.presaleUp + r.presaleDown;
-  return { presaleUp: r.presaleUp, presaleDown: r.presaleDown, mUp: r.presaleUp, mDown: r.presaleDown, nUp: total, nDown: total };
-}
-
-export function safePayoutIf(pos: PositionLike, r: RoundLike, side: RoundSide): bigint | null {
-  try {
-    return payoutIf(pos, r, side);
-  } catch {
-    return null;
-  }
-}
-
-export function holdsAnything(p: PositionAccount | null): boolean {
-  return !!p && p.presaleUp + p.presaleDown + p.stakeUp + p.stakeDown > 0n;
-}
+// asOpened, safePayoutIf and holdsAnything live in round-math.ts, shared
+// with the NEAR ticket.
+export { asOpened, holdsAnything, safePayoutIf };
 
 export async function usdgBalance(connection: ReturnType<typeof useConnection>["connection"], holder: PublicKey): Promise<{ usdg: bigint; hasAta: boolean }> {
   if (!USDG_MINT) return { usdg: 0n, hasAta: false };
