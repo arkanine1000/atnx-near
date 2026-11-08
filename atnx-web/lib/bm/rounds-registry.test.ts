@@ -221,3 +221,79 @@ test('listLiveRounds (the list badges, /api/bm/rounds): rounds of the site chain
   }
   rr.setRegistryClientForTests(null);
 });
+
+test('listSeriesWithPubkey (the portfolio): series of the site chain only', async () => {
+  for (const [env, chain] of [
+    ['near', 'near:testnet'],
+    ['solana', 'solana:devnet'],
+    [undefined, 'solana:devnet'],
+  ] as const) {
+    const queries = fake(() => ({ data: [], error: null }));
+    await withChainEnv(env, () => rr.listSeriesWithPubkey());
+    assert.equal(queries[0].table, 'bm.series');
+    assert.deepEqual(call(queries[0], 'eq'), [['eq', 'chain', chain]]);
+    assert.deepEqual(call(queries[0], 'not'), [['not', 'series_pubkey', 'is', null]]);
+    assert.deepEqual(call(queries[0], 'limit'), [['limit', 500]]);
+  }
+  const queries = fake(() => ({ data: [], error: null }));
+  await withChainEnv('solana', () => rr.listSeriesWithPubkey(20, 'near:testnet'));
+  assert.deepEqual(call(queries[0], 'eq'), [['eq', 'chain', 'near:testnet']]);
+  assert.deepEqual(call(queries[0], 'limit'), [['limit', 20]]);
+  rr.setRegistryClientForTests(null);
+});
+
+test('getSiteSeries: one series by id, only on the site chain; getSeries (the keeper) stays unfiltered', async () => {
+  const ID = '00000000-0000-4000-8000-000000000001';
+  for (const [env, chain] of [
+    ['near', 'near:testnet'],
+    [undefined, 'solana:devnet'],
+  ] as const) {
+    const queries = fake(() => ({ data: { id: ID, chain }, error: null }));
+    assert.deepEqual(await withChainEnv(env, () => rr.getSiteSeries(ID)), { id: ID, chain });
+    assert.deepEqual(call(queries[0], 'eq'), [
+      ['eq', 'id', ID],
+      ['eq', 'chain', chain],
+    ]);
+  }
+  const queries = fake(() => ({ data: null, error: null }));
+  assert.equal(await rr.getSiteSeries(ID, 'near:testnet'), null);
+  await rr.getSeries(ID);
+  assert.deepEqual(call(queries[0], 'eq'), [
+    ['eq', 'id', ID],
+    ['eq', 'chain', 'near:testnet'],
+  ]);
+  assert.deepEqual(call(queries[1], 'eq'), [['eq', 'id', ID]]);
+  rr.setRegistryClientForTests(null);
+});
+
+test('/api/bm/rounds?series=: a series of the other chain is a 404; the listing reads the site chain', async () => {
+  const { GET } = await import('@/app/api/bm/rounds/route');
+  const ID = '00000000-0000-4000-8000-000000000001';
+  for (const [env, chain] of [
+    ['near', 'near:testnet'],
+    ['solana', 'solana:devnet'],
+  ] as const) {
+    // The registry answers as the database would to the chain filter: no row.
+    const queries = fake(() => ({ data: null, error: null }));
+    const res = await withChainEnv(env, () => GET(new Request(`https://markets.atnx.app/api/bm/rounds?series=${ID}`)));
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { items: [] });
+    assert.equal(queries.length, 1, 'no rounds are read for a series of the other chain');
+    assert.equal(queries[0].table, 'bm.series');
+    assert.deepEqual(call(queries[0], 'eq'), [
+      ['eq', 'id', ID],
+      ['eq', 'chain', chain],
+    ]);
+
+    const listQueries = fake(() => ({ data: [], error: null }));
+    const list = await withChainEnv(env, () => GET(new Request('https://markets.atnx.app/api/bm/rounds')));
+    assert.equal(list.status, 200);
+    assert.deepEqual(await list.json(), { items: [] });
+    assert.deepEqual(call(listQueries[0], 'eq'), [['eq', 'series.chain', chain]]);
+  }
+  const bad = fake();
+  const res = await GET(new Request('https://markets.atnx.app/api/bm/rounds?series=nope'));
+  assert.equal(res.status, 400);
+  assert.equal(bad.length, 0);
+  rr.setRegistryClientForTests(null);
+});

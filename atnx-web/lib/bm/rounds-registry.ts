@@ -153,6 +153,15 @@ export async function getSeries(id: string): Promise<BmSeriesRow | null> {
   return (data as BmSeriesRow | null) ?? null;
 }
 
+// One series by its registry id, only if it runs on the site's chain
+// (/api/bm/rounds?series=): another chain's series reads as no series.
+// getSeries above is the keeper's, which knows the chain it works on.
+export async function getSiteSeries(id: string, chain: string = activeRoundsChain()): Promise<BmSeriesRow | null> {
+  const { data, error } = await bm().from('series').select('*').eq('id', id).eq('chain', chain).maybeSingle();
+  if (error) throw error;
+  return (data as BmSeriesRow | null) ?? null;
+}
+
 async function seriesByIds(ids: string[]): Promise<Map<string, BmSeriesRow>> {
   const out = new Map<string, BmSeriesRow>();
   const unique = Array.from(new Set(ids));
@@ -387,12 +396,14 @@ export async function hasOpenRounds(seriesId: string): Promise<boolean> {
   return (data?.length ?? 0) > 0;
 }
 
-// Every series that reached the chain, whatever its state, so a position
-// found on chain can always be named by its market.
-export async function listSeriesWithPubkey(limit = 500): Promise<BmSeriesRow[]> {
+// Every series of the site's chain that reached the chain, whatever its
+// state, so a position found on chain can always be named by its market
+// (the Solana portfolio; NEAR's is lib/near/registry.ts listNearSeries).
+export async function listSeriesWithPubkey(limit = 500, chain: string = activeRoundsChain()): Promise<BmSeriesRow[]> {
   const { data, error } = await bm()
     .from('series')
     .select('*')
+    .eq('chain', chain)
     .not('series_pubkey', 'is', null)
     .order('created_at', { ascending: false })
     .limit(limit);

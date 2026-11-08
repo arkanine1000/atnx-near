@@ -1,12 +1,14 @@
 import { loadMarketMeta } from '@/lib/bm/market-meta';
 import { corsHeaders, corsPreflight } from '@/lib/cors';
-import { getSeries, listLiveRounds, recentRounds } from '@/lib/bm/rounds-registry';
+import { getSiteSeries, listLiveRounds, recentRounds } from '@/lib/bm/rounds-registry';
 import type { BmRoundRow, BmSeriesRow } from '@/lib/supabase/database-bm';
 
 // Rolling VI rounds, joined with the atnx market they run on. Public,
-// CORS-enabled, like /api/bm/markets.
+// CORS-enabled, like /api/bm/markets. Only the site's chain
+// (NEXT_PUBLIC_BM_CHAIN=near: NEAR testnet, otherwise Solana devnet):
 //   (default)          the presale and live rounds of every running series
-//   ?series=<uuid>     that series' last 20 rounds, settled ones included
+//   ?series=<uuid>     that series' last 20 rounds, settled ones included;
+//                      a series of the other chain is a 404
 
 export interface RoundListing {
   seriesId: string;
@@ -62,7 +64,7 @@ export async function GET(request: Request) {
       if (!/^[0-9a-f-]{36}$/i.test(seriesId)) {
         return Response.json({ items: [], error: 'bad series id' }, { status: 400, headers });
       }
-      const series = await getSeries(seriesId);
+      const series = await getSiteSeries(seriesId);
       if (!series) return Response.json({ items: [] }, { status: 404, headers });
       const [rounds, meta] = await Promise.all([recentRounds(series.id, 20), loadMarketMeta([series.atnx_market_id])]);
       items = rounds.map((r) => shape(r, series, meta, true));

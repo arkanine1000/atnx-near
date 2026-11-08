@@ -36,7 +36,10 @@ const TESTNET = "Testnet · test USDG, no value.";
 const WINDOW_SECS = 1_800;
 const FAST_WINDOW_SECS = 900;
 
-export type StartNearSeries = (atnxMarketId: string, finder: string, fast: boolean) => Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
+// Starts a NEAR series on the market (startNearSeriesAction in
+// app/app/actions/rounds.ts). It takes no finder: the server makes the
+// signed-in user's own active account the finder, from the session.
+export type StartNearSeries = (atnxMarketId: string, fast: boolean) => Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
 
 interface Props {
   atnxMarketId: string;
@@ -50,9 +53,9 @@ interface Props {
   rounds: BmRoundRow[];
   initialSide?: RoundSide;
   onToast?: (message: string, detail: string | undefined, type: RoundSide) => void;
-  // Starts a NEAR series with the user's account as finder. The keeper
-  // creates series on NEAR; until its start action is wired in here, a
-  // market with no series says so instead of offering a button.
+  // Starts a NEAR series with the signed-in user's account as finder; the
+  // keeper creates it on chain. Without it, a market with no series says
+  // so instead of offering a button.
   startSeries?: StartNearSeries;
 }
 
@@ -199,6 +202,13 @@ function StartSeries({ atnxMarketId, name, score, scoring = false, viUpdatedAt, 
         ? `The index is over ${MAX_VI_AGE_MIN} minutes old. Rounds start on a fresh reading.`
         : null;
 
+  // "Start rounds" needs a signed-in user with an active account, which
+  // becomes the series' finder (the server reads it from the session). It
+  // needs no key to earn, so an account whose key is in another browser is
+  // fine too. Before that comes the sign-in and the account set-up.
+  const canStart = !!near.accountId && (near.status === "ready" || near.status === "other-browser" || near.status === "unsupported");
+  const auto = useAutoAccount(near, !!startSeries && !blocked && !pending);
+
   if (pending) {
     return (
       <Card className="p-4 sm:p-5">
@@ -210,23 +220,20 @@ function StartSeries({ atnxMarketId, name, score, scoring = false, viUpdatedAt, 
   }
 
   function start() {
-    if (!startSeries) return;
-    if (near.status === "signed-out") {
-      openLoginModal();
-      return;
-    }
+    if (!startSeries || !canStart) return;
     setError(null);
     startStarting(async () => {
       try {
-        // The account that starts a series is its finder; it needs no key
-        // to earn, so an account set up in another browser is fine too.
-        const finder = near.accountId ?? (await near.ensureAccount());
-        const r = await startSeries(atnxMarketId, finder, fast);
-        if (!r.ok) setError(r.code === "already_active" ? "Rounds are already running on this market. Reload the page." : r.error);
-        else {
+        const r = await startSeries(atnxMarketId, fast);
+        if (r.ok) {
           setStarted(true);
           router.refresh();
+          return;
         }
+        setError(r.code === "already_active" ? "Rounds are already running on this market. Reload the page." : r.error);
+        // The session or the account changed under the page.
+        if (r.code === "signed_out") openLoginModal();
+        else if (r.code === "no_account" || r.code === "account_creating") near.refetch();
       } catch (e) {
         setError(friendlyNearError(e));
       }
@@ -250,9 +257,13 @@ function StartSeries({ atnxMarketId, name, score, scoring = false, viUpdatedAt, 
             <p className="text-sm text-secondary">{blocked}</p>
           ) : (
             <>
-              <button type="button" onClick={start} disabled={starting || near.status === "loading" || near.status === "creating"} className="btn-cyan w-full h-12 rounded-xl font-bold text-sm cursor-pointer disabled:opacity-50">
-                {starting ? "Starting…" : near.status === "signed-out" ? "Sign in to start rounds" : "Start rounds"}
-              </button>
+              {canStart ? (
+                <button type="button" onClick={start} disabled={starting} className="btn-cyan w-full h-12 rounded-xl font-bold text-sm cursor-pointer disabled:opacity-50">
+                  {starting ? "Starting…" : "Start rounds"}
+                </button>
+              ) : (
+                <AccountGate near={near} label="Sign in to start rounds" autoError={auto.error} onRetry={auto.retry} />
+              )}
               <p className="text-[11px] text-tertiary mt-2">You earn a share of every fee in this series.</p>
             </>
           )}

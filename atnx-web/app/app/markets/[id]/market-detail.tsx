@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Suspense,
+  type ComponentProps,
   useCallback,
   useEffect,
   useMemo,
@@ -18,6 +19,7 @@ import { ChainTradeLog } from "@/components/bm/ChainTradeLog";
 import { PriceChip } from "@/components/bm/PriceChip";
 import { useMyTrades } from "@/components/bm/useMyTrades";
 import { RoundTicket } from "@/components/rounds/RoundTicket";
+import { startNearSeriesAction } from "@/app/app/actions/rounds";
 import { RoundChip } from "@/components/rounds/RoundChip";
 import { RoundHistory } from "@/components/rounds/RoundHistory";
 import { fmtUsdg } from "@/components/bm/format";
@@ -49,9 +51,18 @@ import { startPolling } from "@/lib/poll";
 
 // The rounds ticket for the chain this build trades on. The NEAR one
 // (NEXT_PUBLIC_BM_CHAIN=near) loads in its own chunk, so the Solana build's
-// market page does not carry near-api-js. Both take the same props.
+// market page does not carry near-api-js. Both take the same props; the
+// NEAR one is handed its "Start rounds" server action here (the Solana one
+// imports its own).
 const RoundsTicket = isNearChain()
-  ? dynamic(() => import("@/components/rounds/NearRoundTicket").then((m) => m.NearRoundTicket))
+  ? dynamic(() =>
+      import("@/components/rounds/NearRoundTicket").then(({ NearRoundTicket }) => {
+        function NearTicket(props: ComponentProps<typeof RoundTicket>) {
+          return <NearRoundTicket {...props} startSeries={startNearSeriesAction} />;
+        }
+        return NearTicket;
+      }),
+    )
   : RoundTicket;
 
 interface Props {
