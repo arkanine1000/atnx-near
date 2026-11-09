@@ -32,8 +32,10 @@ const RESERVED = new Set([
   'www',
 ]);
 
+// `guest`, and `guest-…` or `guest_…`, belong to the guest accounts
+// (lib/near/guest.ts), so a user's account never looks like one.
 export function isReservedHandle(h: string): boolean {
-  return RESERVED.has(h);
+  return RESERVED.has(h) || h === 'guest' || /^guest[-_]/.test(h);
 }
 
 // The longest handle that still fits <handle>.<parent> in 64 characters.

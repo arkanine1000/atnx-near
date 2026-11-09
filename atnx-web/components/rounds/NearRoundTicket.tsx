@@ -13,6 +13,7 @@ import { friendlyNearError } from "@/lib/near/errors";
 import { callArgs, u128 } from "@/lib/near/rounds";
 import type { BmRoundRow, BmSeriesRow } from "@/lib/supabase/database-bm";
 import { FUND_HREF } from "./FundFromAnyChain";
+import { NearGuestChoice } from "./NearGuestChoice";
 import { holdsAnything, liveRoundRow, presaleRoundRow } from "./round-math";
 import { ClaimList, HowRounds, LivePane, NextRoundLine, PresalePane, Question, RegistryLine } from "./ticket-parts";
 import { useNow } from "./time";
@@ -25,7 +26,9 @@ import { useNearClaimables, useNearRoundState, type NearClaimable } from "./useN
 // (useNearAccount) the first time the ticket needs one; every action is a
 // call the browser signs and ATNX relays, so there is nothing to connect,
 // approve or pay for. "Connect wallet" becomes "Sign in to trade", then
-// "Setting up your account…".
+// "Setting up your account…". Under the sign-in button, "Try as a guest"
+// makes a test account in this browser with no sign-in; a guest trades the
+// same ticket but sees "Sign in to start rounds" where a series has none.
 //
 // The series is found by its registry reference (get_series_by_reference);
 // commits and buys name the round they are for, so one sent as the keeper
@@ -98,9 +101,10 @@ function useAutoAccount(near: NearAccount, enabled: boolean) {
   return { error, retry };
 }
 
-// What stands between the user and the ticket: signing in, the account
-// being set up, or an account whose key is in another browser.
-function AccountGate({ near, label, autoError, onRetry }: { near: NearAccount; label: string; autoError: string | null; onRetry: () => void }) {
+// What stands between the user and the ticket: signing in (or, where
+// `guest` is set, trying it as a guest), the account being set up, or an
+// account whose key is in another browser.
+function AccountGate({ near, label, autoError, onRetry, guest = false }: { near: NearAccount; label: string; autoError: string | null; onRetry: () => void; guest?: boolean }) {
   const { user, openLoginModal } = useAuth();
   const [fresh, setFresh] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -117,12 +121,20 @@ function AccountGate({ near, label, autoError, onRetry }: { near: NearAccount; l
       );
     case "signed-out":
       return (
-        <button type="button" onClick={openLoginModal} className={BUTTON}>
-          {label}
-        </button>
+        <>
+          <button type="button" onClick={openLoginModal} className={BUTTON}>
+            {label}
+          </button>
+          {guest && (
+            <div className="mt-2.5">
+              <NearGuestChoice />
+            </div>
+          )}
+        </>
       );
     case "none":
     case "creating":
+      if (near.isGuest) return <p className="text-sm text-secondary animate-pulse">Setting up your test account…</p>;
       if (autoError && near.status === "none") {
         return (
           <>
@@ -207,8 +219,9 @@ function StartSeries({ atnxMarketId, name, score, scoring = false, viUpdatedAt, 
   // "Start rounds" needs a signed-in user with an active account, which
   // becomes the series' finder (the server reads it from the session). It
   // needs no key to earn, so an account whose key is in another browser is
-  // fine too. Before that comes the sign-in and the account set-up.
-  const canStart = !!near.accountId && (near.status === "ready" || near.status === "other-browser" || near.status === "unsupported");
+  // fine too. Before that comes the sign-in and the account set-up. A guest
+  // cannot start rounds (the finder earns fees): it is asked to sign in.
+  const canStart = !near.isGuest && !!near.accountId && (near.status === "ready" || near.status === "other-browser" || near.status === "unsupported");
   const auto = useAutoAccount(near, !!startSeries && !blocked && !pending);
 
   if (pending) {
@@ -262,6 +275,10 @@ function StartSeries({ atnxMarketId, name, score, scoring = false, viUpdatedAt, 
               {canStart ? (
                 <button type="button" onClick={start} disabled={starting} className="btn-cyan w-full h-12 rounded-xl font-bold text-sm cursor-pointer disabled:opacity-50">
                   {starting ? "Starting…" : "Start rounds"}
+                </button>
+              ) : near.isGuest ? (
+                <button type="button" onClick={openLoginModal} className={BUTTON}>
+                  Sign in to start rounds
                 </button>
               ) : (
                 <AccountGate near={near} label="Sign in to start rounds" autoError={auto.error} onRetry={auto.retry} />
@@ -349,7 +366,7 @@ function SeriesTicket({ name, score, series, rounds, initialSide = "up", onToast
       <Card className="p-4 sm:p-5">
         <Question name={name} roundSecs={series.round_secs} />
         <RegistryLine liveRow={liveRow} presaleRow={presaleRow} now={now} />
-        <AccountGate near={near} label={!liveRow && presaleRow ? "Sign in to commit" : "Sign in to trade"} autoError={auto.error} onRetry={auto.retry} />
+        <AccountGate near={near} label={!liveRow && presaleRow ? "Sign in to commit" : "Sign in to trade"} autoError={auto.error} onRetry={auto.retry} guest />
         <Footer roundSecs={series.round_secs} windowSecs={series.settle_window_secs} />
       </Card>
     );

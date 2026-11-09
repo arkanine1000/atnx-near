@@ -30,6 +30,7 @@
     "test:bm": "npx --yes tsx --test lib/bm/*.test.ts",
     "test:near": "npx --yes tsx --test lib/near/*.test.ts",
     "near:e2e": "npx --yes tsx --env-file=.env.local scripts/near-relay-e2e.ts",
+    "near:guest:e2e": "npx --yes tsx --env-file=.env.local scripts/near-guest-e2e.ts",
     "near:intents:quote": "npx --yes tsx scripts/near-intents-quote.ts",
     "bm:keeper:dry": "npx --yes tsx --env-file=.env.local scripts/bm-keeper-dry.ts",
     "bm:e2e": "npx --yes tsx --env-file=.env.local scripts/bm-e2e.ts",
@@ -40,6 +41,7 @@
     "rounds:sol": "npx --yes tsx scripts/rounds-sol.ts",
     "rounds:near": "npx --yes tsx --env-file=.env.local scripts/rounds-near.ts",
     "rounds:verify": "npx --yes tsx --env-file=.env.local scripts/rounds-verify.ts",
+    "rounds:verify:public": "npx --yes tsx scripts/rounds-verify-public.ts",
     "vi:source-shift": "npx --yes tsx --env-file=.env.local scripts/vi-source-shift.ts",
     "vi:explain": "npx --yes tsx --env-file=.env.local scripts/vi-explain.ts"
   },

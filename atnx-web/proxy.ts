@@ -39,8 +39,11 @@ export async function proxy(request: NextRequest) {
   // portfolio page renders its own login prompt). Only explicit user-specific
   // routes need a server-side redirect here — trading server actions and the
   // settings page enforce auth on their own.
+  // On the NEAR build Settings also serves guests (no session), so the page
+  // decides for itself there.
+  const nearBuild = process.env.NEXT_PUBLIC_BM_CHAIN === 'near';
   const isProtected =
-    path.startsWith('/admin') || path.startsWith('/app/settings');
+    path.startsWith('/admin') || (path.startsWith('/app/settings') && !nearBuild);
   const isAuthCallback = path.startsWith('/auth/callback');
 
   // IMPORTANT: do not put any code between createServerClient and this

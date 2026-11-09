@@ -251,6 +251,24 @@ export async function runKeeper(opts: { dry?: boolean; bounded?: boolean } = {})
           for (const k of Object.keys(near) as (keyof RoundsCountsLike)[]) rep[k] += near[k];
           rep.near = near;
         }
+        // Guest IP hashes (supabase/bm/005) are only needed for the caps'
+        // 24-hour window. bm.near_guest_reserve clears older ones when the
+        // next guest is made; this clears them even when nobody is, so the
+        // privacy policy's "cleared after 24 hours" holds.
+        if (!dry) {
+          try {
+            const cutoff = new Date(Date.now() - 24 * 3600_000).toISOString();
+            const { error } = await createAdminClient()
+              .schema('bm')
+              .from('near_guests')
+              .update({ ip_hash: null })
+              .not('ip_hash', 'is', null)
+              .lt('created_at', cutoff);
+            if (error) throw error;
+          } catch (err) {
+            await nearLog({ action: 'near-guest-ip-sweep', error: (err as Error).message });
+          }
+        }
       })()
     );
   }

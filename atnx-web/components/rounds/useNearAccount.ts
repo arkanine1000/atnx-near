@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/context/AuthContext";
 import { NearActError, createActor, type ActResult } from "@/lib/near/client";
 import { isNearRoundsDeployed, type UserMethod } from "@/lib/near/config";
-import { createSigner, keyStoreAvailable, loadOrCreateSigner, loadSigner } from "@/lib/near/keystore";
+import { notifyGuestChanged, onGuestChanged } from "@/lib/near/guest-local";
+import { createGuestKey, createSigner, keyStoreAvailable, loadGuest, loadOrCreateSigner, loadSigner, saveGuestAccount } from "@/lib/near/keystore";
 import { webCryptoEd25519Supported, type WebCryptoSigner } from "@/lib/near/signer";
 
 // The signed-in user's gasless NEAR account, as the ticket, the portfolio
@@ -25,6 +26,14 @@ import { webCryptoEd25519Supported, type WebCryptoSigner } from "@/lib/near/sign
 // ensureAccount() makes a non-extractable key in IndexedDB and asks
 // /api/near/account for <handle>.atnx.testnet with that key. act(method,
 // args) signs one call and relays it (lib/near/client.ts), one at a time.
+//
+// Signed out, the hook speaks for the guest account this browser holds, if
+// any: startGuest() makes a key under "guest" in IndexedDB and asks
+// /api/near/guest, with no session, for guest-<8>.atnx.testnet. The guest
+// is then "ready" with isGuest set, and act() relays through the relay's
+// guest branch. A guest who signs in gets their own user account as before;
+// the guest account stays in this browser, separate (guestAccountId), and
+// is the one used again after signing out. Nothing merges them.
 
 export type NearAccountStatus = "unconfigured" | "signed-out" | "loading" | "none" | "creating" | "ready" | "other-browser" | "unsupported" | "error";
 
@@ -57,8 +66,12 @@ export class NearAccountError extends Error {
 const signers = new Map<string, WebCryptoSigner>();
 // One ensureAccount per user at a time, whichever component asked.
 const ensuring = new Map<string, Promise<string>>();
-// Users whose account is being set up in this tab, for the "creating" state.
+// Users whose account is being set up in this tab, for the "creating" state
+// (GUEST_ID while the guest account is).
 const creating = new Set<string>();
+const GUEST_ID = "guest";
+let guestSigner: WebCryptoSigner | null = null;
+let guestEnsuring: Promise<string> | null = null;
 const listeners = new Set<() => void>();
 
 function setCreating(userId: string, on: boolean) {
@@ -120,6 +133,55 @@ async function setUp(userId: string, fresh: boolean): Promise<string> {
   throw new NearAccountError("timeout", "Setting up your account is taking too long. Reload the page.");
 }
 
+// The guest account: the stored one, or a new key and a POST to
+// /api/near/guest. A key the server refused for good (key_used, after a
+// failed creation) is replaced once.
+async function setUpGuest(): Promise<string> {
+  if (!(await ed25519Supported())) throw new NearAccountError("unsupported", "This browser can't hold a test account. Try a recent Chrome, Firefox or Safari.");
+  let g = (await loadGuest()) ?? (await createGuestKey());
+  if (g.accountId) {
+    guestSigner = g.signer;
+    return g.accountId;
+  }
+  let replaced = false;
+  for (let attempt = 0; attempt < 15; attempt++) {
+    const res = await fetch("/api/near/guest", {
+      method: "POST",
+      credentials: "omit",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ publicKey: g.publicKey }),
+    });
+    const body = ((await res.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+    if ((res.status === 200 || res.status === 201) && typeof body.accountId === "string") {
+      await saveGuestAccount(g.publicKey, body.accountId);
+      guestSigner = g.signer;
+      notifyGuestChanged();
+      return body.accountId;
+    }
+    if (res.status === 409 && body.error === "in_progress") {
+      await sleep(2_000);
+      continue;
+    }
+    if (res.status === 409 && body.error === "key_used" && !replaced) {
+      replaced = true;
+      g = await createGuestKey();
+      continue;
+    }
+    const code = typeof body.error === "string" ? body.error : `http_${res.status}`;
+    throw new NearAccountError(code, GUEST_ERRORS[code] ?? ACCOUNT_ERRORS[code]);
+  }
+  throw new NearAccountError("timeout", "Setting up your test account is taking too long. Reload the page.");
+}
+
+const GUEST_ERRORS: Record<string, string> = {
+  guest_limit_ip: "Too many guest accounts from your network in the last hour. Sign in, or try again later.",
+  guest_limit_day: "Today's guest accounts are used up. Sign in with Google or X to try ATNX.",
+  relayer_empty: "Guest accounts are paused for a moment on our side. Try again later.",
+  create_failed: "Your test account could not be set up just now. Try again.",
+  key_used: "Your test account could not be set up just now. Try again.",
+  server_error: "Guest accounts are unavailable right now. Sign in, or try again later.",
+};
+
 const ACCOUNT_ERRORS: Record<string, string> = {
   other_key: "Your account was set up in another browser.",
   account_limit: "This sign-in has started over too many times. Ask us to help.",
@@ -137,10 +199,22 @@ export interface NearAccount {
   accountId: string | null;
   previousAccountIds: string[];
   error: string | null;
+  // Signed out and using this browser's guest account (status "ready" or
+  // "creating").
+  isGuest: boolean;
+  // The guest account this browser holds, signed in or not, or null.
+  guestAccountId: string | null;
   ensureAccount: () => Promise<string>;
   startFresh: () => Promise<string>;
+  // Makes (or finds) this browser's guest account. Signed-out only.
+  startGuest: () => Promise<string>;
   act: (method: UserMethod, args: Record<string, unknown>) => Promise<ActResult>;
   refetch: () => void;
+}
+
+interface GuestSnapshot {
+  accountId: string | null;
+  supported: boolean;
 }
 
 export function useNearAccount(): NearAccount {
@@ -168,13 +242,44 @@ export function useNearAccount(): NearAccount {
     },
   });
 
+  const isGuestCreating = useSyncExternalStore(
+    subscribeCreating,
+    () => creating.has(GUEST_ID),
+    () => false,
+  );
+  const gq = useQuery({
+    queryKey: ["near", "guest"],
+    enabled: configured,
+    staleTime: Infinity,
+    queryFn: async (): Promise<GuestSnapshot> => {
+      const supported = await ed25519Supported();
+      const g = supported ? await loadGuest().catch(() => null) : null;
+      if (g?.accountId) guestSigner = g.signer;
+      return { accountId: g?.accountId ?? null, supported };
+    },
+  });
+  // A guest made in another tab.
+  useEffect(() => {
+    if (!configured) return;
+    return onGuestChanged(() => void queryClient.invalidateQueries({ queryKey: ["near", "guest"] }));
+  }, [configured, queryClient]);
+  const guestAccountId = gq.data?.accountId ?? null;
+  const signedOut = configured && !authLoading && !userId;
+  const isGuest = signedOut && (isGuestCreating || !!guestAccountId);
+
   const snap = q.data;
   const status: NearAccountStatus = !configured
     ? "unconfigured"
     : authLoading
       ? "loading"
       : !userId
-        ? "signed-out"
+        ? isGuestCreating
+          ? "creating"
+          : gq.isLoading
+            ? "loading"
+            : guestAccountId
+              ? "ready"
+              : "signed-out"
         : isCreating
           ? "creating"
           : q.isLoading
@@ -191,7 +296,7 @@ export function useNearAccount(): NearAccount {
                       ? "ready"
                       : "other-browser";
 
-  const accountId = snap?.server?.state === "active" ? snap.server.accountId : null;
+  const accountId = !userId ? (isGuest && guestAccountId ? guestAccountId : null) : snap?.server?.state === "active" ? snap.server.accountId : null;
 
   const run = useCallback(
     (fresh: boolean): Promise<string> => {
@@ -213,11 +318,31 @@ export function useNearAccount(): NearAccount {
   const ensureAccount = useCallback(() => run(false), [run]);
   const startFresh = useCallback(() => run(true), [run]);
 
+  const startGuest = useCallback((): Promise<string> => {
+    if (userId) return Promise.reject(new NearAccountError("signed_in", "You are signed in; your account is set up for you."));
+    if (guestEnsuring) return guestEnsuring;
+    setCreating(GUEST_ID, true);
+    const p = setUpGuest()
+      .then((id) => {
+        // Before "creating" clears, so the page goes straight to ready.
+        queryClient.setQueryData<GuestSnapshot>(["near", "guest"], { accountId: id, supported: true });
+        return id;
+      })
+      .finally(() => {
+        guestEnsuring = null;
+        setCreating(GUEST_ID, false);
+        void queryClient.invalidateQueries({ queryKey: ["near", "guest"] });
+      });
+    guestEnsuring = p;
+    return p;
+  }, [userId, queryClient]);
+
   const actor = useMemo(() => {
-    if (status !== "ready" || !accountId || !userId) return null;
+    if (status !== "ready" || !accountId) return null;
+    if (!userId) return isGuest && guestSigner ? createActor({ accountId, signer: guestSigner, guest: true }) : null;
     const signer = signers.get(userId);
     return signer ? createActor({ accountId, signer }) : null;
-  }, [status, accountId, userId]);
+  }, [status, accountId, userId, isGuest]);
 
   const act = useCallback(
     async (method: UserMethod, args: Record<string, unknown>) => {
@@ -238,11 +363,14 @@ export function useNearAccount(): NearAccount {
   return {
     status,
     accountId,
-    previousAccountIds: snap?.server?.previousAccountIds ?? [],
-    error,
+    previousAccountIds: userId ? (snap?.server?.previousAccountIds ?? []) : [],
+    error: userId ? error : null,
+    isGuest,
+    guestAccountId,
     ensureAccount,
     startFresh,
+    startGuest,
     act,
-    refetch: () => void q.refetch(),
+    refetch: () => void (userId ? q.refetch() : gq.refetch()),
   };
 }

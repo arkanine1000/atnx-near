@@ -81,6 +81,9 @@ export interface ActorConfig {
   contractId?: string;
   endpoint?: string;
   fetch?: FetchLike;
+  // A guest account (/api/near/guest): the relay's guest branch, which
+  // needs no session, so no cookie is sent.
+  guest?: boolean;
 }
 
 export type Act = (method: UserMethod, args: Record<string, unknown>) => Promise<ActResult>;
@@ -105,14 +108,14 @@ export function createActor(cfg: ActorConfig): { act: Act } {
   const provider = new JsonRpcProvider({ url: cfg.rpcUrl ?? NEAR_RPC });
   const contractId = cfg.contractId ?? NEAR_ROUNDS;
   const endpoint = cfg.endpoint ?? '/api/near/relay';
-  const doFetch: FetchLike = cfg.fetch ?? ((url, init) => fetch(url, { ...init, credentials: 'same-origin' }));
+  const doFetch: FetchLike = cfg.fetch ?? ((url, init) => fetch(url, { ...init, credentials: cfg.guest ? 'omit' : 'same-origin' }));
 
   async function once(method: UserMethod, args: Record<string, unknown>): Promise<ActResult> {
     const { signedDelegateBase64 } = await signCall({ provider, accountId: cfg.accountId, signer: cfg.signer, contractId, methodName: method, args, gas: METHOD_GAS[method] });
     const res = await doFetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ signedDelegate: signedDelegateBase64 }),
+      body: JSON.stringify(cfg.guest ? { signedDelegate: signedDelegateBase64, guest: true } : { signedDelegate: signedDelegateBase64 }),
     });
     const body = ((await res.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
     if (res.status === 200 && typeof body.txHash === 'string') {

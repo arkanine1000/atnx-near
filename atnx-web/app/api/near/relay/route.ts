@@ -6,8 +6,11 @@ import { handleRelay } from '@/lib/near/routes';
 // contract; the relayer checks it against the policy and the signed-in
 // user's account, holds the user's relay lock, checks it against the chain
 // and sends it, paying the gas (lib/near/routes.ts, lib/near/relay.ts).
+// POST { signedDelegate, guest: true }: the same for a guest account
+// (/api/near/guest), with no session: the sender must be an active guest,
+// with a lower hourly cap and no withdraw.
 // Errors: 400 { error: <reason> } before anything was sent, 409 busy or
-// no_account, 429 rate_limited, 422 { error: 'failed_on_chain', txHash,
+// no_account, 403 not_a_guest, 429 rate_limited, 422 { error: 'failed_on_chain', txHash,
 // message } after.
 export const maxDuration = 60;
 
