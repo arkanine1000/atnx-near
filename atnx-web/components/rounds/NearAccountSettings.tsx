@@ -7,13 +7,15 @@ import { useAuth } from "@/context/AuthContext";
 import { FAUCET_UNITS, isNearRoundsDeployed, nearAccountUrl } from "@/lib/near/config";
 import { friendlyNearError } from "@/lib/near/errors";
 import { callArgs } from "@/lib/near/rounds";
+import { FundFromAnyChain } from "./FundFromAnyChain";
 import { useNearAccount } from "./useNearAccount";
 import { nearViewer } from "./useNearRounds";
 
 // The NEAR block of Settings: the trading account ATNX set up for this
 // sign-in, with a link to it on the explorer, its test USDG, the faucet,
-// and, in plain words, what happens if this browser's key is lost: there
-// is no recovery, a new account starts empty.
+// a preview of funding it with USDC from another chain (FundFromAnyChain,
+// dry NEAR Intents quotes), and, in plain words, what happens if this
+// browser's key is lost: there is no recovery, a new account starts empty.
 export function NearAccountSettings() {
   const near = useNearAccount();
   const { user, openLoginModal } = useAuth();
@@ -130,6 +132,7 @@ export function NearAccountSettings() {
         </div>
       )}
       {note && <p className="text-[11px] text-secondary py-2 break-words">{note}</p>}
+      <FundFromAnyChain />
       {near.previousAccountIds.length > 0 && (
         <p className="text-[11px] text-tertiary pt-2.5">
           Earlier accounts:{" "}
