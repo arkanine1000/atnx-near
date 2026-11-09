@@ -65,6 +65,9 @@ const RoundsTicket = isNearChain()
     )
   : RoundTicket;
 
+// The header's round chip, NEAR's in its own chunk for the same reason.
+const SeriesChip = isNearChain() ? dynamic(() => import("@/components/rounds/NearRoundChip").then((m) => m.NearRoundChip)) : RoundChip;
+
 interface Props {
   market: MarketRow;
   // The markets either side of this one in virality order: a swipe on a
@@ -471,7 +474,7 @@ export function MarketDetailClient({
                       {analysis.category && <Chip>{analysis.category}</Chip>}
                     </div>
                     {series ? (
-                      <RoundChip series={series} rounds={roundRows} vi={viralityScore} />
+                      <SeriesChip series={series} rounds={roundRows} vi={viralityScore} />
                     ) : roundsOnly ? null : (
                       <PriceChip bounded={bounded} vi={viralityScore} />
                     )}
