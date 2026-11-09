@@ -124,6 +124,21 @@ interface RawSignedDelegate {
   signature: { ed25519Signature?: { data: ArrayLike<number> } } & Record<string, unknown>;
 }
 
+// The sender a SignedDelegate names, read without checking anything else,
+// or null when it does not decode. Untrusted: the guest relay uses it only
+// to find which row to check the delegate against, then check() verifies
+// the delegate against that row (sender, key, signature, policy).
+export function delegateSenderId(signedDelegateBase64: string): string | null {
+  if (typeof signedDelegateBase64 !== 'string' || signedDelegateBase64.length === 0 || signedDelegateBase64.length > 16_384) return null;
+  try {
+    const sd = deserialize(SCHEMA.SignedDelegate, base64Decode(signedDelegateBase64)) as RawSignedDelegate;
+    const id = sd?.delegateAction?.senderId;
+    return typeof id === 'string' ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Parse and check a SignedDelegate without touching the chain. */
 export async function checkDelegate(
   signedDelegateBase64: string,
@@ -413,6 +428,9 @@ export interface Relayer {
   check(signedDelegateBase64: string, ctx?: CheckContext): Promise<CheckedDelegate>;
   preflight(checked: CheckedDelegate): Promise<void>;
   send(checked: CheckedDelegate): Promise<RelayResult>;
+  // Whether the relayer's spendable balance is at or above its floor (the
+  // check send() makes; the guest route asks before making a guest).
+  hasFloat(): Promise<boolean>;
   // check + preflight + send, one at a time per sender in this process.
   relay(signedDelegateBase64: string, ctx?: CheckContext): Promise<RelayResult>;
   relayerAccount: Account;
@@ -480,7 +498,17 @@ export function createRelayer(cfg: RelayerConfig): Relayer {
     });
   }
 
-  return { relayerId: cfg.relayerId, policy: cfg.policy, provider, check, preflight, send, relay, relayerAccount: relayer };
+  async function hasFloat(): Promise<boolean> {
+    try {
+      await ensureFloat();
+      return true;
+    } catch (err) {
+      if (err instanceof RelayRejected) return false;
+      throw err;
+    }
+  }
+
+  return { relayerId: cfg.relayerId, policy: cfg.policy, provider, check, preflight, send, hasFloat, relay, relayerAccount: relayer };
 }
 
 // The relay policy for the rounds contract: user methods only, senders

@@ -24,6 +24,12 @@ test('names are cleaned into NEAR handles', () => {
     ['keeper', null],
     ['rounds', null],
     ['ROUNDS2', 'rounds2'],
+    // The guest accounts' names.
+    ['guest', null],
+    ['Guest-ab12cd34', null],
+    ['guest_x', null],
+    ['guest.house', null], // "guest-house" after the dot becomes a dash
+    ['guesthouse', 'guesthouse'],
   ];
   for (const [raw, want] of cases) assert.equal(sanitizeHandle(raw), want, `sanitizeHandle(${JSON.stringify(raw)})`);
 });

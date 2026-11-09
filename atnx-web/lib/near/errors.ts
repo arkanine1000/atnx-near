@@ -33,6 +33,10 @@ const CODES: Record<string, string> = {
   unknown_key: 'This browser no longer holds your account. Reload the page.',
   relayer_empty: 'Trading is paused for a moment on our side. Try again later.',
   not_configured: 'Trading is not set up on this site yet.',
+  // The guest branch of the relay.
+  not_a_guest: 'This browser no longer holds your account. Reload the page.',
+  guests_off: 'Guest accounts are unavailable right now. Sign in to trade.',
+  method_not_allowed: 'A test account cannot do that. Sign in to use the full account.',
 };
 
 export function friendlyNearError(err: unknown): string {

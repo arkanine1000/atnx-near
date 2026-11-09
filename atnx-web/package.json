@@ -30,6 +30,7 @@
     "test:bm": "npx --yes tsx --test lib/bm/*.test.ts",
     "test:near": "npx --yes tsx --test lib/near/*.test.ts",
     "near:e2e": "npx --yes tsx --env-file=.env.local scripts/near-relay-e2e.ts",
+    "near:guest:e2e": "npx --yes tsx --env-file=.env.local scripts/near-guest-e2e.ts",
     "near:intents:quote": "npx --yes tsx scripts/near-intents-quote.ts",
     "bm:keeper:dry": "npx --yes tsx --env-file=.env.local scripts/bm-keeper-dry.ts",
     "bm:e2e": "npx --yes tsx --env-file=.env.local scripts/bm-e2e.ts",
