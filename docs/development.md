@@ -44,6 +44,28 @@ Rolling rounds on Solana devnet ([rounds.md](rounds.md)), also in `.env.local.ex
 
 The other bounded-market variables are listed in [bounded-markets.md](bounded-markets.md#operations); `BM_MAX_VI_AGE_MIN` (default 30) is shared: neither a bounded market nor a round opens on an older VI.
 
+### Rolling rounds on NEAR testnet
+
+The NEAR build of the same rounds ([rounds.md](rounds.md#near-testnet)). The names are in `.env.local.example`; that file's comment on `NEXT_PUBLIC_BM_NEAR_PARENT` predates the account routes, and it does not list the relayer's two variables.
+
+| Name | Where | Notes |
+| --- | --- | --- |
+| `NEXT_PUBLIC_BM_CHAIN` | client + server | `near` makes the site read, show and trade the NEAR series (registry rows `near:testnet`) and sign in with Google or X; the NEAR "Start rounds" action refuses to run without it. Anything else, or nothing, keeps the Solana build as it was |
+| `NEXT_PUBLIC_BM_NEAR_NETWORK` | client + server | Default `testnet`. The keeper's NEAR client refuses to sign on any other |
+| `NEXT_PUBLIC_BM_NEAR_RPC` | client + server | Default `https://test.rpc.fastnear.com` |
+| `NEXT_PUBLIC_BM_NEAR_ROUNDS` | client + server | The rounds contract, `rounds.atnx.testnet`. The browser and the account and relay routes need it set (without it and the parent the ticket says rounds are not live and the routes answer `not_configured`); the keeper falls back to `rounds.atnx.testnet` |
+| `NEXT_PUBLIC_BM_NEAR_USDG` | client + server | The token, `usdg.atnx.testnet`; the keeper falls back to it |
+| `NEXT_PUBLIC_BM_NEAR_PARENT` | client + server | The parent of user accounts, `atnx.testnet`; accounts are `<handle>.<parent>` and the relayer only relays for direct sub-accounts of it. The e2e scripts default to `atnx.testnet` |
+| `BM_NEAR_ROUNDS_ENABLED` | server only | `1` runs the NEAR rounds step of the keeper tick, independently of `BM_ROUNDS_ENABLED` |
+| `BM_NEAR_KEEPER_ACCOUNT` | server only | The keeper account, `keeper.atnx.testnet`; it must be the contract's keeper. Also the finder `rounds:start --chain near` uses by default |
+| `BM_NEAR_KEEPER_SECRET` | server only | The keeper's key, `ed25519:<base58>` as near-cli writes it |
+| `BM_NEAR_PARENT_SECRET` | server only | The parent's key: `/api/near/account` creates user accounts with it, and `rounds:near -- e2e` its throwaway user |
+| `BM_NEAR_RELAYER_ACCOUNT` | server only | The account that signs and pays for relayed calls (`/api/near/relay`) |
+| `BM_NEAR_RELAYER_SECRET` | server only | Its key |
+| `BM_BOUNDED_ENABLED` | server only | `0` skips the keeper tick's bounded-market steps (1–3) on this deployment, so a second deployment sharing the registry leaves the bounded markets to the one that runs them |
+
+`/api/near/account` writes `bm.near_accounts` and `/api/near/relay` takes its lock, so both need `supabase/bm/004_near_accounts.sql` applied (and the NEAR keeper needs `003_near.sql`); both files are idempotent and are applied by hand, like the other `supabase/bm` files.
+
 ## Checking the pipeline
 
 ```bash
@@ -59,11 +81,39 @@ npm run vi:audit                     # every live market's score, breakdown, his
 npm run test:bm                      # the pari-mutuel maths (dpm.ts), the settlement rule, the bounded-market tests
 npm run rounds:sol -- e2e            # a full rounds series on devnet against the deployed program; no .env.local needed
 npm run rounds:start                 # the ten liveliest markets; -- "Name" starts daily rounds, -- <uuid> --fast the demo series
-BM_ROUNDS_ENABLED=1 npm run rounds:tick   # the rounds steps of one keeper tick, dry (they run only with the variable); add -- --live for a real one
+BM_ROUNDS_ENABLED=1 npm run rounds:tick   # the rounds steps of one keeper tick, dry (they run only with the variable); -- --live for a real one, -- --bounded adds the bounded markets' steps
 npm run bm:keeper:dry                # the same tick as the cron, dry; -- --live for real
 ```
 
+On NEAR testnet (these read `.env.local`; the ones that sign refuse any network but testnet):
+
+```bash
+npm run test:near                    # the NEAR web layer: account names, the relayer and its policy, the rounds checks, the routes, the start action
+npm run rounds:near -- status        # the contracts' config, the keeper's balances, the series on chain
+npm run rounds:near -- e2e           # two 60-second rounds end to end with the keeper and a throwaway user; --out <dir> keeps each settle's inputs
+npm run near:e2e                     # a new gasless account, then a faucet call and a commit through the relayer; -- --full adds a whole round, -- --series <id> uses an existing series
+npm run rounds:verify -- <series-uuid-or-reference> <round>   # a settled NEAR round's commitment against the chain and vi_history; read-only
+npm run rounds:start -- <uuid> --chain near                    # daily rounds on NEAR; --fast, --finder <account>, --dry as on Solana
+BM_ROUNDS_ENABLED=0 BM_NEAR_ROUNDS_ENABLED=1 npm run rounds:tick   # NEAR's rounds step alone, dry; -- --live sends
+```
+
 `cargo test -p vi_rounds --lib` and `cargo test -p bounded_vi --lib` run the programs' math tests on a plain Rust toolchain; CI runs both on every push under `programs/`.
+
+## NEAR contracts
+
+The contracts are in `near/`, a Cargo workspace of its own with Rust 1.99.1 pinned in `near/rust-toolchain.toml` and cargo-near 0.23.0 ([near/README.md](../near/README.md)). This machine's compiler crashes under parallel load, so every build runs pinned to four cores with two jobs and its output in `/tmp`, which also keeps the build off `/home`:
+
+```bash
+cd near
+export CARGO_TARGET_DIR=/tmp/atnx-near-target CARGO_BUILD_JOBS=2
+(cd usdg && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
+(cd rounds && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
+taskset -c 0,3-5 cargo test -p rounds --lib     # math.rs's own tests plus the contract's
+taskset -c 0,3-5 cargo test -p usdg
+taskset -c 0,3-5 cargo test -p integration-tests -- --test-threads=1   # near-sandbox, after both wasm builds
+```
+
+If a build dies with SIGSEGV or "rustc interrupted", run it again; finished crates are kept. There is no Docker here, so local builds are non-reproducible: they embed `version` and `link` but no build metadata, and their bytes differ from CI's. The wasm files to deploy come from CI, which builds them with `cargo near build reproducible-wasm` (see Deployment).
 
 ## Seeding trending markets
 
@@ -106,8 +156,10 @@ by the web app at `/privacy`, so deploy the web app before submitting. Bump
 # Deployment
 
 - Hosted on **Vercel**, project `atnx-markets`, domain `markets.atnx.app`, Root Directory `atnx-web`. The GitHub integration builds every push: a pull request gets a preview, a push to `main` deploys production. (Until 2026-10-02 the root directory was `.` and only CLI deploys from inside `atnx-web` worked; a `vercel deploy` from inside `atnx-web` now fails, so link at the repository root if a CLI deploy is ever needed.)
-- `vercel.json` schedules `/api/bm/keeper` every 5 min (bounded markets, then rounds when `BM_ROUNDS_ENABLED=1`); Vercel runs crons on the production deployment only. The VI refresh crons stay on production ATNX, whose history this build reads.
+- `vercel.json` schedules `/api/bm/keeper` every 5 min (bounded markets unless `BM_BOUNDED_ENABLED=0`, then the rounds: Solana's when `BM_ROUNDS_ENABLED=1`, NEAR's when `BM_NEAR_ROUNDS_ENABLED=1`); Vercel runs crons on the production deployment only. The VI refresh crons stay on production ATNX, whose history this build reads.
 - Solana programs are built on GitHub Actions, never locally: `.github/workflows/solana-build.yml` runs `cargo test -p vi_rounds --lib` and `cargo test -p bounded_vi --lib` on the host toolchain, then `anchor build` for `bounded_vi` and `vi_rounds` with Agave pinned to 4.3.0, and uploads one artifact per program. Deploy from the laptop with `programs/deploy.sh vi_rounds` (needs `gh` and the Solana CLI; pays from `~/.config/solana/devnet.json` unless `PAYER` is set; `--dry` only fetches the artifact and copies the IDL); it deploys the artifact of the newest green run on the current branch (`BRANCH=main` to pick another) with the committed keypair in `keys/` and copies the IDL and types to `atnx-web/lib/bm/idl/`. Then `npm run rounds:sol -- e2e` checks the deploy (after a fresh program id, `npm run rounds:sol -- init` first, and the printed mint goes in `NEXT_PUBLIC_BM_SOL_USDG`), and a commit of the new IDL plus a push to `main` ships it to the site. Details in [programs/README.md](../programs/README.md).
+- The NEAR build is a second Vercel project, `quest-fi/atnx-near` (`atnx-near.vercel.app`), created 2026-11-09: Root Directory `atnx-web`, linked to `main` of `arkanine1000/atnx-near`, so every push builds (a preview for a branch, production for `main`), and the same `vercel.json` cron runs on its production deployment. Production and preview hold the NEAR variables above, `NEXT_PUBLIC_BM_CHAIN` and `BM_BOUNDED_ENABLED`, with the Supabase variables of the shared database. `markets.atnx.app` moves to this project later; until then it stays on `atnx-markets`.
+- NEAR contracts are built on GitHub Actions: `.github/workflows/near-build.yml` runs the unit tests, builds both contracts with `cargo near build reproducible-wasm` in the Docker image pinned in each `Cargo.toml`, runs the near-sandbox tests on those files, and uploads `usdg-wasm` and `rounds-wasm` with their SHA-256 (hex, and base58 as NEAR's `code_hash`) and embedded NEP-330 metadata in the job summary. The wasm names its commit: two runs on one commit built byte-identical files, and the builds of two commits differ only where the commit is written. Details, and how to check a deployed contract against the repository, in [near/README.md](../near/README.md#reproducible-builds). Nothing deploys the contracts from CI.
 - `next.config.ts` is intentionally empty — all routing/CORS lives in `proxy.ts` and route handlers.
 - The fork's extension defaults to `https://markets.atnx.app` (the published upstream extension to www.atnx.app); no rebuild needed to switch between it and a local server.
 
@@ -131,4 +183,5 @@ curl -H "x-vercel-protection-bypass: $BYPASS" https://<preview-url>/app
 - Google Trends has no official API. Rate-limit hiccups surface as an unknown reading and the refresh keeps the market's last value.
 - The local Rust compiler crashes, so nothing on the Solana side builds on the laptop; a program change means a push and a CI round trip before it can be deployed.
 - Rounds: the keeper is the oracle and the only key that opens and settles; the faucet and starting a series are open to anyone on devnet; a rollover lands in round N+2; pausing a series ends it. More in [rounds.md](rounds.md#known-limits).
+- Rounds on NEAR: the contracts pay their own storage on testnet; a lost browser key means a fresh account; nothing calls `withdraw_fees` yet, so the fee counters only grow. More in [rounds.md](rounds.md#on-near-testnet).
 - Each free source has a hard ceiling (YouTube's 100 searches a day, Apify's plan limit, the X tweet budget); when one runs out the source goes dark until its window resets and the stored reading stands in for up to two days.

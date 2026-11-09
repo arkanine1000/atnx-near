@@ -22,7 +22,7 @@ This repository is ATNX's on-chain build, on **Solana**, entered in the **Coloss
 | | |
 |---|---|
 | Live app | https://markets.atnx.app (production ATNX at https://atnx.app) |
-| Programs and contracts | `programs/` (Anchor, Solana) and `contracts/` (Foundry, EVM). Addresses in the table below. |
+| Programs and contracts | `programs/` (Anchor, Solana), `near/` (near-sdk, NEAR) and `contracts/` (Foundry, EVM). Addresses in the table below. |
 | Design | Rolling rounds: [docs/rounds.md](docs/rounds.md) (Pennock's dynamic pari-mutuel market). Bounded markets, the first iteration: "ATNX devnet market design: bounded VI markets", 2026-09-30, summarised in [docs/bounded-markets.md](docs/bounded-markets.md) |
 | Status | Rounds live on production since 2026-10-05. Details in [docs/rounds.md](docs/rounds.md), *Built / not built* |
 
@@ -32,6 +32,7 @@ This repository is ATNX's on-chain build, on **Solana**, entered in the **Coloss
 |---|---|---|---|
 | Solana devnet, `vi_rounds` (Anchor, rolling rounds) | [`5PsYwtsaexsFLGz6pwnVAtBTLzRqmGHxQJFnYWv42aQX`](https://explorer.solana.com/address/5PsYwtsaexsFLGz6pwnVAtBTLzRqmGHxQJFnYWv42aQX?cluster=devnet) | mint [`9LurpUewiUvun2sUiDL4wjRKog91CqRFXXshaTGnXGHx`](https://explorer.solana.com/address/9LurpUewiUvun2sUiDL4wjRKog91CqRFXXshaTGnXGHx?cluster=devnet) | deployed 2026-10-05; config PDA `2w99R2Pr6GsiWXGev8kVcRp52w7kmmivvuB7JUmagnWe`; fee 100 bps, finder 2000 bps of it; authority, keeper and treasury `5a5yfYQBX3QYqWZ55agFTHQoxg5Lc4TvT8g3roMfqa2S` |
 | Solana devnet, `bounded_vi` (Anchor) | [`5xdrKVQPYpCJ4YkzDysTmV3XPQN5vVwHV1RhAQ2xvABG`](https://explorer.solana.com/address/5xdrKVQPYpCJ4YkzDysTmV3XPQN5vVwHV1RhAQ2xvABG?cluster=devnet) | mint [`9cgEJ7nexdmx2n4cDFaC93jvJnfreSNnTjkAXGZtxLEd`](https://explorer.solana.com/address/9cgEJ7nexdmx2n4cDFaC93jvJnfreSNnTjkAXGZtxLEd?cluster=devnet) | deployed 2026-10-01, presale upgrade 2026-10-11; config PDA `4HuF4aigjHakgQxtfL7S9BmnDxMx1B9sBa1WRavGCQf1` |
+| NEAR testnet, `rounds` (near-sdk, rolling rounds) | [`rounds.atnx.testnet`](https://testnet.nearblocks.io/address/rounds.atnx.testnet) | USDG, NEP-141: [`usdg.atnx.testnet`](https://testnet.nearblocks.io/address/usdg.atnx.testnet) | fee 100 bps, finder 2000 bps of it; owner and treasury `atnx.testnet`, keeper `keeper.atnx.testnet`; the NEAR build of the site is [atnx-near.vercel.app](https://atnx-near.vercel.app). See [docs/rounds.md](docs/rounds.md#near-testnet) |
 | EVM port, Robinhood Testnet (46630) | [`0x0cDab5681546b887bA8772290869ef9001B2d47C`](https://explorer.testnet.chain.robinhood.com/address/0x0cDab5681546b887bA8772290869ef9001B2d47C) | [`0x3cCAADFa951Cd18fd68c2575402ee28E390Bf641`](https://explorer.testnet.chain.robinhood.com/address/0x3cCAADFa951Cd18fd68c2575402ee28E390Bf641) | deployed 2026-10-01, block 127197452 |
 
 How rounds work, what is built and how to run the keeper: [docs/rounds.md](docs/rounds.md). The first iteration, bounded markets (the `bounded_vi` program, and its EVM port on Robinhood Testnet, both still deployed): [docs/bounded-markets.md](docs/bounded-markets.md).
@@ -52,7 +53,7 @@ atnx/
 
 | | |
 |---|---|
-| [docs/rounds.md](docs/rounds.md) | Rolling VI rounds on Solana devnet: presale, the pari-mutuel maths with a worked example, the ticket, the keeper, build status, operations |
+| [docs/rounds.md](docs/rounds.md) | Rolling VI rounds on Solana devnet and NEAR testnet: presale, the pari-mutuel maths with a worked example, the ticket, the keeper, build status, operations |
 | [docs/bounded-markets.md](docs/bounded-markets.md) | The first iteration, bounded markets: bounds, shares, resolution, auto-roll, keeper operations, build status |
 | [docs/architecture.md](docs/architecture.md) | The pipeline at a glance and the tech stack |
 | [docs/web-app.md](docs/web-app.md) | Routes, API, key libraries, React context and components, the auth flow |
@@ -61,5 +62,5 @@ atnx/
 | [docs/database.md](docs/database.md) | Supabase tables, RPCs, storage |
 | [docs/extension.md](docs/extension.md) | The Chrome extension's moving parts, permissions and config |
 | [docs/development.md](docs/development.md) | Local setup, env vars, checking the pipeline, seeding, extension dev and release, deployment, known rough edges |
-| [contracts/README.md](contracts/README.md), [programs/README.md](programs/README.md) | The EVM contracts and the two Solana programs, with build and deploy steps |
+| [contracts/README.md](contracts/README.md), [programs/README.md](programs/README.md), [near/README.md](near/README.md) | The EVM contracts, the two Solana programs and the two NEAR contracts, with build steps (deploy steps for the first two; reproducible builds for NEAR) |
 | [atnx-web/README.md](atnx-web/README.md) | How a submission is decided, stage by stage |
