@@ -3,6 +3,25 @@ name = "rounds"
 description = "Rolling VI rounds on NEAR: Pennock's dynamic pari-mutuel market, ported from programs/vi_rounds"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+
+# NEP-330 reproducible build: `cargo near build reproducible-wasm` (run from
+# this directory) clones HEAD to a temporary directory, so uncommitted changes
+# are left out, and builds it in this image with this command. The image tag
+# is descriptive; the digest identifies it. Keep the tag's cargo-near and Rust
+# versions in step with CARGO_NEAR_VERSION in .github/workflows/near-build.yml
+# and with near/rust-toolchain.toml.
+[package.metadata.near.reproducible_build]
+image = "sourcescan/cargo-near:0.23.0-rust-1.99.1"
+image_digest = "sha256:8013f039e8005627f10ae66b5519d1a6eeeed7d7aef4b5067d5e9a86c4302fcc"
+passed_env = []
+container_build_command = [
+    "cargo",
+    "near",
+    "build",
+    "non-reproducible-wasm",
+    "--locked",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -1,10 +1,12 @@
 # Rolling VI rounds
 
-The second iteration of the hackathon build, on Solana devnet. Each subject gets a series of back-to-back rounds on its Virality Index, and every round asks one question: will the VI, averaged over the round's last 30 minutes, end at or above where it stood when the round opened? While round N trades, round N+1 takes presale commits. The engine is Pennock's dynamic pari-mutuel market, so winners are paid out of the losing side's money. The platform's only stake is the keeper's opening ante, 10 USDG on a side nobody has backed, which wins or loses like anyone's money; beyond that it is never the other side of a trade. This replaces the [bounded markets](bounded-markets.md), which stay deployed. Program addresses are in the [README](../README.md); build and deploy steps for the program are in [programs/README.md](../programs/README.md).
+The second iteration of the hackathon build, first on Solana devnet and since 2026-11-08 on NEAR testnet as well. Each subject gets a series of back-to-back rounds on its Virality Index, and every round asks one question: will the VI, averaged over the round's last 30 minutes, end at or above where it stood when the round opened? While round N trades, round N+1 takes presale commits. The engine is Pennock's dynamic pari-mutuel market, so winners are paid out of the losing side's money. The platform's only stake is the keeper's opening ante, 10 USDG on a side nobody has backed, which wins or loses like anyone's money; beyond that it is never the other side of a trade. This replaces the [bounded markets](bounded-markets.md), which stay deployed. Program addresses are in the [README](../README.md); build and deploy steps for the program are in [programs/README.md](../programs/README.md).
+
+The site is moving to NEAR, and the Solana series wind down at the swap. The mechanics below are the same on both chains; [NEAR testnet](#near-testnet) covers what the NEAR contracts, the gasless accounts, the oracle commitment and the keeper's second chain change. The NEAR contracts' methods, build and tests are in [near/README.md](../near/README.md).
 
 ## How it works
 
-The program is `programs/vi_rounds`: `src/lib.rs` holds the accounts and instructions, `src/math.rs` the arithmetic. Money is mock USDG with 6 decimals, minted by the program's own `faucet` (up to 10,000 per call, testnet only).
+The program is `programs/vi_rounds`: `src/lib.rs` holds the accounts and instructions, `src/math.rs` the arithmetic. Money is mock USDG with 6 decimals, minted by the program's own `faucet` (up to 10,000 per call, testnet only). On NEAR the same rules run in `near/rounds`, whose `src/math.rs` is a verbatim copy of the Solana file, over an internal ledger ([NEAR testnet](#near-testnet)).
 
 ### Why these parameters
 
@@ -67,7 +69,7 @@ payout = net stake + shares · M_lose / N_win
 
 and a losing one nothing. This is variant I: winning stakes are refunded and only the losing side's money is redistributed, so a correct bet never gets back less than its net stake. If no print has landed in the window 30 minutes after the close, the keeper voids the round and everyone gets their net stakes back.
 
-`settle` also takes a 32-byte `commitment`, reserved for a hash of the oracle's inputs; it is zeros for now.
+`settle` also takes a 32-byte `commitment`, reserved for a hash of the oracle's inputs. Solana settles post zeros. On NEAR the keeper posts the SHA-256 of the inputs it settled on and keeps the inputs in the registry ([Oracle commitment](#oracle-commitment)).
 
 ### Claim and rollover
 
@@ -147,20 +149,20 @@ Since 2026-10-06, once the rounds program is deployed (`isRoundsDeployed()`), a 
 
 ## Keeper
 
-The rounds step is step 4 of the existing keeper tick (`atnx-web/lib/bm/keeper-run.ts`, the Vercel cron every five minutes, which runs on production deployments only), runs only when `BM_ROUNDS_ENABLED=1`, and lives in `atnx-web/lib/bm/rounds.ts`. It stops starting new work 45 seconds into the tick; the next tick picks up where it left off. Within a tick:
+The rounds steps are step 4 of the existing keeper tick (`atnx-web/lib/bm/keeper-run.ts`, the Vercel cron every five minutes, which runs on production deployments only). The steps themselves live in `atnx-web/lib/bm/rounds-core.ts`, and each chain plugs in through an adapter: `rounds.ts` for Solana, which runs only when `BM_ROUNDS_ENABLED=1`, and `rounds-near.ts` for NEAR, which runs only when `BM_NEAR_ROUNDS_ENABLED=1` ([The keeper on both chains](#the-keeper-on-both-chains)). A chain's step stops starting new work 45 seconds into the tick; the next tick picks up where it left off. Within a tick, for each chain:
 
 1. Reconcile rounds a previous run left `opening` or `settling` (older than two minutes) from the chain.
 2. Pending series (a start that crashed half way): create on chain, or adopt the series if it is already there.
 3. Live rounds at least `BM_SETTLE_DELAY_SECS` (five minutes) past their close: average the window's prints and settle, or void when no print has arrived 30 minutes after the close.
 4. Presale rounds whose time has come, on a series with no live round: check the VI is fresh (otherwise `open-deferred`), ante an empty side, open at the current VI, insert the next presale with its opening time set to the new round's close.
 5. Paused series: pause on chain if needed and void the presale round (refunds). A live round still settles in step 3; once nothing is left to settle, the series reads `ended`.
-6. The keeper's antes: settled or void rounds the keeper anted on, finished in the last 7 days (by the registry row's `updated_at`, at most 50, from `listRoundsToClaim` in `rounds-registry.ts`). Where the keeper's position account still exists, claim it (`sendClaim` in `sol.ts`): the payout or refund goes to the keeper's USDG account, created if missing, and the position's rent comes back; a losing ante pays nothing but its account still closes. A position already claimed is gone and is skipped. Each claim logs `claimed-ante` and counts in `claimed` on the tick's report. The first live run, on 2026-10-06, recovered 39.6 USDG and the rent from the two fast test rounds.
+6. The keeper's antes: settled or void rounds the keeper anted on, finished in the last 7 days (by the registry row's `updated_at`, at most 50, from `listRoundsToClaim` in `rounds-registry.ts`). Where the keeper's position account still exists, claim it (on Solana `sendClaim` in `sol.ts`): the payout or refund goes to the keeper's USDG account, created if missing, and the position's rent comes back; a losing ante pays nothing but its account still closes. On NEAR the claim credits the keeper's balance inside the contract and deletes the position. A position already claimed is gone and is skipped. Each claim logs `claimed-ante` and counts in `claimed` on the tick's report. The first live run, on 2026-10-06, recovered 39.6 USDG and the rent from the two fast test rounds.
 
 Settling N frees the live slot that opening N+1 needs, and opening N+1 frees the presale slot for N+2, which is why the order matters. Round N+1 can open only after N settles, so it opens 5 to 10 minutes after N closes: the settle delay plus the wait for the next tick.
 
 The program checks `close_at` and `trade_until` against the chain clock, which ran about six seconds behind the wall clock on devnet during the lifecycle test. The settle delay keeps the settle well clear of that; a settle sent right at the close would fail with `TooEarly`.
 
-The keeper signs with a plain keypair wallet (`keypairWallet` in `atnx-web/lib/bm/sol.ts`), not Anchor's `Wallet` class: that class exists only in Anchor's CommonJS build, and the bundle Turbopack builds has no such export.
+On Solana the keeper signs with a plain keypair wallet (`keypairWallet` in `atnx-web/lib/bm/sol.ts`), not Anchor's `Wallet` class: that class exists only in Anchor's CommonJS build, and the bundle Turbopack builds has no such export.
 
 Registry states (`atnx-web/supabase/bm/002_rounds.sql`):
 
@@ -169,13 +171,105 @@ Registry states (`atnx-web/supabase/bm/002_rounds.sql`):
 | `bm.series` | `pending` → `active` → `paused` → `ended`, or `failed` |
 | `bm.rounds` | `presale` → `opening` → `live` → `settling` → `settled` or `void` (`failed` is allowed by the schema) |
 
-The registry is not the ledger: commits, shares and payouts live in program accounts. `opening` and `settling` mark a transaction in flight, and every move is a compare-and-set update. Unique partial indexes allow one running series per market, chain and speed, one round in flight or live per series, and one presale per series. When the registry and the chain disagree, the chain wins: reconciliation moves the row to what the chain shows, or, when the transaction never landed, puts it back so the same tick retries.
+Both chains share these tables; `bm.series.chain` tells their rows apart ([The registry's chain column](#the-registrys-chain-column)). The registry is not the ledger: commits, shares and payouts live in program accounts on Solana and in the contract's state on NEAR. `opening` and `settling` mark a transaction in flight, and every move is a compare-and-set update. Unique partial indexes allow one running series per market, chain and speed, one round in flight or live per series, and one presale per series. When the registry and the chain disagree, the chain wins: reconciliation moves the row to what the chain shows, or, when the transaction never landed, puts it back so the same tick retries.
 
 Dry mode reads everything, logs `would-settle`, `would-open`, `would-ante`, `would-void`, `would-claim-ante` and the like with their numbers, and writes and sends nothing.
 
+## NEAR testnet
+
+The same rounds run on NEAR testnet in two contracts under `near/`, and the site is moving there: `markets.atnx.app` will move to the NEAR deployment, and the Solana series wind down at the swap. Until then the NEAR build runs as its own Vercel project ([Operations](#operations)). Everything in [How it works](#how-it-works) holds unchanged: the presale, the open at the VI, Pennock's market with price function I, the 30-minute averaged settle, variant I payouts, the rollover into N+2, the 1 % fee with 20 % of it to the finder, and the keeper's 10 USDG ante. `near/SPEC.md` lists where the port differs from `programs/vi_rounds/src/lib.rs` and why; the methods, events and error messages are in [near/README.md](../near/README.md).
+
+### Contracts and accounts
+
+| Account | Role |
+|---|---|
+| `usdg.atnx.testnet` | USDG, "ATNX test USD": a NEP-141 test token with 6 decimals, minted only by the rounds contract. A transfer registers an unregistered receiver at the token's expense, so nobody calls `storage_deposit` first |
+| `rounds.atnx.testnet` | The rounds contract: series, rounds, positions, fee counters and every account's USDG balance |
+| `keeper.atnx.testnet` | The keeper: the only account that creates series, opens, settles and voids rounds. It antes from its own balance in the contract, signs its own transactions and pays their gas |
+| `atnx.testnet` | Owner of the rounds contract's config, the treasury (the platform's share of the fees is credited to its balance), and the parent of every user account, `<handle>.atnx.testnet` |
+
+The rounds config on chain, read on 2026-11-09: fee 100 bps, finder share 2,000 bps of the fee, 8 series created. A series copies the fee terms when it is created, as on Solana.
+
+### The internal ledger, and why
+
+Each account has a USDG balance inside `rounds`. It is funded once, with `faucet` (the contract mints test USDG to itself and credits the caller, up to 10,000 per call) or with `ft_transfer_call` on the token with `rounds` as the receiver. From then on `commit`, `buy`, `claim`, `claim_rollover` and `withdraw_fees` move balances inside the contract and attach no deposit. `withdraw` sends USDG back to the caller's token account. There is no vault per series: the token balance of `rounds` backs every internal balance, pot and fee counter.
+
+The reason is gas. A call that attaches no deposit can be signed by a function-call access key, and such a call can be wrapped in a NEP-366 delegate action that another account sends and pays for. A transfer on the token needs 1 yoctoNEAR attached (`ft_transfer`, `ft_transfer_call`), which a function-call key cannot attach. Keeping the money inside the contract is what lets a user trade from an account that holds no NEAR, behind an ordinary sign-in.
+
+Only `faucet` and `withdraw` call another contract. `faucet` credits the caller in its callback, and only if the mint succeeded; `withdraw` debits first and credits the amount back in its callback if the transfer failed. No round state waits on a promise.
+
+### Accounts behind the sign-in
+
+The NEAR build has no wallet to connect. A user signs in to ATNX with Google or X (Supabase), and the first time the ticket needs an account, or from Settings, the browser makes an Ed25519 key with WebCrypto, non-extractable, stores it in IndexedDB under the ATNX user id (`atnx-web/lib/near/keystore.ts`), and POSTs the public key to `/api/near/account`. Page script can sign with that key but cannot read its bytes.
+
+The route (`atnx-web/lib/near/routes.ts`) picks the account name, `<handle>.atnx.testnet`: the X username, else the ATNX profile handle, cleaned to NEAR's rules (lowercase letters and digits, single `-` or `_` between them), never a reserved name such as `admin`, `keeper` or `treasury`; with a four-character suffix if the name is taken, else `u` and seven random characters. The account id is public on chain, so it is never made from the email or the real name. The parent account then signs one transaction, `CreateAccount` plus `AddKey`, and waits for finality. The new account holds zero NEAR (a zero-balance account, under 770 bytes) and one key, the browser's, added as a function-call key for `rounds.atnx.testnet` and six methods only: `commit`, `buy`, `claim`, `claim_rollover`, `faucet` and `withdraw`, with an allowance of 0.25 NEAR. Each account costs the parent about 0.007 NEAR.
+
+The account is recorded in `bm.near_accounts` (`atnx-web/supabase/bm/004_near_accounts.sql`): the user, the account id, the public key, the state (`creating` while the transaction is in flight, then `active`), the creation transaction and any previous account ids. A signed-in user can read only their own row; only the service role writes.
+
+There is no custody key. The account has no full-access key, ATNX holds no key that can move its balance, and the parent cannot add one. Clearing the site's data, or signing in from another browser, leaves the user without the key. The ticket then offers a new account ("Start a new account here"); the route makes one only when asked (`fresh`), at most five accounts per user in all, and keeps the old ids in `previous_account_ids`. The old account stays on chain with whatever it holds, and nobody can move it.
+
+### The relayer
+
+Every user action is a NEP-366 delegate action that the browser signs (`atnx-web/lib/near/client.ts`) and POSTs to `/api/near/relay`. The relayer (`atnx-web/lib/near/relay.ts`, ported from the testnet prototype in `near/relayer-proto`) wraps it in a transaction that `BM_NEAR_RELAYER_ACCOUNT` signs and pays for. The route checks, in this order, and refuses with a reason code before anything is sent:
+
+1. The user is signed in and has an active account.
+2. The delegate: it re-encodes to the same bytes; its sender is the user's account, a direct sub-account of the parent, and not the relayer; it is signed by the key on record for that account and the signature verifies; its receiver is the rounds contract; it holds one action, a function call to one of the six user methods, with no deposit, at most 100 TGas and at most 1,024 bytes of JSON arguments.
+3. The user's relay lock (`bm.near_relay_acquire`): one delegate per user in flight across serverless instances, because delegate nonces must land in order; the lock expires after 60 seconds. At most 200 relays per user per hour.
+4. The chain: the delegate has not expired and is valid for at most 600 more blocks, its nonce is above the key's, and the key is a function-call key scoped to the rounds contract and that method. A full-access key is refused.
+5. The contract (`atnx-web/lib/near/rounds-check.ts`): the round named is the series' presale or live round, the series is not paused, the balance covers the amount, a buy's quote meets its `min_shares`, a claim has a position behind it. The refusal carries the contract's own error text. A faucet call is refused for an account already holding 10,000 USDG or more.
+
+The relayer also refuses to send when its own spendable balance is under 0.05 NEAR. The client attaches 30 TGas to plain calls and 50 TGas to `faucet` and `withdraw`; unused gas goes back to the relayer. A delegate that passes every check and still fails on chain (the chain moved between the check and the send) costs the relayer its gas, and the route returns the contract's panic message.
+
+### Commits and buys name their round
+
+`commit` and `buy`, and the `quote_buy` view, take the `round_index` they act on and fail unless it is still the series' presale round (a commit) or live round (a buy): "round is not the series' presale round", "round is not the series' live round". A commit sent just as the keeper opens round N therefore fails instead of landing in round N+1, which is what Solana gets from the client naming the round's account. The ticket sends the round it shows, and the relayer's contract check refuses a stale one before paying.
+
+### Oracle commitment
+
+On NEAR, `settle` carries a commitment to what the keeper settled on (`atnx-web/lib/bm/commitment.ts`). When a live round is due, the keeper builds its settle inputs:
+
+| Field | Value |
+|---|---|
+| `version` | 1 |
+| `market_id` | the ATNX market's uuid, lowercase |
+| `series_reference` | the series' 64-hex reference |
+| `round_index` | the round |
+| `window_start`, `window_end` | the round's `close_at` on chain, less the settlement window, and `close_at` |
+| `prints` | the `vi_history` prints recorded in `[window_start, window_end]`, as `{ at, vi }`, sorted by time, then by value |
+| `average_e2` | the posted `settle_e2`: 100 × the mean of those prints in that order, rounded to two decimals |
+
+Timestamps are UTC with six fractional digits and a `Z`, as Postgres records them. The commitment is the SHA-256 of the inputs' canonical JSON (keys sorted, no whitespace, numbers as `JSON.stringify` writes them, which is RFC 8785's number form), as 64 lowercase hex characters. The keeper writes the inputs to `bm.rounds.settle_inputs` and the hash to `bm.rounds.settle_commitment` with the move to `settling`, before it sends the settle, so a settle that lands while the run dies still has its inputs on record. The contract stores the commitment on the round and emits it in `round_settled`.
+
+`npm run rounds:verify -- <series-uuid-or-reference> <round>` checks a settled NEAR round without writing or sending anything. It re-canonicalises the stored inputs (jsonb reorders keys), recomputes the hash and compares it with the round's `commitment` on chain, recomputes the average from the prints and compares it with `settle_e2`, checks the window against the round's close and the series' settlement window and the market, reference and round against what the registry (or, with `--onchain`, the chain) says, and, unless `--no-history` is given, reads `vi_history` for the window again and says whether it still holds the same prints. `--onchain <near-series-id> <round> --inputs <file.json>` checks a saved inputs file against the chain without the registry; `npm run rounds:near -- e2e --out <dir>` writes one per settle. The exit code is 0 when everything matches, 1 on a mismatch, 2 when the round cannot be checked (not NEAR, not settled, no inputs).
+
+The commitment makes a settlement checkable after the fact; it does not stop the keeper from choosing its prints. Solana settles keep the zero commitment, and the Solana keeper averages the prints in the order the database returns them.
+
+### The keeper on both chains
+
+Step 4 of the tick runs each chain's rounds step side by side, each on its own registry rows, so one chain's trouble or slowness never holds up the other; both stop starting new work 45 seconds into the tick. Three variables decide what a deployment's tick does:
+
+| Variable | Effect |
+|---|---|
+| `BM_ROUNDS_ENABLED=1` | The Solana devnet rounds step |
+| `BM_NEAR_ROUNDS_ENABLED=1` | The NEAR testnet rounds step, signed as `BM_NEAR_KEEPER_ACCOUNT` with `BM_NEAR_KEEPER_SECRET` |
+| `BM_BOUNDED_ENABLED=0` | Skips steps 1–3, the bounded markets, so a second deployment sharing the registry leaves them to the deployment that runs them |
+
+On NEAR the keeper finds a series by its reference (`get_series_by_reference`) and calls it by the contract's numeric id, which the registry keeps in `bm.series.onchain_series_id` and which is checked against the chain on every read. Rounds and positions have no addresses. The ante comes out of the keeper's balance inside the contract, which the keeper tops up from the faucet to 10,000 USDG whenever it is below what the antes need; a claimed ante goes back into that balance. The keeper's NEAR client refuses to sign when `NEXT_PUBLIC_BM_NEAR_NETWORK` is not `testnet`. NEAR's counts also come back under `near` in the tick's report, and its `bm.keeper_log` entries carry `"chain": "near:testnet"` in `detail`.
+
+### The registry's chain column
+
+Both chains share `bm.series` and `bm.rounds`; `bm.series.chain` is `solana:devnet` or `near:testnet`. A NEAR row holds the contract account in `program_id`, the finder's NEAR account id in `finder_wallet`, the contract's series id in `onchain_series_id` and null in `series_pubkey`; its rounds leave `round_pubkey` null, and its transaction columns hold NEAR transaction hashes. `atnx-web/supabase/bm/003_near.sql` adds `onchain_series_id`, `settle_inputs` and `settle_commitment`, checks that only constrain rows whose chain starts with `near:` (testnet only, NEAR account ids, no `series_pubkey`, a positive series id), and a unique index that allows one registry row per on-chain NEAR series. It is additive; the Solana rows pass its checks as they are. 002's unique index allows one running series per market, chain and speed, so a market can run a Solana series and a NEAR series at once.
+
+Every list the keeper works from takes the chain, and rounds are filtered through an inner join on their series inside the query, so one chain's rows never crowd the other's out of a limit. The site reads one chain: with `NEXT_PUBLIC_BM_CHAIN=near` the market page, the list badges, the portfolio and `/api/bm/rounds` read the `near:testnet` rows, and with anything else the `solana:devnet` rows, as before NEAR existed. A series of the other chain reads as no series (`/api/bm/rounds?series=` returns 404 for it).
+
+### What the trader sees on NEAR
+
+The NEAR ticket (`atnx-web/components/rounds/NearRoundTicket.tsx`) has the Solana ticket's states, panes and copy ([The ticket](#the-ticket)), with the wallet replaced by the ATNX sign-in: "Sign in to trade" ("Sign in to commit" before a round opens), then "Setting up your account…" while the account is created, then "Get 1,000 test USDG" or the ticket itself. The footer's note reads "Testnet · test USDG, no value." where Solana's reads "Devnet · mock USDG, no value." "Start rounds" needs an active account, which becomes the finder: the server takes it from the session and `bm.near_accounts`, never from the browser, and the keeper creates the series on chain. An account whose key is in another browser is offered a new one in plain words. The portfolio lists the account's positions (`positions_of`); Settings shows the account with its NearBlocks link, the test USDG balance, the faucet and what a lost browser key means. A fast series can be started from the site only under the same rule as on Solana (`next dev`, or `BM_FAST_FROM_CLIENT=1`).
+
 ## Built / not built
 
-As of 2026-10-06.
+### Solana devnet, as of 2026-10-06
+
 
 - [x] Program `vi_rounds` (Anchor 0.31.1): series, presale, open, buy, settle, void, claim, rollover, fees, faucet
 - [x] Math unit tests on the host (`cargo test -p vi_rounds --lib`): `ln` against a reference table and a 2,000-point sweep, monotonicity, the worked example, presale clearing, fee split, a randomised payout-conservation run, the ratio cap
@@ -199,13 +293,37 @@ As of 2026-10-06.
 - [ ] A round settled by production's keeper, checked against `vi_history` by hand (same settlements)
 - [ ] Selling a position before settlement: the program has none and the exit is buying the other side; whether to add a hedge button is an [open design question](#open-design-questions)
 - [ ] EVM port
-- [ ] Oracle commitments (the `commitment` field on `settle` is the hook; zeros for now)
+- [ ] Oracle commitments (the `commitment` field on `settle` is the hook; zeros on Solana, built on NEAR below)
 - [ ] Solana trade log on the market page
 - [ ] Rollover crank (rollovers are by hand, one claim at a time)
 - [ ] Extension captions for rounds
 - [ ] Admin tab for rounds (`bm.series`, `bm.rounds` and `bm.keeper_log` are the place to look)
 
+### NEAR testnet, as of 2026-11-09
+
+
+- [x] Contracts `usdg` (NEP-141, NEP-145 and NEP-148 through near-contract-standards) and `rounds` (near-sdk 5.30), ported from `vi_rounds` over an internal ledger; `math.rs` is a verbatim copy
+- [x] `commit`, `buy` and `quote_buy` name their round
+- [x] Tests: `cargo test -p rounds --lib` (math.rs's own tests, plus the worked example with the fee on, a replay of the Solana e2e, settles UP, DOWN and on a tie, void and refunds, pause, a rollover into N+2, fee withdrawal, the error paths and payout conservation), `cargo test -p usdg`, and near-sandbox tests (`integration-tests`: faucet, deposit and withdraw, a full round with three accounts, a refunded withdraw)
+- [x] Deployed on testnet: `usdg.atnx.testnet` and `rounds.atnx.testnet`, with owner and treasury `atnx.testnet`, keeper `keeper.atnx.testnet`, a 100 bps fee and a 2,000 bps finder share. The deployed code is a non-reproducible build: its `contract_source_metadata` has `version` 0.1.0 and no `link` or `build_info`
+- [x] CI (`.github/workflows/near-build.yml`): the unit tests, a reproducible build of each contract in Docker with NEP-330 build metadata, the sandbox tests on those same files, and the wasm uploaded with its SHA-256 and metadata in the job summary (2026-11-09; details in [near/README.md](../near/README.md#reproducible-builds))
+- [x] Keeper step on NEAR beside Solana's, through one orchestration (`rounds-core.ts`), with reconciliation and dry mode
+- [x] Oracle commitments on NEAR settles, the inputs kept in `bm.rounds.settle_inputs`, and `npm run rounds:verify`
+- [x] Scripts: `rounds:near` (`status`, and `e2e`: two 60-second rounds on the deployed contracts with the keeper and a throwaway user, checked against `dpm.ts`), `near:e2e` (the account route and the relayer on testnet without a browser), `rounds:start --chain near`, `rounds:tick` covering NEAR
+- [x] Gasless accounts behind the sign-in, the relayer with its policy, the rounds checks and the relay lock (`npm run test:near`)
+- [x] Registry schema `003_near.sql` (NEAR columns, checks and index) and `004_near_accounts.sql` (`bm.near_accounts` and the relay lock), both applied to production on 2026-11-09
+- [x] Web: the NEAR ticket, "Start rounds" with the signed-in user's account as finder, portfolio, settings, Google and X sign-in; the site reads only its own chain's rows
+- [x] `BM_BOUNDED_ENABLED=0` turns the bounded markets' keeper steps off for a deployment, and `rounds:tick` runs the rounds steps only
+- [x] Merged to `main` of `arkanine1000/atnx-near`: the contracts (PR #1) and the app (PR #2), 2026-11-09
+- [x] Vercel project `quest-fi/atnx-near` (`atnx-near.vercel.app`, created 2026-11-09), linked to the repository's `main`, with the NEAR variables on production and preview and the keeper cron
+- [ ] `markets.atnx.app` moved to the NEAR deployment, and the Solana series wound down
+- [ ] A CI-built, reproducible wasm deployed, so the code on chain can be checked against the repository; explorer verification also needs the repository public
+- [ ] Anything that calls `withdraw_fees` besides the e2e
+- [ ] Storage charged at deposit time rather than paid by the contracts
+
 ## Known limits
+
+The list below was written for Solana devnet. The limits that come from the mechanics and the keeper hold on NEAR too; what NEAR adds or changes is under [On NEAR testnet](#on-near-testnet).
 
 - Centralised oracle: the keeper reads the VI history that production ATNX writes and posts the average. The VI itself is computed by production ATNX.
 - Trading stops when the settlement window starts. The next round keeps taking commits on chain, but the ticket does not offer them while a round is live; a rollover still lands there.
@@ -226,6 +344,18 @@ As of 2026-10-06.
 - The faucet and series start are open to anyone (testnet only): one running series per market and speed, the keeper pays the rent.
 - The ticket's fast toggle renders only under `next dev` (`NODE_ENV` is `production` on every Vercel deployment, previews included), and `startSeriesAction` ignores `fast=true` on a production build unless `BM_FAST_FROM_CLIENT=1` is set, so a wallet cannot fill production with hourly series. On production the intended route is `rounds:start -- <uuid> --fast` from the laptop.
 
+### On NEAR testnet
+
+- Storage is paid by the contracts. `rounds` and `usdg` pay for their state from their own NEAR balance, which is fine on testnet: anyone can make `rounds` store a position by committing two units, or make `usdg` register an account by sending it one unit. A claimed position is deleted, which frees its storage. Once a contract's balance no longer covers its storage, every call that adds state fails until someone sends it NEAR. On 2026-11-09 `rounds` held 3.20 NEAR against 250,894 bytes of state (2.51 NEAR of it locked for storage) and `usdg` 2.20 NEAR against 164,326 bytes (1.64 NEAR). Mainnet would charge storage at deposit time.
+- A lost browser key means a fresh account. There is no custody key and no recovery: clearing the site's data, or moving to another browser, strands the old account with its balance and positions, and the user starts again with a new one, at most five in all.
+- `withdraw_fees` is not called by anything yet: not the keeper, not the site. Anyone may call it, but not from a user account: the account's key does not cover it and the relayer refuses it. Only `rounds:near -- e2e` calls it, on its own series.
+- So the fee counters only grow. Each series' `finder_fees` and `platform_fees` (in `get_series`) hold every fee since the series started, including those paid into void rounds; none of it is in the finder's or the treasury's balance until `withdraw_fees` runs.
+- The fee is unchanged: 1 % on every commit, buy and rollover, rounded up, with 20 % of it to the finder, copied into each series when it is created.
+- The relayer pays every user's gas and the parent pays for each new account (about 0.007 NEAR). A user gets at most 200 relayed calls an hour, one at a time, and no faucet call once holding 10,000 USDG; the relayer stops sending below 0.05 NEAR of its own.
+- The deployed contracts predate the reproducible build, so their code cannot be checked against the repository yet; and `arkanine1000/atnx-near` is private, so explorer verification would fail even for a reproducible deploy.
+- The keeper is still the oracle. The commitment records what it settled on and `rounds:verify` checks that against `vi_history`, but nothing on chain checks the prints.
+- The keeper pays its own gas from `keeper.atnx.testnet`'s NEAR (0.48 NEAR on 2026-11-09); nothing tops that up.
+
 ## Operations
 
 - Env vars (see [development.md](development.md) for the full table and `atnx-web/.env.local.example`): `BM_ROUNDS_ENABLED=1` turns the keeper step on; `BM_SOL_KEEPER_SECRET` is the keeper key; `NEXT_PUBLIC_BM_SOL_PROGRAM`, `NEXT_PUBLIC_BM_SOL_USDG`, `NEXT_PUBLIC_BM_SOL_RPC` point the app at the program; `BM_ROUND_SECS` (86400), `BM_SETTLE_WINDOW_SECS` (1800), `BM_FIRST_PRESALE_SECS` (3600), `BM_FAST_ROUND_SECS` (3600), `BM_FAST_SETTLE_WINDOW_SECS` (900), `BM_FAST_FIRST_PRESALE_SECS` (600), `BM_ANTE_USDG` (10) and `BM_SETTLE_DELAY_SECS` (300) override the defaults; `BM_AUTO_ROLL=0` stops the bounded keeper from rolling new bounded markets.
@@ -238,7 +368,20 @@ As of 2026-10-06.
 - Stop a series: set its `bm.series.state` to `paused`. The next tick pauses it on chain and voids its presale round (refunds). Buys on the live round and rollovers stop with the pause, the round still settles and its positions can be claimed, and the series then reads `ended`. There is no resume; start a new series instead.
 - Logs: every non-dry tick writes `bm.keeper_log` rows with `series_id` and `round_id` (`action`, `tx_hash`, `detail`, `error`); `bm.rounds` holds each round's target, settlement average, print count, winner, ante and transactions. Vercel → Logs, filtered on `/api/bm/keeper`, has the cron's output.
 
+### Operations on NEAR testnet
+
+- Env vars: `NEXT_PUBLIC_BM_CHAIN=near` makes a build show and trade the NEAR rounds; `BM_NEAR_ROUNDS_ENABLED=1` turns the NEAR keeper step on, signing as `BM_NEAR_KEEPER_ACCOUNT` with `BM_NEAR_KEEPER_SECRET`; `BM_NEAR_PARENT_SECRET` creates user accounts and `BM_NEAR_RELAYER_ACCOUNT` / `BM_NEAR_RELAYER_SECRET` relay their calls; `BM_BOUNDED_ENABLED=0` leaves the bounded markets to another deployment. The full table, with the `NEXT_PUBLIC_BM_NEAR_*` variables, is in [development.md](development.md#rolling-rounds-on-near-testnet).
+- Vercel: the NEAR build is the project `quest-fi/atnx-near` (`atnx-near.vercel.app`, Root Directory `atnx-web`), linked to `main` of `arkanine1000/atnx-near`, with the same `vercel.json` cron, which runs on its production deployment only. It shares the registry with `markets.atnx.app`, which stays on the `atnx-markets` project until the swap. Production and preview hold the NEAR variables above and `BM_BOUNDED_ENABLED`.
+- Tests: in `near/`, `cargo test -p rounds --lib`, `cargo test -p usdg` and the sandbox tests (on this machine pinned, as in [development.md](development.md#near-contracts)); `cd atnx-web && npm run test:near` (accounts, handles, the relayer and its policy, the rounds checks, the routes, the start action) and `npm run test:bm`, which includes the shared keeper steps, the commitment and the NEAR client.
+- The wasm to deploy is the `usdg-wasm` or `rounds-wasm` artifact of a green `near-build` run, a reproducible build whose metadata names its commit ([near/README.md](../near/README.md#reproducible-builds)). Nothing in the repository deploys it.
+- Check the contracts: `npm run rounds:near -- status` prints the config, the keeper's balances and the series on chain; `npm run rounds:near -- e2e` runs two 60-second rounds end to end with the keeper and a throwaway user it creates under the parent and deletes at the end (`--out <dir>` keeps each settle's inputs); `npm run near:e2e` creates a gasless account and relays a faucet call and a commit through the same code as the routes, into a series it creates with the keeper key (`-- --series <id>` commits into an existing one instead), and `-- --full` adds a whole 60-second round.
+- Start a series: `npm run rounds:start -- <uuid> --chain near` (daily; add `--fast` for the demo series, `--finder <account>` for a finder other than the keeper, `--dry` to validate). On the site, "Start rounds" on the NEAR ticket starts daily rounds with the signed-in user's account as finder.
+- Run a tick by hand: `BM_ROUNDS_ENABLED=0 BM_NEAR_ROUNDS_ENABLED=1 npm run rounds:tick` is a dry run of NEAR's step alone; `-- --live` sends. On the NEAR deployment: `curl -H "Authorization: Bearer $CRON_SECRET" https://atnx-near.vercel.app/api/bm/keeper?dry=1`.
+- Check a settlement: `npm run rounds:verify -- <series-uuid-or-reference> <round>` ([Oracle commitment](#oracle-commitment)).
+- Stop a series: as on Solana, set `bm.series.state` to `paused`; the next tick sets `paused` on chain and voids the presale round.
+- Logs: NEAR's `bm.keeper_log` rows carry `"chain": "near:testnet"` in `detail`; a failure of the whole NEAR step logs as `near-rounds`. Transactions are on NearBlocks (`https://testnet.nearblocks.io/txns/<hash>`).
+
 ## Open design questions
 
 - Selling a position before settlement. The bounded markets could sell back to their pool at any time; a round has no pool to sell into. For and against a "Lock in" hedge button, and the upstream alternative, in `docs/private/open-question-sell.md` (kept out of the public repository). Not decided; for the market design owner.
-- Oracle commitments: what the 32-byte `commitment` on `settle` would point at. A design note, not scheduled, in `docs/private/oracle-commitments-maybe.md`.
+- Oracle commitments: what the 32-byte `commitment` on `settle` would point at. A design note in `docs/private/oracle-commitments-maybe.md`. Answered on NEAR, where it is the hash of the settle inputs ([Oracle commitment](#oracle-commitment)); Solana's settles keep zeros.
