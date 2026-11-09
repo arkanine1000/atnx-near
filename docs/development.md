@@ -62,9 +62,10 @@ The NEAR build of the same rounds ([rounds.md](rounds.md#near-testnet)). The nam
 | `BM_NEAR_PARENT_SECRET` | server only | The parent's key: `/api/near/account` creates user accounts with it, and `rounds:near -- e2e` its throwaway user |
 | `BM_NEAR_RELAYER_ACCOUNT` | server only | The account that signs and pays for relayed calls (`/api/near/relay`) |
 | `BM_NEAR_RELAYER_SECRET` | server only | Its key |
+| `BM_NEAR_GUEST_IP_SALT` | server only | Optional. The salt of the guests' IP hashes in `bm.near_guests`; without it the salt is derived one way from `BM_NEAR_PARENT_SECRET`. Changing it resets the per-IP count |
 | `BM_BOUNDED_ENABLED` | server only | `0` skips the keeper tick's bounded-market steps (1–3) on this deployment, so a second deployment sharing the registry leaves the bounded markets to the one that runs them |
 
-`/api/near/account` writes `bm.near_accounts` and `/api/near/relay` takes its lock, so both need `supabase/bm/004_near_accounts.sql` applied (and the NEAR keeper needs `003_near.sql`); both files are idempotent and are applied by hand, like the other `supabase/bm` files. Both were applied to production on 2026-11-09, from the linked `atnx` checkout with `npx supabase db query --remote --yes -f <file>` (Supabase CLI v3 asks for `--yes` on a hosted write, or `--read-only` for a read).
+`/api/near/guest` and the relay's guest branch need `supabase/bm/005_near_guests.sql` (`bm.near_guests`), which is written but not applied yet. `/api/near/account` writes `bm.near_accounts` and `/api/near/relay` takes its lock, so both need `supabase/bm/004_near_accounts.sql` applied (and the NEAR keeper needs `003_near.sql`); both files are idempotent and are applied by hand, like the other `supabase/bm` files. Both were applied to production on 2026-11-09, from the linked `atnx` checkout with `npx supabase db query --remote --yes -f <file>` (Supabase CLI v3 asks for `--yes` on a hosted write, or `--read-only` for a read).
 
 ## Checking the pipeline
 
@@ -93,6 +94,8 @@ npm run rounds:near -- status        # the contracts' config, the keeper's balan
 npm run rounds:near -- e2e           # two 60-second rounds end to end with the keeper and a throwaway user; --out <dir> keeps each settle's inputs
 npm run near:e2e                     # a new gasless account, then a faucet call and a commit through the relayer; -- --full adds a whole round, -- --series <id> uses an existing series
 npm run rounds:verify -- <series-uuid-or-reference> <round>   # a settled NEAR round's commitment against the chain and vi_history; read-only
+npm run near:guest:e2e               # a guest account through the route code, a faucet, a commit into a 20-minute series it pauses, voids and claims back
+npm run rounds:verify:public -- 8 2  # needs no .env.local: the inputs from the site, the commitment from public RPC, the hash computed here; --site <url>
 npm run rounds:start -- <uuid> --chain near                    # daily rounds on NEAR; --fast, --finder <account>, --dry as on Solana
 BM_ROUNDS_ENABLED=0 BM_NEAR_ROUNDS_ENABLED=1 npm run rounds:tick   # NEAR's rounds step alone, dry; -- --live sends
 ```
