@@ -64,7 +64,7 @@ The NEAR build of the same rounds ([rounds.md](rounds.md#near-testnet)). The nam
 | `BM_NEAR_RELAYER_SECRET` | server only | Its key |
 | `BM_BOUNDED_ENABLED` | server only | `0` skips the keeper tick's bounded-market steps (1–3) on this deployment, so a second deployment sharing the registry leaves the bounded markets to the one that runs them |
 
-`/api/near/account` writes `bm.near_accounts` and `/api/near/relay` takes its lock, so both need `supabase/bm/004_near_accounts.sql` applied (and the NEAR keeper needs `003_near.sql`); both files are idempotent and are applied by hand, like the other `supabase/bm` files.
+`/api/near/account` writes `bm.near_accounts` and `/api/near/relay` takes its lock, so both need `supabase/bm/004_near_accounts.sql` applied (and the NEAR keeper needs `003_near.sql`); both files are idempotent and are applied by hand, like the other `supabase/bm` files. Both were applied to production on 2026-11-09, from the linked `atnx` checkout with `npx supabase db query --remote --yes -f <file>` (Supabase CLI v3 asks for `--yes` on a hosted write, or `--read-only` for a read).
 
 ## Checking the pipeline
 

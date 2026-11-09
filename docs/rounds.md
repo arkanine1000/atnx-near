@@ -311,7 +311,7 @@ The NEAR ticket (`atnx-web/components/rounds/NearRoundTicket.tsx`) has the Solan
 - [x] Oracle commitments on NEAR settles, the inputs kept in `bm.rounds.settle_inputs`, and `npm run rounds:verify`
 - [x] Scripts: `rounds:near` (`status`, and `e2e`: two 60-second rounds on the deployed contracts with the keeper and a throwaway user, checked against `dpm.ts`), `near:e2e` (the account route and the relayer on testnet without a browser), `rounds:start --chain near`, `rounds:tick` covering NEAR
 - [x] Gasless accounts behind the sign-in, the relayer with its policy, the rounds checks and the relay lock (`npm run test:near`)
-- [x] Registry schema `003_near.sql` (NEAR columns, checks and index) and `004_near_accounts.sql` (`bm.near_accounts` and the relay lock)
+- [x] Registry schema `003_near.sql` (NEAR columns, checks and index) and `004_near_accounts.sql` (`bm.near_accounts` and the relay lock), both applied to production on 2026-11-09
 - [x] Web: the NEAR ticket, "Start rounds" with the signed-in user's account as finder, portfolio, settings, Google and X sign-in; the site reads only its own chain's rows
 - [x] `BM_BOUNDED_ENABLED=0` turns the bounded markets' keeper steps off for a deployment, and `rounds:tick` runs the rounds steps only
 - [x] Merged to `main` of `arkanine1000/atnx-near`: the contracts (PR #1) and the app (PR #2), 2026-11-09
