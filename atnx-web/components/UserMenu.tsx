@@ -8,10 +8,14 @@ import { useAuth } from "@/context/AuthContext";
 import { Identicon } from "@/components/Identicon";
 import { ConnectButton } from "@/components/bm/ConnectButton";
 import { shortAddress } from "@/components/bm/format";
+import { isNearChain } from "@/lib/near/config";
 
 // The account is the wallet. Disconnected: a Connect pill where Login
 // used to be. Connected: the face and the menu (handle or address,
 // Settings with the network and mint controls, Admin, Sign out).
+// The NEAR build (NEXT_PUBLIC_BM_CHAIN=near) signs in with Google or X,
+// so there the account is the sign-in: a Sign in pill, then the same menu.
+const NEAR_BUILD = isNearChain();
 export function UserMenu() {
   const { user, loading, openLoginModal, signOut } = useAuth();
   const { address, isConnected } = useAccount();
@@ -55,15 +59,23 @@ export function UserMenu() {
 
   if (loading) return null;
 
-  if (!isConnected || !address) {
+  if (NEAR_BUILD && !user) {
+    return (
+      <button type="button" onClick={openLoginModal} className="h-8 px-3.5 inline-flex items-center rounded-full btn-magenta text-xs font-bold cursor-pointer whitespace-nowrap">
+        Sign in
+      </button>
+    );
+  }
+
+  if (!NEAR_BUILD && (!isConnected || !address)) {
     return <ConnectButton pill label="Connect wallet" />;
   }
 
   // The generated face stands in for the handle: it is seeded by the
   // account id (or the address until the signature lands), so it is
   // ready before the profile loads and survives a rename.
-  const seed = user?.id ?? address;
-  const name = user && handle ? `@${handle}` : shortAddress(address);
+  const seed = user?.id ?? address ?? "";
+  const name = user && handle ? `@${handle}` : address ? shortAddress(address) : "Signed in";
   return (
     <div className="relative" ref={rootRef}>
       <button

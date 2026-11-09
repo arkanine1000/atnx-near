@@ -1,9 +1,11 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Suspense,
+  type ComponentProps,
   useCallback,
   useEffect,
   useMemo,
@@ -17,6 +19,7 @@ import { ChainTradeLog } from "@/components/bm/ChainTradeLog";
 import { PriceChip } from "@/components/bm/PriceChip";
 import { useMyTrades } from "@/components/bm/useMyTrades";
 import { RoundTicket } from "@/components/rounds/RoundTicket";
+import { startNearSeriesAction } from "@/app/app/actions/rounds";
 import { RoundChip } from "@/components/rounds/RoundChip";
 import { RoundHistory } from "@/components/rounds/RoundHistory";
 import { fmtUsdg } from "@/components/bm/format";
@@ -41,9 +44,29 @@ import { sentimentColor, timeAgo, viChange24h } from "@/lib/capture-view";
 import type { Capture, MarketNeighbor, MarketRow } from "@/lib/store";
 import type { BmMarketRow, BmRoundRow, BmSeriesRow } from "@/lib/supabase/database-bm";
 import { isRoundsDeployed } from "@/lib/bm/chains";
+import { isNearChain, isNearRoundsDeployed } from "@/lib/near/config";
 import type { TrendsResult } from "@/lib/trends";
 import { viTier } from "@/lib/vi/score";
 import { startPolling } from "@/lib/poll";
+
+// The rounds ticket for the chain this build trades on. The NEAR one
+// (NEXT_PUBLIC_BM_CHAIN=near) loads in its own chunk, so the Solana build's
+// market page does not carry near-api-js. Both take the same props; the
+// NEAR one is handed its "Start rounds" server action here (the Solana one
+// imports its own).
+const RoundsTicket = isNearChain()
+  ? dynamic(() =>
+      import("@/components/rounds/NearRoundTicket").then(({ NearRoundTicket }) => {
+        function NearTicket(props: ComponentProps<typeof RoundTicket>) {
+          return <NearRoundTicket {...props} startSeries={startNearSeriesAction} />;
+        }
+        return NearTicket;
+      }),
+    )
+  : RoundTicket;
+
+// The header's round chip, NEAR's in its own chunk for the same reason.
+const SeriesChip = isNearChain() ? dynamic(() => import("@/components/rounds/NearRoundChip").then((m) => m.NearRoundChip)) : RoundChip;
 
 interface Props {
   market: MarketRow;
@@ -58,8 +81,9 @@ interface Props {
   trends: TrendsResult | null;
   // The bounded UP/DOWN markets on this market, every chain, newest first.
   bounded: BmMarketRow[];
-  // The running rounds series on this market (Solana devnet) and its
-  // rounds, newest first; null when none has been started.
+  // The running rounds series on this market (Solana devnet, or NEAR
+  // testnet with NEXT_PUBLIC_BM_CHAIN=near) and its rounds, newest first;
+  // null when none has been started.
   rounds?: { series: BmSeriesRow; rounds: BmRoundRow[] } | null;
 }
 
@@ -275,7 +299,7 @@ export function MarketDetailClient({
   // here. It stays listed in the portfolio's EVM section (which redeems a
   // win but cannot sell) and resolves on its own when the index touches a
   // bound.
-  const roundsOnly = isRoundsDeployed();
+  const roundsOnly = isNearChain() ? isNearRoundsDeployed() : isRoundsDeployed();
   const series = rounds?.series ?? null;
   const roundRows = useMemo(() => rounds?.rounds ?? [], [rounds]);
   const showRounds = !!series || roundsOnly;
@@ -450,7 +474,7 @@ export function MarketDetailClient({
                       {analysis.category && <Chip>{analysis.category}</Chip>}
                     </div>
                     {series ? (
-                      <RoundChip series={series} rounds={roundRows} vi={viralityScore} />
+                      <SeriesChip series={series} rounds={roundRows} vi={viralityScore} />
                     ) : roundsOnly ? null : (
                       <PriceChip bounded={bounded} vi={viralityScore} />
                     )}
@@ -839,7 +863,7 @@ export function MarketDetailClient({
           {/* ------------------------------------------------ side column */}
           <aside className="hidden lg:block lg:sticky lg:top-24">
             {showRounds ? (
-              <RoundTicket
+              <RoundsTicket
                 atnxMarketId={market.id}
                 name={name}
                 score={viralityScore}
@@ -869,7 +893,7 @@ export function MarketDetailClient({
       <TradeDock
         renderTicket={(side) =>
           showRounds ? (
-            <RoundTicket
+            <RoundsTicket
               key={side}
               atnxMarketId={market.id}
               name={name}

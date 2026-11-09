@@ -59,7 +59,7 @@ npm run vi:audit                     # every live market's score, breakdown, his
 npm run test:bm                      # the pari-mutuel maths (dpm.ts), the settlement rule, the bounded-market tests
 npm run rounds:sol -- e2e            # a full rounds series on devnet against the deployed program; no .env.local needed
 npm run rounds:start                 # the ten liveliest markets; -- "Name" starts daily rounds, -- <uuid> --fast the demo series
-BM_ROUNDS_ENABLED=1 npm run rounds:tick   # one keeper tick, dry (the rounds step runs only with the variable); add -- --live for a real one
+BM_ROUNDS_ENABLED=1 npm run rounds:tick   # the rounds steps of one keeper tick, dry (they run only with the variable); add -- --live for a real one
 npm run bm:keeper:dry                # the same tick as the cron, dry; -- --live for real
 ```
 

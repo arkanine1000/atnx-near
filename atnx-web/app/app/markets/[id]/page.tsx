@@ -2,6 +2,8 @@ import { notFound } from "next/navigation";
 import { getMarketDetail } from "@/lib/store";
 import { getBoundedMarkets } from "@/lib/bm/registry";
 import { getSeriesForMarket } from "@/lib/bm/rounds-registry";
+import { isNearChain } from "@/lib/near/config";
+import { getNearSeriesForMarket } from "@/lib/near/registry";
 import { MarketDetailClient } from "./market-detail";
 
 export const dynamic = "force-dynamic";
@@ -21,8 +23,10 @@ export default async function MarketPage({
       console.error("[market] bounded markets failed", err);
       return [];
     }),
-    // The running rounds series on this market, if any, with its rounds.
-    getSeriesForMarket(id).catch((err) => {
+    // The running rounds series on this market, if any, with its rounds:
+    // on NEAR testnet (NEXT_PUBLIC_BM_CHAIN=near) the 'near:testnet' rows,
+    // otherwise the Solana ones as before.
+    (isNearChain() ? getNearSeriesForMarket(id) : getSeriesForMarket(id)).catch((err) => {
       console.error("[market] rounds series failed", err);
       return null;
     }),

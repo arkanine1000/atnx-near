@@ -3,6 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { PublicKey } from "@solana/web3.js";
 import { startSeries, type StartResult } from "@/lib/bm/rounds";
+import { startNearSeries } from "@/lib/bm/rounds-near";
+import { isNearChain } from "@/lib/near/config";
+import { nearAccountStore, sessionUser } from "@/lib/near/server";
+import { startNearSeriesForSession, type NearStartResult } from "@/lib/near/start-series";
 
 // "Start rounds" on a market page. The connected Solana wallet becomes
 // the series' finder (it earns the finder's share of the fees); the
@@ -28,4 +32,24 @@ export async function startSeriesAction(atnxMarketId: string, wallet: string, fa
     revalidatePath("/app");
   }
   return result;
+}
+
+// "Start rounds" on NEAR testnet (NEXT_PUBLIC_BM_CHAIN=near). Takes no
+// finder: the series' finder is the signed-in user's own active NEAR
+// account, read from the Supabase session and bm.near_accounts, never an
+// account the browser names. The keeper signs and pays for the series.
+// The logic is lib/near/start-series.ts; startNearSeries applies the same
+// fast-series rule as above.
+export async function startNearSeriesAction(atnxMarketId: string, fast: boolean): Promise<NearStartResult> {
+  return startNearSeriesForSession(
+    {
+      enabled: isNearChain(),
+      sessionUser: () => sessionUser(),
+      store: nearAccountStore(),
+      start: (input) => startNearSeries(input),
+      revalidate: (path) => revalidatePath(path),
+    },
+    atnxMarketId,
+    fast,
+  );
 }

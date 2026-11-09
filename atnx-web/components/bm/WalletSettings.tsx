@@ -1,25 +1,38 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useState } from "react";
 import { useAccount, useConfig, useDisconnect, useSwitchChain, useWriteContract } from "wagmi";
 import { waitForTransactionReceipt } from "wagmi/actions";
 import { mockUsdgAbi } from "@/lib/bm/abi";
 import { BM_CHAINS, USDG_UNIT, chainById, isDeployed } from "@/lib/bm/chains";
 import { SolanaWalletSettings } from "@/components/rounds/SolanaWalletSettings";
+import { isNearChain } from "@/lib/near/config";
 import { ConnectButton } from "./ConnectButton";
 import { shortAddress } from "./format";
+
+// Loaded only in the NEAR build, so the Solana build does not carry near-api-js.
+const NearAccountSettings = dynamic(() => import("@/components/rounds/NearAccountSettings").then((m) => m.NearAccountSettings));
 
 // The wallet section of Settings, one block per kind of chain: the EVM
 // testnets (bounded markets, the first iteration) and Solana devnet (the
 // rounds). Each has its address, network, a mock USDG faucet and
-// disconnect.
+// disconnect. With NEXT_PUBLIC_BM_CHAIN=near the rounds block is the NEAR
+// trading account instead (NearAccountSettings): no wallet to connect.
 export function WalletSettings() {
   return (
     <div className="space-y-5">
-      <div>
-        <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">Solana devnet · rounds</h3>
-        <SolanaWalletSettings />
-      </div>
+      {isNearChain() ? (
+        <div>
+          <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">NEAR testnet · rounds</h3>
+          <NearAccountSettings />
+        </div>
+      ) : (
+        <div>
+          <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">Solana devnet · rounds</h3>
+          <SolanaWalletSettings />
+        </div>
+      )}
       <div>
         <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">EVM testnets · bounded markets</h3>
         <EvmWalletSettings />

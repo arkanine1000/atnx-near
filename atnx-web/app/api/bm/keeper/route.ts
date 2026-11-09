@@ -5,8 +5,10 @@ import { runKeeper } from '@/lib/bm/keeper-run';
 // The keeper: Vercel cron, every five minutes (vercel.json), production
 // deployments only. One tick (lib/bm/keeper-run.ts): bounded markets
 // first (resolve on a bound touch, roll a new one unless BM_AUTO_ROLL=0),
-// then, with BM_ROUNDS_ENABLED=1, the rolling rounds on Solana devnet
-// (create pending series, ante, open, settle, void; lib/bm/rounds.ts).
+// then the rolling rounds: on Solana devnet with BM_ROUNDS_ENABLED=1
+// (lib/bm/rounds.ts) and on NEAR testnet with BM_NEAR_ROUNDS_ENABLED=1
+// (lib/bm/rounds-near.ts), side by side (create pending series, ante,
+// open, settle, void, claim the keeper's antes; lib/bm/rounds-core.ts).
 // `?dry=1` reports what it would do without sending or writing anything.
 //
 //   curl -H "Authorization: Bearer $CRON_SECRET" https://markets.atnx.app/api/bm/keeper?dry=1

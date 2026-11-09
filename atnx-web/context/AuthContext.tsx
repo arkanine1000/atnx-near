@@ -24,8 +24,14 @@ interface AuthContextType {
   // Sign in with Ethereum: one signature over an EIP-4361 message, then a
   // normal Supabase session. The caller signs (wagmi's signMessage).
   signInWithWallet: (p: { address: string; chainId: number; sign: (message: string) => Promise<Hex> }) => Promise<void>;
+  // Google or X through Supabase OAuth, back to the page it started on.
+  // The NEAR build's sign-in (NEXT_PUBLIC_BM_CHAIN=near); the Solana build
+  // keeps the wallet only.
+  signInWithOAuth: (provider: OAuthProvider) => Promise<void>;
   signOut: () => Promise<void>;
 }
+
+export type OAuthProvider = "google" | "x";
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
@@ -101,6 +107,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [router],
   );
 
+  const signInWithOAuth = useCallback(async (provider: OAuthProvider) => {
+    const supabase = createClient();
+    // The callback (app/auth/callback) exchanges the code, makes sure the
+    // profile row exists and returns to `redirect`, a path on this site.
+    const callback = new URL("/auth/callback", window.location.origin);
+    callback.searchParams.set("redirect", `${window.location.pathname}${window.location.search}`);
+    const { error } = await supabase.auth.signInWithOAuth({ provider, options: { redirectTo: callback.toString() } });
+    if (error) {
+      console.error("Sign-in error:", error);
+      throw error;
+    }
+  }, []);
+
   // Sign out in the browser client, not a server action: the browser client
   // holds the session in memory and only a sign-out through it fires
   // SIGNED_OUT, which clears `user` everywhere without a reload. The refresh
@@ -125,6 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         openLoginModal,
         closeLoginModal,
         signInWithWallet,
+        signInWithOAuth,
         signOut,
       }}
     >
