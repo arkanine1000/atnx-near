@@ -119,6 +119,8 @@ export function LivePane({ view, series, score, now, side, setSide, amount, setA
   const tradeUntil = r.tradeUntil * 1000;
   const closeAt = r.closeAt * 1000;
   const phase = now === null || now < tradeUntil ? "trading" : now < closeAt ? "averaging" : "settling";
+  // A paused series refuses buys on its live round, which still settles.
+  const buying = phase === "trading" && !series.paused;
   const windowMin = Math.round(series.settleWindowSecs / 60);
   const pUp = mprUp(r);
 
@@ -144,19 +146,19 @@ export function LivePane({ view, series, score, now, side, setSide, amount, setA
   const profitPct = ifWin !== null && spend > 0n ? (Number(profit) / Number(spend)) * 100 : 0;
   const pos = view.position;
   const insufficient = !!units && units > usdg;
-  const canBuy = phase === "trading" && !!q && q.shares > 0n && !insufficient && !busy && !mock;
+  const canBuy = buying && !!q && q.shares > 0n && !insufficient && !busy && !mock;
   const maxBuy = fmtUsdg((usdg * 99n) / 100n, 2).replace(/,/g, "");
   const viAbove = score >= target;
 
   return (
     <div>
-      <StatusRow chip={now === null ? null : phase === "trading" ? `${fmtLeft(tradeUntil - now)} left` : phase === "averaging" ? `Closes in ${fmtLeft(closeAt - now)}` : "Settling"}>
+      <StatusRow chip={now === null ? null : buying ? `${fmtLeft(tradeUntil - now)} left` : phase !== "settling" ? `Closes in ${fmtLeft(closeAt - now)}` : "Settling"}>
         Target <span className="tabular-nums font-bold text-primary">{target.toFixed(target < 100 ? 1 : 0)}</span>
         <span className="text-tertiary"> · now </span>
         <span className={`tabular-nums font-bold ${viAbove ? "text-atnx-cyan" : "text-atnx-magenta"}`}>{Math.round(score)}</span>
       </StatusRow>
 
-      {phase === "trading" ? (
+      {buying ? (
         <>
           <div className="grid grid-cols-2 gap-2 mb-4" role="radiogroup" aria-label="Side">
             <SideButton side="up" caption={`${Math.round(pUp * 100)}% UP`} selected={side === "up"} onClick={() => setSide("up")} />
@@ -205,6 +207,8 @@ export function LivePane({ view, series, score, now, side, setSide, amount, setA
             {busy ?? `Buy ${side.toUpperCase()}${units && units > 0n ? ` for ${fmtUsdg(units, 0)} USDG` : ""}`}
           </button>
         </>
+      ) : phase === "trading" ? (
+        <p className="text-sm text-secondary">Buying has stopped on this series; this round still settles at its close.</p>
       ) : phase === "averaging" ? (
         <p className="text-sm text-secondary animate-pulse">Averaging the last {windowMin} minutes…</p>
       ) : (
