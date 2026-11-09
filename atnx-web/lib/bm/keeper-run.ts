@@ -103,10 +103,13 @@ function chainOf(row: BmMarketRow): BmChain {
 
 // `bounded: false` skips steps 1–3: a rounds-only tick by hand
 // (scripts/rounds-tick.ts) must not move the open bounded markets the cron
-// minds, or resolve and roll them with the laptop's env.
+// minds, or resolve and roll them with the laptop's env. BM_BOUNDED_ENABLED=0
+// does the same for a whole deployment, so a second deployment sharing the
+// registry (the NEAR build before it takes over markets.atnx.app) leaves the
+// bounded markets to the one that runs them.
 export async function runKeeper(opts: { dry?: boolean; bounded?: boolean } = {}): Promise<KeeperReport> {
   const dry = !!opts.dry;
-  const bounded = opts.bounded ?? true;
+  const bounded = opts.bounded ?? process.env.BM_BOUNDED_ENABLED !== '0';
   const startedAt = Date.now();
   const runId = randomUUID();
   const rep: KeeperReport = {
