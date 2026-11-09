@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Card } from "@/components/ui";
@@ -11,6 +12,7 @@ import { FAUCET_UNITS, isNearRoundsDeployed, nearTxUrl, type UserMethod } from "
 import { friendlyNearError } from "@/lib/near/errors";
 import { callArgs, u128 } from "@/lib/near/rounds";
 import type { BmRoundRow, BmSeriesRow } from "@/lib/supabase/database-bm";
+import { FUND_HREF } from "./FundFromAnyChain";
 import { holdsAnything, liveRoundRow, presaleRoundRow } from "./round-math";
 import { ClaimList, HowRounds, LivePane, NextRoundLine, PresalePane, Question, RegistryLine } from "./ticket-parts";
 import { useNow } from "./time";
@@ -374,6 +376,9 @@ function SeriesTicket({ name, score, series, rounds, initialSide = "up", onToast
         <button type="button" onClick={faucet} disabled={!!busy} className="btn-cyan w-full h-12 rounded-xl font-bold text-sm cursor-pointer disabled:opacity-50">
           {busy ?? "Get 1,000 test USDG"}
         </button>
+        <Link href={FUND_HREF} className="block mt-3 text-[11px] text-tertiary link-quiet">
+          Have USDC on another chain? See what bringing it to NEAR would cost.
+        </Link>
         {error && <p className="text-xs text-atnx-magenta mt-3 break-words">{error}</p>}
         <Footer roundSecs={series.round_secs} windowSecs={series.settle_window_secs} />
       </Card>
