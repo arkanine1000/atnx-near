@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     "What the ATNX web app and the ATNX Capture Chrome extension collect, why, and how to delete it.",
 };
 
-const UPDATED = "September 25, 2026";
+const UPDATED = "November 10, 2026";
 
 export default function PrivacyPage() {
   return (
@@ -111,6 +111,32 @@ export default function PrivacyPage() {
         </p>
       </Section>
 
+      <Section title="NEAR testnet accounts">
+        <p>
+          On the NEAR build of ATNX, signing in gives you a NEAR testnet
+          account named after your handle (for example
+          attn_seeker-1234.atnx.testnet). Its key is created in your browser
+          and stays there: it cannot be copied out of the page, and we never
+          see it. We store which NEAR account belongs to your ATNX account. The
+          account name and everything it does are public on NEAR testnet.
+        </p>
+        <p>
+          You can also try ATNX as a guest without signing in. A guest account
+          (guest-…atnx.testnet) holds no personal data. To limit how many guest
+          accounts one network can create, we keep a keyed hash of the IP
+          address that created it, never the address itself, and clear the
+          hash after 24 hours.
+        </p>
+        <p>
+          &quot;Fund from any chain&quot; previews send only the chain and
+          amount you enter to NEAR Intents&apos; 1Click service for a price
+          quote, with no account name or other identifier; no money moves.
+          Your browser reads the NEAR testnet chain directly through a public
+          RPC provider (FastNEAR), which sees your IP address as any website
+          does.
+        </p>
+      </Section>
+
       <Section title="Waitlist">
         <p>
           If you join the waitlist, we store the email address you enter and
@@ -132,6 +158,8 @@ export default function PrivacyPage() {
           <li>Vercel: hosting, and routing requests to AI models.</li>
           <li>Google (Gemini): AI analysis of captures and submissions.</li>
           <li>Google and X: only when you choose them to sign in.</li>
+          <li>NEAR Intents (1Click): price quotes for &quot;Fund from any chain&quot; previews, on the NEAR build.</li>
+          <li>FastNEAR: the public NEAR RPC your browser reads the chain through, on the NEAR build.</li>
         </ul>
         <p>
           Some of these providers process data outside the EU. Where they do,
