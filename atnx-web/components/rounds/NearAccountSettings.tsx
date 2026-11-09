@@ -8,6 +8,7 @@ import { FAUCET_UNITS, isNearRoundsDeployed, nearAccountUrl } from "@/lib/near/c
 import { friendlyNearError } from "@/lib/near/errors";
 import { callArgs } from "@/lib/near/rounds";
 import { FundFromAnyChain } from "./FundFromAnyChain";
+import { NearGuestChoice } from "./NearGuestChoice";
 import { useNearAccount } from "./useNearAccount";
 import { nearViewer } from "./useNearRounds";
 
@@ -16,6 +17,10 @@ import { nearViewer } from "./useNearRounds";
 // a preview of funding it with USDC from another chain (FundFromAnyChain,
 // dry NEAR Intents quotes), and, in plain words, what happens if this
 // browser's key is lost: there is no recovery, a new account starts empty.
+//
+// Signed out, the same block shows this browser's guest account, with a way
+// to sign in, or offers one ("Try as a guest"). Signed in, a guest account
+// still in this browser is named at the bottom: it stays separate.
 export function NearAccountSettings() {
   const near = useNearAccount();
   const { user, openLoginModal } = useAuth();
@@ -59,12 +64,27 @@ export function NearAccountSettings() {
   if (!isNearRoundsDeployed()) return <p className="text-xs text-secondary">Rounds are not live on NEAR testnet yet.</p>;
 
   const row = "flex items-center justify-between gap-3 py-2.5 border-b border-surface last:border-b-0 text-xs";
-  const lostKey = (
+  const lostKey = near.isGuest ? (
+    <p className="text-[11px] text-tertiary py-2.5">
+      Your guest account lives only in this browser. If you clear its data, or open ATNX in another browser, it is gone for you; whatever it holds stays with it, and
+      nobody, ATNX included, can move it back.
+    </p>
+  ) : (
     <p className="text-[11px] text-tertiary py-2.5">
       Your trading account is tied to this browser. If you clear its data, or sign in from another browser, ATNX sets up a new, empty account; whatever the old one
       holds stays with it, and nobody, ATNX included, can move it back.
     </p>
   );
+  const separateGuest =
+    user && near.guestAccountId ? (
+      <p className="text-[11px] text-tertiary pt-2.5">
+        This browser also holds a guest account,{" "}
+        <a href={nearAccountUrl(near.guestAccountId)} target="_blank" rel="noreferrer" className="font-mono link-quiet">
+          {near.guestAccountId}
+        </a>
+        . It stays separate from your sign-in; sign out to use it again.
+      </p>
+    ) : null;
 
   if (near.status === "loading" && user) return <p className="text-xs text-secondary animate-pulse">Reading your account…</p>;
   if (near.status === "signed-out" || near.status === "loading") {
@@ -74,9 +94,15 @@ export function NearAccountSettings() {
         <button type="button" onClick={openLoginModal} disabled={near.status === "loading"} className="h-8 px-3 rounded-full btn-cyan text-xs font-bold cursor-pointer disabled:opacity-40">
           Sign in
         </button>
+        {near.status === "signed-out" && (
+          <div className="mt-4 max-w-xs">
+            <NearGuestChoice />
+          </div>
+        )}
       </div>
     );
   }
+  if (near.isGuest && near.status === "creating") return <p className="text-xs text-secondary animate-pulse">Setting up your test account…</p>;
 
   if (near.status === "unsupported") {
     return <p className="text-xs text-secondary">This browser can&apos;t hold your trading account. Try a recent Chrome, Firefox or Safari.</p>;
@@ -101,9 +127,17 @@ export function NearAccountSettings() {
 
   return (
     <div>
+      {near.isGuest && (
+        <div className="py-2.5 border-b border-surface">
+          <p className="text-xs text-secondary mb-2">You are trying ATNX as a guest, with no sign-in. Sign in with Google or X for an account you can come back to; this guest account stays in this browser, separate.</p>
+          <button type="button" onClick={openLoginModal} className="h-8 px-3 rounded-full btn-cyan text-xs font-bold cursor-pointer">
+            Sign in
+          </button>
+        </div>
+      )}
       {accountId && (
         <div className={row}>
-          <span className="text-tertiary">Account</span>
+          <span className="text-tertiary">{near.isGuest ? "Guest account" : "Account"}</span>
           <a href={nearAccountUrl(accountId)} target="_blank" rel="noreferrer" className="font-mono text-primary link-quiet break-all text-right" title={accountId}>
             {accountId} ↗
           </a>
@@ -147,6 +181,7 @@ export function NearAccountSettings() {
         </p>
       )}
       {lostKey}
+      {separateGuest}
     </div>
   );
 }

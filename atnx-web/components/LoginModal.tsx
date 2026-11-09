@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { useAccount, useConnect, useSignMessage } from "wagmi";
 import { useAuth, type OAuthProvider } from "@/context/AuthContext";
@@ -116,6 +117,17 @@ function friendly(msg: string): string {
 
 // ------------------------------------------------------------- NEAR build
 
+// "Try as a guest", loaded only in the NEAR build: it brings the NEAR signer,
+// which the Solana build does not carry.
+const NearGuestChoice = dynamic(() => import("@/components/rounds/NearGuestChoice").then((m) => m.NearGuestChoice), {
+  ssr: false,
+  loading: () => (
+    <button type="button" disabled className="w-full py-3 rounded-lg border border-surface bg-surface text-primary font-bold text-sm opacity-60">
+      Try as a guest
+    </button>
+  ),
+});
+
 const PROVIDER_LABEL: Record<OAuthProvider, string> = { google: "Google", x: "X" };
 
 function NearLoginModal() {
@@ -178,6 +190,12 @@ function NearLoginModal() {
             <XIcon />
             <span>{busy === "x" ? "Redirecting\u2026" : "Continue with X"}</span>
           </button>
+          <div className="flex items-center gap-3 text-[11px] text-tertiary" aria-hidden="true">
+            <span className="flex-1 border-t border-surface" />
+            or
+            <span className="flex-1 border-t border-surface" />
+          </div>
+          <NearGuestChoice variant="modal" onReady={closeLoginModal} />
         </div>
 
         <p className="text-[11px] text-tertiary mt-4 text-center">

@@ -9,12 +9,15 @@ import { Identicon } from "@/components/Identicon";
 import { ConnectButton } from "@/components/bm/ConnectButton";
 import { shortAddress } from "@/components/bm/format";
 import { isNearChain } from "@/lib/near/config";
+import { useGuestAccountId } from "@/lib/near/guest-local";
 
 // The account is the wallet. Disconnected: a Connect pill where Login
 // used to be. Connected: the face and the menu (handle or address,
 // Settings with the network and mint controls, Admin, Sign out).
 // The NEAR build (NEXT_PUBLIC_BM_CHAIN=near) signs in with Google or X,
 // so there the account is the sign-in: a Sign in pill, then the same menu.
+// A guest there (no sign-in, a test account in this browser) gets a
+// "Guest" pill whose menu names the account and offers Settings and Sign in.
 const NEAR_BUILD = isNearChain();
 export function UserMenu() {
   const { user, loading, openLoginModal, signOut } = useAuth();
@@ -24,6 +27,8 @@ export function UserMenu() {
   const [role, setRole] = useState<"user" | "admin" | "moderator" | null>(null);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Read only in the NEAR build and only while signed out.
+  const guestId = useGuestAccountId(NEAR_BUILD && !loading && !user);
 
   // Load profile when a user is present. When the user becomes null we render
   // the Login button branch below, so stale handle/role state is never shown.
@@ -58,6 +63,52 @@ export function UserMenu() {
   }, [open]);
 
   if (loading) return null;
+
+  if (NEAR_BUILD && !user && guestId) {
+    return (
+      <div className="relative" ref={rootRef}>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="Guest account menu"
+          title={`Guest: ${guestId}`}
+          className={`h-8 pl-0.5 pr-3 inline-flex items-center gap-1.5 overflow-hidden rounded-full border-2 cursor-pointer transition-colors text-xs font-bold text-secondary ${
+            open ? "border-atnx-cyan" : "border-surface hover:border-atnx-cyan/60"
+          }`}
+        >
+          <span className="inline-flex h-6 w-6 overflow-hidden rounded-full">
+            <Identicon seed={guestId} size={24} />
+          </span>
+          Guest
+        </button>
+        {open && (
+          <div className="absolute right-0 mt-1 w-60 bg-elevated border border-surface rounded-md shadow-lg z-50 py-1" role="menu">
+            <div className="px-3 py-2 border-b border-surface mb-1">
+              <div className="text-xs font-bold text-atnx-cyan light:text-atnx-cyan-light">Guest</div>
+              <div className="font-mono text-[11px] text-secondary truncate" title={guestId}>
+                {guestId}
+              </div>
+              <div className="text-[11px] text-tertiary mt-1">Your test account lives in this browser.</div>
+            </div>
+            <Link href="/app/settings" onClick={() => setOpen(false)} className="block px-3 py-2 text-xs text-primary hover-sink transition-colors">
+              Settings
+            </Link>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openLoginModal();
+              }}
+              className="w-full text-left px-3 py-2 text-xs font-bold text-atnx-cyan hover-sink transition-colors cursor-pointer"
+            >
+              Sign in
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (NEAR_BUILD && !user) {
     return (
