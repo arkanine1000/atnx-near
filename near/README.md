@@ -34,9 +34,26 @@ taskset -c 0,3-5 cargo test -p usdg
 taskset -c 0,3-5 cargo test -p integration-tests -- --test-threads=1
 ```
 
-The integration tests read the wasm files from `$ATNX_NEAR_WASM_DIR/<name>/<name>.wasm` if that variable is set, otherwise from `$CARGO_TARGET_DIR/near/…`, and with neither set from `near/target/near/…`, which is where CI builds them. `cargo test` without `-p` covers `usdg` and `rounds` only: they are the workspace's default members.
+The integration tests read the wasm files from `$ATNX_NEAR_WASM_DIR/<name>/<name>.wasm` if that variable is set, otherwise from `$CARGO_TARGET_DIR/near/…`, and with neither set from `near/target/near/…`, which is where CI's reproducible build puts them. Point `ATNX_NEAR_WASM_DIR` at a directory laid out the same way to run the sandbox tests on downloaded CI artifacts. `cargo test` without `-p` covers `usdg` and `rounds` only: they are the workspace's default members.
 
-CI runs the same steps in `.github/workflows/near-build.yml` on every push or pull request that touches `near/`: both unit-test suites, both wasm builds, then the sandbox tests. It uploads `usdg.wasm` and `rounds.wasm` as artifacts and prints their SHA-256 in the job summary.
+CI runs `.github/workflows/near-build.yml` on every push or pull request that touches `near/`: both unit-test suites, a reproducible build of each contract, then the sandbox tests against those same two wasm files. It uploads `usdg.wasm` and `rounds.wasm` as artifacts (`usdg-wasm`, `rounds-wasm`) and prints in the job summary their size, their SHA-256 in hex and in base58, and the NEP-330 metadata each one embeds. A pull request builds its head commit rather than GitHub's merge commit, so the revision in the metadata exists in the repository.
+
+### Reproducible builds
+
+The wasm files to deploy are CI's, built with `cargo near build reproducible-wasm` from each contract's directory. cargo-near clones the checked-out commit into a temporary directory, so anything uncommitted is left out (CI fails before the build if the checkout is dirty), and builds the clone in the Docker image named in the contract's `[package.metadata.near.reproducible_build]` table:
+
+| Field | Value |
+|---|---|
+| `image` | `sourcescan/cargo-near:0.23.0-rust-1.99.1` (the tag is descriptive) |
+| `image_digest` | `sha256:8013f039e8005627f10ae66b5519d1a6eeeed7d7aef4b5067d5e9a86c4302fcc` (this identifies the image) |
+| `passed_env` | none |
+| `container_build_command` | `cargo near build non-reproducible-wasm --locked`, so `Cargo.lock` must be committed and current |
+
+The image's cargo-near and Rust versions match `CARGO_NEAR_VERSION` in the workflow and `rust-toolchain.toml`; change all three together. The build writes NEP-330 source metadata into the wasm, which the contract returns from its `contract_source_metadata` view: `version` (the workspace version, 0.1.0), `link` (`repository` from `Cargo.toml` plus `/tree/<commit>`) and `build_info`, which holds the image with its digest, the build command, the contract's path in the repository (`near/usdg`, `near/rounds`) and `source_code_snapshot`, `git+https://github.com/arkanine1000/atnx-near?rev=<commit>`. The commit is part of the wasm, so every commit builds different bytes even where the contract code did not change; the same commit builds the same bytes.
+
+To check a deployed contract against the repository: read its metadata with the `contract_source_metadata` view, check out the commit it names, run `cargo near build reproducible-wasm` in its `contract_path` on a machine with Docker, and compare the SHA-256 with the account's `code_hash` from `view_account`, which is the same digest in base58 (the job summary prints both forms). The contracts deployed on testnet before this build existed return `version` 0.1.0 with no `link` and no `build_info`. Explorer verification (NearBlocks' "Verify and Publish", backed by SourceScan) clones the repository named in `source_code_snapshot`, so it needs the repository to be public; `arkanine1000/atnx-near` is private.
+
+This machine has no Docker, so builds here stay `non-reproducible-wasm` (above). They embed `version` and `link` but no `build_info`, and their bytes differ from CI's.
 
 ## usdg methods
 
