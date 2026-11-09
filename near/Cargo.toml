@@ -4,8 +4,11 @@ default-members = ["usdg", "rounds"]
 resolver = "2"
 
 [workspace.package]
+# version and repository end up in each contract's NEP-330 metadata
+# (`contract_source_metadata`): cargo-near reads them through cargo metadata.
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/arkanine1000/atnx-near"
 
 [workspace.dependencies]
 near-sdk = "5.30"

@@ -2,11 +2,18 @@ name: near-build
 
 # The NEAR contracts live under near/: usdg (a NEP-141 test token) and
 # rounds (rolling VI rounds, ported from programs/vi_rounds). One job: the
-# unit tests, both wasm builds with cargo-near, then the near-sandbox
-# integration tests against those wasm files. Rust comes from
-# near/rust-toolchain.toml, so CI and the laptop build with the same
-# compiler. Both wasm files are uploaded, with their SHA-256 in the job
-# summary. Nothing is deployed from here.
+# unit tests, a reproducible build of both wasm files with
+# `cargo near build reproducible-wasm`, then the near-sandbox integration
+# tests against those same wasm files, so the tests run the bytes that get
+# uploaded. The reproducible build clones the checked-out commit into a
+# temporary directory and builds it inside the Docker image named in each
+# contract's [package.metadata.near.reproducible_build]; the wasm carries
+# NEP-330 metadata (`contract_source_metadata`) naming that image, the build
+# command, the contract path and the commit, so anyone with the repository
+# can rebuild it and compare SHA-256. Rust for the unit tests and the
+# sandbox tests comes from near/rust-toolchain.toml. Both wasm files are
+# uploaded, with their SHA-256 and embedded metadata in the job summary.
+# Nothing is deployed from here.
 on:
   push:
     paths:
@@ -16,6 +23,7 @@ on:
     paths:
       - "near/**"
       - ".github/workflows/near-build.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,6 +40,12 @@ jobs:
       CARGO_NEAR_VERSION: "0.23.0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # On a pull request GitHub checks out a temporary merge commit, and
+          # a wasm built from it would name a revision no branch holds. Build
+          # the pull request's head commit instead, so the embedded revision
+          # always exists in the repository.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Rust from near/rust-toolchain.toml
         run: |
@@ -71,28 +85,82 @@ jobs:
       - name: usdg unit tests
         run: cargo test --locked -p usdg
 
-      - name: Build usdg.wasm
-        run: cargo near build non-reproducible-wasm --locked --manifest-path usdg/Cargo.toml
+      - name: Working tree is the commit
+        # The reproducible build compiles a clone of HEAD and leaves anything
+        # uncommitted out; outside of `cargo near deploy` it only warns about
+        # a dirty tree. Fail here instead, so the uploaded wasm is the commit.
+        # Ignored paths (target/) don't count, as in cargo-near's own check.
+        run: |
+          git rev-parse HEAD
+          dirty="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$dirty" ]; then
+            echo "::error::uncommitted changes in the checkout:"
+            echo "$dirty"
+            exit 1
+          fi
+          docker version --format 'docker {{.Server.Version}}'
 
-      - name: Build rounds.wasm
-        run: cargo near build non-reproducible-wasm --locked --manifest-path rounds/Cargo.toml
+      - name: Build usdg.wasm (reproducible, in Docker)
+        working-directory: near/usdg
+        run: cargo near build reproducible-wasm
 
-      - name: Integration tests (near-sandbox)
-        # The tests read the wasm files from near/target/near/<name>/<name>.wasm.
+      - name: Build rounds.wasm (reproducible, in Docker)
+        working-directory: near/rounds
+        run: cargo near build reproducible-wasm
+
+      - name: Integration tests (near-sandbox, on the reproducible wasm)
+        # The tests read the wasm files from near/target/near/<name>/<name>.wasm,
+        # where the reproducible build copies them.
         run: cargo test --locked -p integration-tests -- --test-threads=1
 
-      - name: Checksums
+      - name: Checksums and NEP-330 metadata
+        # near-sdk embeds the contract_source_metadata JSON as one string in
+        # the wasm's data section; this reads it back out of the files and
+        # checks that it describes a reproducible build of this commit.
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          sha256sum target/near/usdg/usdg.wasm target/near/rounds/rounds.wasm
-          {
-            echo "### NEAR wasm"
-            echo
-            echo "| File | Bytes | SHA-256 |"
-            echo "|---|---|---|"
-            for f in target/near/usdg/usdg.wasm target/near/rounds/rounds.wasm; do
-              echo "| \`$(basename "$f")\` | $(stat -c %s "$f") | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+          python3 - target/near/usdg/usdg.wasm target/near/rounds/rounds.wasm <<'EOF'
+          import hashlib, json, os, sys
+
+          def nep330(data):
+              found, i = [], data.find(b'{"version":')
+              while i != -1:
+                  try:
+                      obj, _ = json.JSONDecoder().raw_decode(data[i:].decode("utf-8", "replace"))
+                      if isinstance(obj, dict) and "standards" in obj:
+                          found.append(obj)
+                  except ValueError:
+                      pass
+                  i = data.find(b'{"version":', i + 1)
+              if len(found) != 1:
+                  sys.exit(f"expected one NEP-330 metadata string, found {len(found)}")
+              return found[0]
+
+          head = os.environ["HEAD_SHA"]
+          rows, blocks = [], []
+          for path in sys.argv[1:]:
+              data = open(path, "rb").read()
+              digest = hashlib.sha256(data).hexdigest()
+              meta = nep330(data)
+              info = meta.get("build_info") or {}
+              snapshot = info.get("source_code_snapshot", "")
+              if not snapshot.endswith(f"?rev={head}"):
+                  sys.exit(f"{path}: build_info.source_code_snapshot is {snapshot!r}, expected rev {head}")
+              name = os.path.basename(path)
+              print(f"{digest}  {path}  ({len(data)} bytes)")
+              print(json.dumps(meta, indent=2))
+              rows.append(f"| `{name}` | {len(data)} | `{digest}` |")
+              blocks.append(f"`{name}`\n\n```json\n{json.dumps(meta, indent=2)}\n```\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("### NEAR wasm (reproducible build)\n\n")
+              out.write(f"Commit `{head}`\n\n")
+              out.write("| File | Bytes | SHA-256 |\n|---|---|---|\n")
+              out.write("\n".join(rows) + "\n\n")
+              out.write("#### Embedded NEP-330 metadata (`contract_source_metadata`)\n\n")
+              out.write("\n".join(blocks))
+          EOF
 
       - uses: actions/upload-artifact@v4
         with:
