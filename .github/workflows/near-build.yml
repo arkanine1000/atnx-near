@@ -1,0 +1,107 @@
+name: near-build
+
+# The NEAR contracts live under near/: usdg (a NEP-141 test token) and
+# rounds (rolling VI rounds, ported from programs/vi_rounds). One job: the
+# unit tests, both wasm builds with cargo-near, then the near-sandbox
+# integration tests against those wasm files. Rust comes from
+# near/rust-toolchain.toml, so CI and the laptop build with the same
+# compiler. Both wasm files are uploaded, with their SHA-256 in the job
+# summary. Nothing is deployed from here.
+on:
+  push:
+    paths:
+      - "near/**"
+      - ".github/workflows/near-build.yml"
+  pull_request:
+    paths:
+      - "near/**"
+      - ".github/workflows/near-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: near
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NEAR_VERSION: "0.23.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust from near/rust-toolchain.toml
+        run: |
+          # With no argument, rustup installs the toolchain the file selects.
+          rustup toolchain install --profile minimal
+          rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            near/target
+          key: near-${{ runner.os }}-${{ hashFiles('near/rust-toolchain.toml', 'near/Cargo.lock') }}
+          restore-keys: near-${{ runner.os }}-
+
+      - name: Install cargo-near ${{ env.CARGO_NEAR_VERSION }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          asset=cargo-near-x86_64-unknown-linux-gnu.tar.gz
+          base="https://github.com/near/cargo-near/releases/download/cargo-near-v${CARGO_NEAR_VERSION}"
+          curl -sSfL --retry 3 -O "$base/$asset" -O "$base/$asset.sha256"
+          sha256sum -c "$asset.sha256"
+          tar xzf "$asset"
+          mkdir -p "$HOME/.cargo/bin"
+          install -m 0755 cargo-near-x86_64-unknown-linux-gnu/cargo-near "$HOME/.cargo/bin/cargo-near"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/cargo-near" near --version
+
+      - name: rounds unit tests (with math.rs's own tests)
+        run: cargo test --locked -p rounds --lib
+
+      - name: usdg unit tests
+        run: cargo test --locked -p usdg
+
+      - name: Build usdg.wasm
+        run: cargo near build non-reproducible-wasm --locked --manifest-path usdg/Cargo.toml
+
+      - name: Build rounds.wasm
+        run: cargo near build non-reproducible-wasm --locked --manifest-path rounds/Cargo.toml
+
+      - name: Integration tests (near-sandbox)
+        # The tests read the wasm files from near/target/near/<name>/<name>.wasm.
+        run: cargo test --locked -p integration-tests -- --test-threads=1
+
+      - name: Checksums
+        run: |
+          sha256sum target/near/usdg/usdg.wasm target/near/rounds/rounds.wasm
+          {
+            echo "### NEAR wasm"
+            echo
+            echo "| File | Bytes | SHA-256 |"
+            echo "|---|---|---|"
+            for f in target/near/usdg/usdg.wasm target/near/rounds/rounds.wasm; do
+              echo "| \`$(basename "$f")\` | $(stat -c %s "$f") | \`$(sha256sum "$f" | cut -d' ' -f1)\` |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usdg-wasm
+          path: near/target/near/usdg/usdg.wasm
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rounds-wasm
+          path: near/target/near/rounds/rounds.wasm
+          if-no-files-found: error
