@@ -101,8 +101,12 @@ function chainOf(row: BmMarketRow): BmChain {
   return c;
 }
 
-export async function runKeeper(opts: { dry?: boolean } = {}): Promise<KeeperReport> {
+// `bounded: false` skips steps 1–3: a rounds-only tick by hand
+// (scripts/rounds-tick.ts) must not move the open bounded markets the cron
+// minds, or resolve and roll them with the laptop's env.
+export async function runKeeper(opts: { dry?: boolean; bounded?: boolean } = {}): Promise<KeeperReport> {
   const dry = !!opts.dry;
+  const bounded = opts.bounded ?? true;
   const startedAt = Date.now();
   const runId = randomUUID();
   const rep: KeeperReport = {
@@ -130,10 +134,10 @@ export async function runKeeper(opts: { dry?: boolean } = {}): Promise<KeeperRep
     return Promise.resolve();
   };
 
-  await log({ action: 'tick', detail: { dry, touchPrints: TOUCH_PRINTS, autoRoll: AUTO_ROLL, rounds: ROUNDS_ON(), nearRounds: NEAR_ROUNDS_ON() } });
+  await log({ action: 'tick', detail: { dry, bounded, touchPrints: TOUCH_PRINTS, autoRoll: AUTO_ROLL, rounds: ROUNDS_ON(), nearRounds: NEAR_ROUNDS_ON() } });
 
   // 1. pending
-  for (const row of await registry.listByState(['pending'])) {
+  for (const row of bounded ? await registry.listByState(['pending']) : []) {
     try {
       if (!row.create_tx) {
         // Claimed but the send never happened (crash before the tx).
@@ -153,7 +157,7 @@ export async function runKeeper(opts: { dry?: boolean } = {}): Promise<KeeperRep
   }
 
   // 2. resolving
-  for (const row of await registry.listByState(['resolving'])) {
+  for (const row of bounded ? await registry.listByState(['resolving']) : []) {
     try {
       const chain = chainOf(row);
       const onchain = row.onchain_market_id ? await readMarket(chain, BigInt(row.onchain_market_id)) : null;
@@ -176,7 +180,7 @@ export async function runKeeper(opts: { dry?: boolean } = {}): Promise<KeeperRep
   }
 
   // 3. open
-  for (const row of await registry.listByState(['open'])) {
+  for (const row of bounded ? await registry.listByState(['open']) : []) {
     rep.checked++;
     try {
       const prints = await printsSince(row.atnx_market_id, row.keeper_cursor, row.created_at);
