@@ -8,7 +8,9 @@
 // from a public NEAR RPC (its arguments and its event), read each quoted
 // market's reference from the contract, fetch the rows by id from the
 // public Supabase REST API with the anon key, rebuild the batch, hash it,
-// and compare; then check each quote's numbers against its row.
+// and compare; then check each quote's numbers against its row. The
+// commitment covers every quote the call carried, including any the
+// contract skipped (the event counts them).
 //
 // Only fetch and the commitment code: no Supabase client, no keys.
 import { decodeMarket, decodePushQuotesArgs, decodeQuotesPushed, houseEventsOf, marketArgs, type QuoteIn, type QuotesPushedEvent } from '../bm/house-types';
@@ -129,6 +131,9 @@ export async function verifyPushFromChain(opts: {
   else {
     if (push.event.commitment !== push.commitment) problems.push(`the event's commitment ${String(push.event.commitment)} is not the call's ${push.commitment}`);
     if (push.event.count !== push.quotes.length) problems.push(`the event counts ${String(push.event.count)} quotes, the call has ${push.quotes.length}`);
+    const { accepted, skipped, count } = push.event;
+    if (accepted === null || skipped === null) problems.push('the event does not say how many quotes the contract took and skipped');
+    else if (count !== null && accepted + skipped !== count) problems.push(`the event's ${accepted} taken and ${skipped} skipped do not add up to its ${count} quotes`);
   }
 
   const references = new Map<number, string>();

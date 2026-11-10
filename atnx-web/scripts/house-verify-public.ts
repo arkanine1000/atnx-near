@@ -16,6 +16,8 @@
 // and in the event. It also checks that every quote's score_e2 and
 // reading_e2 are the rows' vi and raw_vi in hundredths, that print_at is the
 // row's time, and that each print belongs to the market it was pushed for.
+// The commitment covers every quote in the call, including any the contract
+// skipped; the event's counts are printed.
 //
 // Exit code 0 and "OK" when everything matches, 1 and "MISMATCH" when
 // anything does not, 2 when the push cannot be checked.
@@ -68,6 +70,8 @@ async function main() {
   line('sent by', r.push.signer);
   line('to', r.push.receiver);
   line('quotes', r.push.quotes.length);
+  line('taken by the contract', r.push.event?.accepted ?? '(unknown)');
+  line('skipped by the contract', r.push.event?.skipped ?? '(unknown)');
   line('rows found', r.rows);
   line('commitment in the call', r.push.commitment);
   line('commitment in the event', r.push.event?.commitment ?? '(no event)');

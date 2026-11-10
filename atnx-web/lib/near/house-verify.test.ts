@@ -28,7 +28,7 @@ function pushTx(opts: { quotes?: QuoteIn[]; commitment?: string; event?: Record<
   const event =
     opts.event === null
       ? []
-      : [`EVENT_JSON:${JSON.stringify({ standard: 'atnx_house', version: '1.0.0', event: 'quotes_pushed', data: [opts.event ?? { count: String(quotes.length), first_print_id: '901', last_print_id: '905', commitment }] })}`];
+      : [`EVENT_JSON:${JSON.stringify({ standard: 'atnx_house', version: '1.0.0', event: 'quotes_pushed', data: [opts.event ?? { count: String(quotes.length), accepted: String(quotes.length), skipped: '0', first_print_id: '901', last_print_id: '905', commitment }] })}`];
   return {
     status: opts.failed ? { Failure: { ActionError: {} } } : { SuccessValue: '' },
     transaction: { signer_id: KEEPER, receiver_id: CONTRACT, actions },
@@ -85,13 +85,24 @@ test('verifyPushFromChain: the push and crank of a quote on demand reads the sam
   assert.equal(r.ok, true);
 });
 
+test('verifyPushFromChain: quotes the contract skipped are still covered by the commitment', async () => {
+  const commitment = quoteCommitment(buildQuoteBatch(ROWS)).hash;
+  const r = await run(fakeFetch(pushTx({ event: { count: '2', accepted: '1', skipped: '1', first_print_id: '901', last_print_id: '905', commitment } })));
+  assert.deepEqual(r.problems, []);
+  assert.equal(r.push.event?.skipped, 1);
+  const bad = await run(fakeFetch(pushTx({ event: { count: '2', accepted: '2', skipped: '1', commitment } })));
+  assert.match(bad.problems.join('\n'), /do not add up/);
+  const noCounts = await run(fakeFetch(pushTx({ event: { count: '2', commitment } })));
+  assert.match(noCounts.problems.join('\n'), /how many quotes the contract took/);
+});
+
 test('verifyPushFromChain: an edited row, a wrong event or a missing event is a mismatch', async () => {
   const edited = ROWS.map((r) => (r.id === 905 ? { ...r, raw_vi: 514 } : r));
   const r1 = await run(fakeFetch(pushTx(), edited));
   assert.equal(r1.ok, false);
   assert.match(r1.problems.join('\n'), /reading_e2 51300 is not toE2\(raw_vi 514\)/);
 
-  const r2 = await run(fakeFetch(pushTx({ event: { count: '3', commitment: 'f'.repeat(64) } })));
+  const r2 = await run(fakeFetch(pushTx({ event: { count: '3', accepted: '3', skipped: '0', commitment: 'f'.repeat(64) } })));
   assert.match(r2.problems.join('\n'), /the event's commitment f{64} is not the call's/);
   assert.match(r2.problems.join('\n'), /the event counts 3 quotes, the call has 2/);
 
