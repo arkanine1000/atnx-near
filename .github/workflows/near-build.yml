@@ -1,8 +1,9 @@
 name: near-build
 
-# The NEAR contracts live under near/: usdg (a NEP-141 test token) and
-# rounds (rolling VI rounds, ported from programs/vi_rounds). One job: the
-# unit tests, a reproducible build of both wasm files with
+# The NEAR contracts live under near/: usdg (a NEP-141 test token), rounds
+# (rolling VI rounds, ported from programs/vi_rounds) and house (long or
+# short the VI against a vault). One job: the unit tests, a reproducible
+# build of every wasm file with
 # `cargo near build reproducible-wasm`, then the near-sandbox integration
 # tests against those same wasm files, so the tests run the bytes that get
 # uploaded. The reproducible build clones the checked-out commit into a
@@ -11,7 +12,7 @@ name: near-build
 # NEP-330 metadata (`contract_source_metadata`) naming that image, the build
 # command, the contract path and the commit, so anyone with the repository
 # can rebuild it and compare SHA-256. Rust for the unit tests and the
-# sandbox tests comes from near/rust-toolchain.toml. Both wasm files are
+# sandbox tests comes from near/rust-toolchain.toml. Every wasm file is
 # uploaded, with their SHA-256 and embedded metadata in the job summary.
 # Nothing is deployed from here.
 on:
@@ -85,6 +86,9 @@ jobs:
       - name: usdg unit tests
         run: cargo test --locked -p usdg
 
+      - name: house unit tests (with quote.rs's own tests)
+        run: cargo test --locked -p house --lib
+
       - name: Working tree is the commit
         # The reproducible build compiles a clone of HEAD and leaves anything
         # uncommitted out; outside of `cargo near deploy` it only warns about
@@ -108,6 +112,10 @@ jobs:
         working-directory: near/rounds
         run: cargo near build reproducible-wasm
 
+      - name: Build house.wasm (reproducible, in Docker)
+        working-directory: near/house
+        run: cargo near build reproducible-wasm
+
       - name: Integration tests (near-sandbox, on the reproducible wasm)
         # The tests read the wasm files from near/target/near/<name>/<name>.wasm,
         # where the reproducible build copies them.
@@ -120,7 +128,7 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          python3 - target/near/usdg/usdg.wasm target/near/rounds/rounds.wasm <<'EOF'
+          python3 - target/near/usdg/usdg.wasm target/near/rounds/rounds.wasm target/near/house/house.wasm <<'EOF'
           import hashlib, json, os, sys
 
           B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -184,4 +192,10 @@ jobs:
         with:
           name: rounds-wasm
           path: near/target/near/rounds/rounds.wasm
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: house-wasm
+          path: near/target/near/house/house.wasm
           if-no-files-found: error
