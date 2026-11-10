@@ -39,7 +39,7 @@ The asset ids come from `GET /v0/tokens` (2026-11-09) and are checked against it
 
 ### The recipient: a stand-in, not the trader's account
 
-Every preview is priced for delivery to the all-zero implicit NEAR account (`0000…0000`, 64 hex characters, the implicit-account format the docs list for NEAR). It is the refund account too. The block's preview line says so in its hover text.
+Every preview is priced for delivery to the all-zero implicit NEAR account (`0000…0000`, 64 hex characters, the implicit-account format the docs list for NEAR). It is the refund account too. The "?" beside the block's preview line says so.
 
 - The trader's ATNX account exists on testnet only (`<handle>.atnx.testnet`). Its mainnet look-alike (`<handle>.atnx.near`) is not theirs, so quoting a delivery to it would describe a transfer to a stranger, or to no one. 1Click refuses it anyway: a named recipient that does not exist on mainnet got `400 {"message":"Internal server error"}` on 2026-11-09, with the refund account set to the stand-in or to the same name.
 - Nobody holds a key for the all-zero account. A dry quote has no deposit address, so no money can reach it. `PREVIEW_RECIPIENT` appears only in `buildDryQuoteRequest`. A real quote must never use it, because anything sent there could never be recovered.

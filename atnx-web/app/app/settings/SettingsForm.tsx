@@ -9,7 +9,7 @@ export function SettingsForm({ handle }: { handle: string }) {
   return (
     <div className="space-y-5">
       <div>
-        <div className="text-xs text-tertiary font-mono uppercase tracking-wider mb-2">
+        <div className="text-[13px] text-secondary font-mono uppercase tracking-wider mb-2">
           Handle
         </div>
         <div className={field}>{handle ? `@${handle}` : "—"}</div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Help } from "@/components/house/parts";
 import { friendlyNearError } from "@/lib/near/errors";
 import { useNearAccount } from "./useNearAccount";
 
@@ -44,13 +45,36 @@ export function NearGuestChoice({ onReady, variant = "quiet" }: { onReady?: (acc
     );
   }
 
+  const tryButton = (
+    <button type="button" onClick={go} disabled={working} className={button}>
+      {working ? "Setting up your test account…" : "Try as a guest"}
+    </button>
+  );
+
+  // In the sign-in modal the line stays under the button; under a ticket's
+  // sign-in, and in Settings, it is the note of the "?" beside it.
+  if (variant === "modal") {
+    return (
+      <div>
+        {tryButton}
+        <p className="text-[11px] text-tertiary mt-1.5 text-center">{LIVES_HERE}</p>
+        {error && <p className="text-xs text-atnx-magenta mt-2 break-words text-center">{error}</p>}
+      </div>
+    );
+  }
   return (
     <div>
-      <button type="button" onClick={go} disabled={working} className={button}>
-        {working ? "Setting up your test account…" : "Try as a guest"}
-      </button>
-      <p className="text-[11px] text-tertiary mt-1.5 text-center">Your test account lives in this browser.</p>
-      {error && <p className="text-xs text-atnx-magenta mt-2 break-words text-center">{error}</p>}
+      <Help label="About the guest account" note={LIVES_HERE}>
+        {(help) => (
+          <div className="flex items-center gap-2">
+            <div className="flex-1 min-w-0">{tryButton}</div>
+            {help}
+          </div>
+        )}
+      </Help>
+      {error && <p className="text-sm text-atnx-magenta light:text-atnx-magenta-light mt-2 break-words text-center">{error}</p>}
     </div>
   );
 }
+
+const LIVES_HERE = "Your test account lives in this browser.";

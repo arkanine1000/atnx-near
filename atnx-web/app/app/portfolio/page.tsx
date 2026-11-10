@@ -3,6 +3,7 @@ import { OnchainPortfolio } from "@/components/bm/OnchainPortfolio";
 import { RoundsPortfolio, type PortfolioSeries } from "@/components/rounds/RoundsPortfolio";
 import { NearRoundsPortfolio, type NearPortfolioSeries } from "@/components/rounds/NearRoundsPortfolio";
 import { HousePortfolio, type HousePortfolioMarket } from "@/components/house/HousePortfolio";
+import { TestnetChip } from "@/components/house/parts";
 import { referenceToUuid } from "@/lib/bm/house-types";
 import { isHouseProduct, isNearChain, isNearHouseDeployed, isNearRoundsDeployed } from "@/lib/near/config";
 import { houseContractMissing, houseViewer } from "@/lib/near/house";
@@ -172,8 +173,9 @@ async function HousePortfolioPage() {
   const markets = await loadHouseMarkets();
   return (
     <section>
-      <div className="mb-5">
+      <div className="mb-5 flex items-center gap-3">
         <h2 className="font-display text-xl sm:text-2xl font-bold text-primary tracking-tight">Portfolio</h2>
+        <TestnetChip />
       </div>
       <HousePortfolio markets={markets} />
     </section>

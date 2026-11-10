@@ -20,6 +20,9 @@ export interface StoredTrack extends Tracked {
   market?: number;
   // When the line first showed the outcome.
   doneAtMs?: number;
+  // The transaction that sent the order or the close, for the line's
+  // "View transaction" link.
+  txHash?: string;
 }
 
 const TRACKS = "atnx.house.tracks.";

@@ -372,13 +372,15 @@ export function PresalePane({
 
 // ----------------------------------------------------------------- parts
 
+// The label, the balance, the field and the quick amounts. Legible in a
+// screen recording: 14 px labels in the secondary ink, the balance at 16 px.
 export function AmountInput({ amount, setAmount, usdg, maxBuy, label }: { amount: string; setAmount: (a: string) => void; usdg: bigint; maxBuy: string; label: string }) {
   return (
     <>
-      <div className="flex items-center justify-between text-xs mb-1.5">
+      <div className="flex items-baseline justify-between gap-3 text-sm mb-1.5">
         <span className="text-secondary">{label}</span>
-        <span className="text-tertiary">
-          You have <span className="tabular-nums font-bold text-secondary">{fmtUsdg(usdg, 0)}</span> USDG
+        <span className="text-secondary">
+          You have <span className="text-base tabular-nums font-semibold text-primary">{fmtUsdg(usdg, 0)}</span> USDG
         </span>
       </div>
       <label className="flex items-center gap-2 rounded-xl border border-surface bg-elevated px-3 h-12 focus-within:border-atnx-cyan/60">
@@ -389,11 +391,11 @@ export function AmountInput({ amount, setAmount, usdg, maxBuy, label }: { amount
           className="flex-1 bg-transparent outline-none font-mono text-lg text-primary tabular-nums min-w-0"
           aria-label="Amount of USDG"
         />
-        <span className="text-xs text-tertiary">USDG</span>
+        <span className="text-sm text-secondary">USDG</span>
       </label>
       <div className="flex gap-1.5 mt-2">
         {[...QUICK.map((q) => [String(q), String(q)] as const), ["Max", maxBuy] as const].map(([l, value]) => (
-          <button key={l} type="button" onClick={() => setAmount(value)} className="flex-1 h-8 rounded-lg border border-surface text-xs text-secondary btn-quiet cursor-pointer">
+          <button key={l} type="button" onClick={() => setAmount(value)} className="flex-1 h-8 rounded-lg border border-surface text-sm text-secondary btn-quiet cursor-pointer">
             {l}
           </button>
         ))}
@@ -402,22 +404,24 @@ export function AmountInput({ amount, setAmount, usdg, maxBuy, label }: { amount
   );
 }
 
+// UP or DOWN, with a caption under it (the price it gets in at on the house
+// ticket, the chance on a round), at 16 px in the primary ink.
 export function SideButton({ side, caption, selected, onClick }: { side: RoundSide; caption: string; selected: boolean; onClick: () => void }) {
   const up = side === "up";
   const ring = up ? "border-atnx-cyan shadow-[0_0_18px_rgba(0,212,255,0.25)]" : "border-atnx-magenta shadow-[0_0_18px_rgba(255,0,229,0.25)]";
-  const tone = up ? "text-atnx-cyan" : "text-atnx-magenta";
+  const tone = up ? "text-atnx-cyan light:text-atnx-cyan-light" : "text-atnx-magenta light:text-atnx-magenta-light";
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
       onClick={onClick}
-      className={`h-16 rounded-xl border bg-elevated flex flex-col items-center justify-center gap-0.5 cursor-pointer transition-all ${
-        selected ? ring : "border-surface opacity-70 hover:opacity-100 hover:border-white/20"
+      className={`h-16 rounded-xl border bg-elevated flex flex-col items-center justify-center gap-1 cursor-pointer transition-all ${
+        selected ? ring : "border-surface opacity-80 hover:opacity-100 hover:border-white/20"
       }`}
     >
       <span className={`font-display font-bold text-lg leading-none ${tone}`}>{up ? "↗ UP" : "↘ DOWN"}</span>
-      <span className="text-[11px] text-tertiary tabular-nums">{caption}</span>
+      <span className="text-base font-semibold leading-tight text-primary tabular-nums">{caption}</span>
     </button>
   );
 }

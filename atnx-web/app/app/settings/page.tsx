@@ -19,7 +19,7 @@ export default async function SettingsPage() {
       <div className="max-w-2xl mx-auto w-full">
         <h1 className="font-display text-xl font-bold text-primary mb-6">Settings</h1>
         <div className="bg-surface border border-surface rounded-lg p-6">
-          <h2 className="text-sm font-bold text-primary mb-3">Wallet</h2>
+          <h2 className="text-base font-bold text-primary mb-3">Wallet</h2>
           <WalletSettings />
         </div>
       </div>
@@ -52,7 +52,7 @@ export default async function SettingsPage() {
       </div>
 
       <div className="bg-surface border border-surface rounded-lg p-6 mt-4">
-        <h2 className="text-sm font-bold text-primary mb-3">Wallet</h2>
+        <h2 className="text-base font-bold text-primary mb-3">Wallet</h2>
         <WalletSettings />
       </div>
     </div>
