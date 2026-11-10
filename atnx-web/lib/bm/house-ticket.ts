@@ -21,7 +21,7 @@ import {
   quotePrices,
   spreadBps,
   type QuotePrices,
-} from './house-rules';
+} from './house-math';
 import type { HouseClosed, HouseConfig, HouseMarket, HousePosition, HouseQuote, HouseSide, HouseVault } from './house-types';
 
 const BPS = 10_000n;
@@ -358,6 +358,9 @@ export function inferRefundReason(
   return 'full';
 }
 
+// How long a read may lag a call that went through.
+const LAG_GRACE_MS = 20_000;
+
 // One order or close the ticket is following after the tap.
 export interface Tracked {
   id: bigint;
@@ -396,7 +399,7 @@ export function trackOutcome(
   if (p) {
     if (t.kind === 'close') {
       if (p.state === 'Closing') return { phase: 'waiting', slow, cancellable: false };
-      if (p.state === 'Open' && (t.sawClosing || nowMs - t.sentAtMs >= 20_000)) return { phase: 'close_missed' };
+      if (p.state === 'Open' && (t.sawClosing || nowMs - t.sentAtMs >= LAG_GRACE_MS)) return { phase: 'close_missed' };
       return { phase: 'waiting', slow, cancellable: false };
     }
     if (p.state === 'Pending') return { phase: 'waiting', slow, cancellable: nowSecs >= p.placedAt + cfg.orderTtlSecs };
@@ -406,6 +409,9 @@ export function trackOutcome(
   if (closed) return { phase: 'closed', closed };
   if (t.kind === 'close') return { phase: 'closed', closed: null };
   if (t.kind === 'cancel') return { phase: 'refunded', reason: 'cancelled' };
+  // The node read right after the tap can lag the order by a block or two:
+  // an order never seen is still waiting for its first 20 seconds.
+  if (!t.last && nowMs - t.sentAtMs < LAG_GRACE_MS) return { phase: 'waiting', slow: false, cancellable: false };
   return { phase: 'refunded', reason: t.last ? inferRefundReason(t.last, now.market, cfg, nowSecs) : null };
 }
 

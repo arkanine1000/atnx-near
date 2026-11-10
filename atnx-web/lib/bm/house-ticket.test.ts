@@ -339,6 +339,10 @@ test('trackOutcome: an order confirms, fills, or is refunded', () => {
   // Gone without one: refunded.
   assert.equal(trackOutcome(t, { position: null, history: [closed(6n)], market: market() }, CFG, at(30)).phase, 'refunded');
   assert.deepEqual(trackOutcome({ ...t, kind: 'cancel' }, { position: null, history: [], market: market() }, CFG, at(950)), { phase: 'refunded', reason: 'cancelled' });
+  // Not seen yet right after the tap: the read may lag; after 20 seconds it counts as refunded.
+  const unseen: Tracked = { id: 9n, kind: 'open', sentAtMs: NOW * 1000, last: null };
+  assert.equal(trackOutcome(unseen, { position: null, history: [], market: market() }, CFG, (NOW + 3) * 1000).phase, 'waiting');
+  assert.deepEqual(trackOutcome(unseen, { position: null, history: [], market: market() }, CFG, (NOW + 21) * 1000), { phase: 'refunded', reason: null });
 });
 
 test('trackOutcome: a close settles, or misses its limit and goes back to Open', () => {
