@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { JsonRpcProvider } from "near-api-js";
 import { useAuth } from "@/context/AuthContext";
-import { NearActError, createActor, type ActResult } from "@/lib/near/client";
-import { isNearRoundsDeployed, type UserMethod } from "@/lib/near/config";
+import { NearActError, createActor, type ActResult, type NearMethod } from "@/lib/near/client";
+import { HOUSE_METHOD_GAS, NEAR_HOUSE, NEAR_PARENT, NEAR_RPC, isHouseProduct, isNearHouseDeployed, isNearRoundsDeployed } from "@/lib/near/config";
+import { hasHouseKey } from "@/lib/near/house";
+import { houseAccountId } from "@/lib/near/house-account";
 import { notifyGuestChanged, onGuestChanged } from "@/lib/near/guest-local";
 import { createGuestKey, createSigner, keyStoreAvailable, loadGuest, loadOrCreateSigner, loadSigner, saveGuestAccount } from "@/lib/near/keystore";
 import { webCryptoEd25519Supported, type WebCryptoSigner } from "@/lib/near/signer";
@@ -34,6 +37,16 @@ import { webCryptoEd25519Supported, type WebCryptoSigner } from "@/lib/near/sign
 // guest branch. A guest who signs in gets their own user account as before;
 // the guest account stays in this browser, separate (guestAccountId), and
 // is the one used again after signing out. Nothing merges them.
+//
+// With the house on (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) the hook speaks for
+// the house account instead: the rounds account is still made and kept as
+// before, and the route also makes its derived house account
+// (houseAccountId) with the same browser key. accountId and guestAccountId
+// are the house accounts, act() signs for the house account on the house
+// contract, and "ready" also needs the house account to hold this
+// browser's key on chain; until it does the status is "none", and setting
+// up (ensureAccount, or startGuest for a guest) asks the route again, which
+// makes it.
 
 export type NearAccountStatus = "unconfigured" | "signed-out" | "loading" | "none" | "creating" | "ready" | "other-browser" | "unsupported" | "error";
 
@@ -48,6 +61,32 @@ interface AccountSnapshot {
   server: ServerAccount | null;
   localKey: string | null;
   supported: boolean;
+  // House on: whether the house account holds this browser's key (null
+  // when there is nothing to look at yet).
+  houseReady?: boolean | null;
+}
+
+const HOUSE = isHouseProduct();
+
+let rpc: JsonRpcProvider | null = null;
+function provider(): JsonRpcProvider {
+  if (!rpc) rpc = new JsonRpcProvider({ url: NEAR_RPC });
+  return rpc;
+}
+
+// The account the page trades with and links to: the house account of a
+// rounds account when the house is on, the rounds account otherwise.
+function asHouse(id: string | null): string | null {
+  return HOUSE && id ? houseAccountId(id, NEAR_PARENT) : id;
+}
+
+// Whether the house account of `roundsAccountId` holds `publicKey` as a key
+// for the house contract. A failed read counts as no: setting up again is
+// harmless (the route reuses an account that already has the key).
+async function houseReadyFor(roundsAccountId: string, publicKey: string): Promise<boolean> {
+  const id = houseAccountId(roundsAccountId, NEAR_PARENT);
+  if (!id) return false;
+  return hasHouseKey(provider(), id, publicKey, NEAR_HOUSE).catch(() => false);
 }
 
 export class NearAccountError extends Error {
@@ -139,7 +178,9 @@ async function setUp(userId: string, fresh: boolean): Promise<string> {
 async function setUpGuest(): Promise<string> {
   if (!(await ed25519Supported())) throw new NearAccountError("unsupported", "This browser can't hold a test account. Try a recent Chrome, Firefox or Safari.");
   let g = (await loadGuest()) ?? (await createGuestKey());
-  if (g.accountId) {
+  // With the house on, a guest made before still asks the route, which
+  // makes its house account.
+  if (g.accountId && !HOUSE) {
     guestSigner = g.signer;
     return g.accountId;
   }
@@ -174,6 +215,8 @@ async function setUpGuest(): Promise<string> {
 }
 
 const GUEST_ERRORS: Record<string, string> = {
+  house_account_clash: "Your test account's trading name is already in use on chain. Try again in another browser, or sign in.",
+  house_create_failed: "Your test account could not be set up just now. Try again.",
   guest_limit_ip: "Too many guest accounts from your network in the last hour. Sign in, or try again later.",
   guest_limit_day: "Today's guest accounts are used up. Sign in with Google or X to try ATNX.",
   relayer_empty: "Guest accounts are paused for a moment on our side. Try again later.",
@@ -184,6 +227,9 @@ const GUEST_ERRORS: Record<string, string> = {
 
 const ACCOUNT_ERRORS: Record<string, string> = {
   other_key: "Your account was set up in another browser.",
+  house_account_clash: "Your trading account's name is already in use on chain, so it can't be set up. Ask us to help.",
+  house_name: "Your trading account's name is too long to set up. Ask us to help.",
+  house_create_failed: "Your trading account could not be set up just now. Try again.",
   account_limit: "This sign-in has started over too many times. Ask us to help.",
   create_failed: "Your account could not be set up just now. Try again.",
   bad_public_key: "This browser made an unusable key. Reload and try again.",
@@ -208,20 +254,24 @@ export interface NearAccount {
   startFresh: () => Promise<string>;
   // Makes (or finds) this browser's guest account. Signed-out only.
   startGuest: () => Promise<string>;
-  act: (method: UserMethod, args: Record<string, unknown>) => Promise<ActResult>;
+  act: (method: NearMethod, args: Record<string, unknown>) => Promise<ActResult>;
   refetch: () => void;
 }
 
 interface GuestSnapshot {
   accountId: string | null;
   supported: boolean;
+  // House on: whether the guest's house account holds its key.
+  houseReady?: boolean | null;
 }
 
 export function useNearAccount(): NearAccount {
   const { user, loading: authLoading } = useAuth();
   const userId = user?.id ?? null;
   const queryClient = useQueryClient();
-  const configured = isNearRoundsDeployed();
+  // The house needs its contract too; accounts are made on the rounds as
+  // before either way.
+  const configured = HOUSE ? isNearHouseDeployed() && isNearRoundsDeployed() : isNearRoundsDeployed();
   const isCreating = useSyncExternalStore(
     subscribeCreating,
     () => (userId ? creating.has(userId) : false),
@@ -232,13 +282,20 @@ export function useNearAccount(): NearAccount {
     queryKey: ["near", "account", userId],
     enabled: configured && !!userId,
     staleTime: 30_000,
-    // While another tab is creating the account, look again every few seconds.
-    refetchInterval: (query) => ((query.state.data as AccountSnapshot | undefined)?.server?.state === "creating" ? 3_000 : false),
+    // While another tab is creating the account (or, house on, its house
+    // account is not readable yet), look again every few seconds.
+    refetchInterval: (query) => {
+      const d = query.state.data as AccountSnapshot | undefined;
+      return d?.server?.state === "creating" || d?.houseReady === false ? 3_000 : false;
+    },
     queryFn: async (): Promise<AccountSnapshot> => {
       const [server, supported] = await Promise.all([readServer(), ed25519Supported()]);
       const signer = supported ? (signers.get(userId!) ?? (await loadSigner(userId!).catch(() => null))) : null;
       if (signer) signers.set(userId!, signer);
-      return { server, localKey: signer?.publicKeyString ?? null, supported };
+      const localKey = signer?.publicKeyString ?? null;
+      if (!HOUSE) return { server, localKey, supported };
+      const houseReady = server?.state === "active" && localKey === server.publicKey ? await houseReadyFor(server.accountId, localKey) : null;
+      return { server, localKey, supported, houseReady };
     },
   });
 
@@ -251,11 +308,14 @@ export function useNearAccount(): NearAccount {
     queryKey: ["near", "guest"],
     enabled: configured,
     staleTime: Infinity,
+    refetchInterval: (query) => ((query.state.data as GuestSnapshot | undefined)?.houseReady === false ? 3_000 : false),
     queryFn: async (): Promise<GuestSnapshot> => {
       const supported = await ed25519Supported();
       const g = supported ? await loadGuest().catch(() => null) : null;
       if (g?.accountId) guestSigner = g.signer;
-      return { accountId: g?.accountId ?? null, supported };
+      if (!HOUSE) return { accountId: g?.accountId ?? null, supported };
+      const houseReady = g?.accountId ? await houseReadyFor(g.accountId, g.publicKey) : null;
+      return { accountId: g?.accountId ?? null, supported, houseReady };
     },
   });
   // A guest made in another tab.
@@ -263,9 +323,11 @@ export function useNearAccount(): NearAccount {
     if (!configured) return;
     return onGuestChanged(() => void queryClient.invalidateQueries({ queryKey: ["near", "guest"] }));
   }, [configured, queryClient]);
-  const guestAccountId = gq.data?.accountId ?? null;
+  const roundsGuestId = gq.data?.accountId ?? null;
   const signedOut = configured && !authLoading && !userId;
-  const isGuest = signedOut && (isGuestCreating || !!guestAccountId);
+  const isGuest = signedOut && (isGuestCreating || !!roundsGuestId);
+  // House on: the guest's house account, once it holds the key.
+  const guestHouseMissing = HOUSE && !!roundsGuestId && gq.data?.houseReady === false;
 
   const snap = q.data;
   const status: NearAccountStatus = !configured
@@ -277,8 +339,10 @@ export function useNearAccount(): NearAccount {
           ? "creating"
           : gq.isLoading
             ? "loading"
-            : guestAccountId
-              ? "ready"
+            : roundsGuestId
+              ? guestHouseMissing
+                ? "none"
+                : "ready"
               : "signed-out"
         : isCreating
           ? "creating"
@@ -293,10 +357,15 @@ export function useNearAccount(): NearAccount {
                   : snap.server.state === "creating"
                     ? "creating"
                     : snap.localKey === snap.server.publicKey
-                      ? "ready"
+                      ? HOUSE && snap.houseReady !== true
+                        ? "none"
+                        : "ready"
                       : "other-browser";
 
-  const accountId = !userId ? (isGuest && guestAccountId ? guestAccountId : null) : snap?.server?.state === "active" ? snap.server.accountId : null;
+  const roundsAccountId = !userId ? (isGuest && roundsGuestId ? roundsGuestId : null) : snap?.server?.state === "active" ? snap.server.accountId : null;
+  // The account the page trades with and links to.
+  const accountId = asHouse(roundsAccountId);
+  const guestAccountId = asHouse(roundsGuestId);
 
   const run = useCallback(
     (fresh: boolean): Promise<string> => {
@@ -324,9 +393,10 @@ export function useNearAccount(): NearAccount {
     setCreating(GUEST_ID, true);
     const p = setUpGuest()
       .then((id) => {
-        // Before "creating" clears, so the page goes straight to ready.
-        queryClient.setQueryData<GuestSnapshot>(["near", "guest"], { accountId: id, supported: true });
-        return id;
+        // Before "creating" clears, so the page goes straight to ready (the
+        // route has made the house account too when the house is on).
+        queryClient.setQueryData<GuestSnapshot>(["near", "guest"], HOUSE ? { accountId: id, supported: true, houseReady: true } : { accountId: id, supported: true });
+        return asHouse(id) ?? id;
       })
       .finally(() => {
         guestEnsuring = null;
@@ -339,20 +409,23 @@ export function useNearAccount(): NearAccount {
 
   const actor = useMemo(() => {
     if (status !== "ready" || !accountId) return null;
-    if (!userId) return isGuest && guestSigner ? createActor({ accountId, signer: guestSigner, guest: true }) : null;
+    // House on: the house account signs for the house contract.
+    const target = HOUSE ? { contractId: NEAR_HOUSE, gas: HOUSE_METHOD_GAS } : {};
+    if (!userId) return isGuest && guestSigner ? createActor({ accountId, signer: guestSigner, guest: true, ...target }) : null;
     const signer = signers.get(userId);
-    return signer ? createActor({ accountId, signer }) : null;
+    return signer ? createActor({ accountId, signer, ...target }) : null;
   }, [status, accountId, userId, isGuest]);
 
   const act = useCallback(
-    async (method: UserMethod, args: Record<string, unknown>) => {
+    async (method: NearMethod, args: Record<string, unknown>) => {
       if (!actor) throw new NearActError("no_account", 0, null, null);
+      const key = HOUSE ? ["near", "house"] : ["near", "rounds"];
       try {
         return await actor.act(method, args);
       } finally {
         // The RPC can lag the call by a block or two: read now and again shortly.
-        void queryClient.invalidateQueries({ queryKey: ["near", "rounds"] });
-        setTimeout(() => void queryClient.invalidateQueries({ queryKey: ["near", "rounds"] }), 2_000);
+        void queryClient.invalidateQueries({ queryKey: key });
+        setTimeout(() => void queryClient.invalidateQueries({ queryKey: key }), 2_000);
       }
     },
     [actor, queryClient],
@@ -363,7 +436,8 @@ export function useNearAccount(): NearAccount {
   return {
     status,
     accountId,
-    previousAccountIds: userId ? (snap?.server?.previousAccountIds ?? []) : [],
+    // Earlier rounds accounts have no house account of their own.
+    previousAccountIds: userId && !HOUSE ? (snap?.server?.previousAccountIds ?? []) : [],
     error: userId ? error : null,
     isGuest,
     guestAccountId,

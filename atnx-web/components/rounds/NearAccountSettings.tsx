@@ -4,8 +4,10 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fmtUsdg } from "@/components/bm/format";
 import { useAuth } from "@/context/AuthContext";
-import { FAUCET_UNITS, isNearRoundsDeployed, nearAccountUrl } from "@/lib/near/config";
+import { faucetArgs } from "@/lib/bm/house-types";
+import { FAUCET_UNITS, HOUSE_FAUCET_UNITS, isHouseProduct, isNearHouseDeployed, isNearRoundsDeployed, nearAccountUrl } from "@/lib/near/config";
 import { friendlyNearError } from "@/lib/near/errors";
+import { nearHouseViewer } from "@/lib/near/house";
 import { callArgs } from "@/lib/near/rounds";
 import { FundFromAnyChain } from "./FundFromAnyChain";
 import { NearGuestChoice } from "./NearGuestChoice";
@@ -21,6 +23,12 @@ import { nearViewer } from "./useNearRounds";
 // Signed out, the same block shows this browser's guest account, with a way
 // to sign in, or offers one ("Try as a guest"). Signed in, a guest account
 // still in this browser is named at the bottom: it stays separate.
+//
+// With the house on (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) the account is the
+// house account, and the balance and the faucet are the house contract's:
+// up to 10,000 test USDG per account in all.
+const HOUSE = isHouseProduct();
+
 export function NearAccountSettings() {
   const near = useNearAccount();
   const { user, openLoginModal } = useAuth();
@@ -29,19 +37,36 @@ export function NearAccountSettings() {
   const accountId = near.accountId;
 
   const balance = useQuery({
-    queryKey: ["near", "rounds", "usdg", accountId],
-    enabled: !!accountId && isNearRoundsDeployed(),
+    queryKey: HOUSE ? ["near", "house", "usdg", accountId] : ["near", "rounds", "usdg", accountId],
+    enabled: !!accountId && (HOUSE ? isNearHouseDeployed() : isNearRoundsDeployed()),
     refetchInterval: 15_000,
-    queryFn: () => nearViewer().balanceOf(accountId!),
+    queryFn: () => (HOUSE ? nearHouseViewer().balanceOf(accountId!) : nearViewer().balanceOf(accountId!)),
   });
+  // The house faucet's allowance left for this account.
+  const claimed = useQuery({
+    queryKey: ["near", "house", "claimed", accountId],
+    enabled: HOUSE && !!accountId && isNearHouseDeployed(),
+    refetchInterval: 60_000,
+    queryFn: async () => {
+      const v = nearHouseViewer();
+      const [cfg, used] = await Promise.all([v.config(), v.faucetClaimed(accountId!)]);
+      return cfg.faucetPerAccount !== null && used !== null ? cfg.faucetPerAccount - used : HOUSE_FAUCET_UNITS;
+    },
+  });
+  const houseFaucet = claimed.data === undefined ? HOUSE_FAUCET_UNITS : claimed.data > HOUSE_FAUCET_UNITS ? HOUSE_FAUCET_UNITS : claimed.data < 0n ? 0n : claimed.data;
 
   async function faucet() {
     setBusy("faucet");
     setNote(null);
     try {
-      await near.act("faucet", callArgs.faucet(FAUCET_UNITS));
+      if (HOUSE) {
+        await near.act("faucet", faucetArgs(houseFaucet));
+        void claimed.refetch();
+      } else {
+        await near.act("faucet", callArgs.faucet(FAUCET_UNITS));
+      }
       void balance.refetch();
-      setNote("Got 1,000 test USDG.");
+      setNote(HOUSE ? `Got ${fmtUsdg(houseFaucet, 0)} test USDG.` : "Got 1,000 test USDG.");
     } catch (err) {
       setNote(friendlyNearError(err));
     } finally {
@@ -53,7 +78,7 @@ export function NearAccountSettings() {
     setBusy("setup");
     setNote(null);
     try {
-      await (fresh ? near.startFresh() : near.ensureAccount());
+      await (fresh ? near.startFresh() : near.isGuest ? near.startGuest() : near.ensureAccount());
     } catch (err) {
       setNote(friendlyNearError(err));
     } finally {
@@ -61,6 +86,7 @@ export function NearAccountSettings() {
     }
   }
 
+  if (HOUSE && !isNearHouseDeployed()) return <p className="text-xs text-secondary">Trading is not live on NEAR testnet yet.</p>;
   if (!isNearRoundsDeployed()) return <p className="text-xs text-secondary">Rounds are not live on NEAR testnet yet.</p>;
 
   const row = "flex items-center justify-between gap-3 py-2.5 border-b border-surface last:border-b-0 text-xs";
@@ -90,7 +116,7 @@ export function NearAccountSettings() {
   if (near.status === "signed-out" || near.status === "loading") {
     return (
       <div>
-        <p className="text-xs text-secondary mb-3">Sign in to get a trading account for the rounds. There is nothing to install and nothing to pay.</p>
+        <p className="text-xs text-secondary mb-3">{HOUSE ? "Sign in to get a trading account." : "Sign in to get a trading account for the rounds."} There is nothing to install and nothing to pay.</p>
         <button type="button" onClick={openLoginModal} disabled={near.status === "loading"} className="h-8 px-3 rounded-full btn-cyan text-xs font-bold cursor-pointer disabled:opacity-40">
           Sign in
         </button>
@@ -150,11 +176,12 @@ export function NearAccountSettings() {
         </div>
         <button
           type="button"
-          disabled={!!busy || near.status !== "ready"}
+          disabled={!!busy || near.status !== "ready" || (HOUSE && houseFaucet <= 0n)}
           onClick={faucet}
+          title={HOUSE && houseFaucet <= 0n ? "This account has had all the test USDG it can get." : undefined}
           className="h-8 px-3 rounded-full btn-cyan text-xs font-bold cursor-pointer disabled:opacity-40 whitespace-nowrap"
         >
-          {busy === "faucet" ? "Getting…" : "Get 1,000"}
+          {busy === "faucet" ? "Getting…" : HOUSE ? (houseFaucet > 0n ? `Get ${fmtUsdg(houseFaucet, 0)}` : "All claimed") : "Get 1,000"}
         </button>
       </div>
       {near.status === "other-browser" && (
