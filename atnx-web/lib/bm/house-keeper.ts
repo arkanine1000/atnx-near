@@ -41,7 +41,7 @@ import * as registry from './registry';
 // The house keeper on NEAR testnet: it reads each listed market's newest VI
 // print, pushes the prints to the house contract as quotes with a
 // commitment to the rows, cranks every position with something due, and
-// keeps the contract's market list in step with atnx.app. Three runs:
+// keeps the contract's market list in step with atnx.app. Four runs:
 //
 //   tickHouse       every five minutes, a minute after the VI cron's
 //                   boundary (/api/bm/house-keeper, 1-59/5 * * * *):
@@ -64,6 +64,9 @@ import * as registry from './registry';
 //   quoteOnDemand   from the relay route, right after a user's open or
 //                   close: that market's quote and the crank, in one
 //                   transaction signed with the keeper's second key.
+//   listHouseMarkets  by hand (npm run house:tick -- --list): step 5's
+//                   listing for every eligible market in one run, one after
+//                   the other, with no time budget, for the first deploy.
 //
 // Every time the contract compares is on the chain's clock, so read_at is
 // the latest block's timestamp fetched just before each batch of database
@@ -498,7 +501,7 @@ function tally(xs: Array<{ action: DueAction }>): Record<string, number> {
 
 // Step 5's listing: atnx.app markets that qualify and are not on chain,
 // each with its creator's house account as the finder. `deadline` null
-// lists them all; otherwise no listing starts after it.
+// lists them all (the --list run); otherwise no listing starts after it.
 async function listEligible(args: {
   atnx: AtnxMarketRow[];
   onChain: HouseMarket[];
@@ -757,6 +760,57 @@ export async function tickHouse(opts: { dry?: boolean; deps?: Partial<HouseDeps>
     await fail('house-vault', err);
   }
 
+  return finish();
+}
+
+// ------------------------------------------------------ first listing
+
+// Lists every eligible atnx.app market in one run, one transaction after
+// the other and with no time budget: for the first deploy, when some fifty
+// markets wait and a tick lists only what fits in its budget. Dry by
+// default from the script, like the rest.
+export async function listHouseMarkets(opts: { dry?: boolean; deps?: Partial<HouseDeps> } = {}): Promise<HouseReport> {
+  const deps = withDefaults(opts.deps);
+  const dry = !!opts.dry;
+  const { chain } = deps;
+  const rep = emptyReport('list', dry, chain.contractId());
+  const log = makeLog(rep, deps, dry);
+  const fail = async (action: string, err: unknown, detail?: Record<string, unknown>) => {
+    rep.errors++;
+    await log({ action, error: msg(err), detail: detail ?? null });
+  };
+  const finish = async () => {
+    await log({ action: 'house-done', detail: summary(rep) });
+    return rep;
+  };
+  await log({ action: 'house-list-all', detail: { dry } });
+
+  let atnx: AtnxMarketRow[];
+  try {
+    atnx = await deps.db.atnxMarkets();
+  } catch (err) {
+    rep.stopped = `could not read atnx.app's markets: ${msg(err)}`;
+    await fail('house-atnx-markets', err);
+    return finish();
+  }
+  let cfg: HouseConfig;
+  let markets: HouseMarket[];
+  try {
+    cfg = await chain.config();
+    markets = await listAllMarkets(chain);
+  } catch (err) {
+    rep.stopped = describeChainFailure(err, rep.contract);
+    await fail('house-chain', rep.stopped);
+    return finish();
+  }
+  rep.markets = markets.length;
+  const keeperId = chain.keeperId();
+  if (!dry && keeperId !== cfg.keeper) {
+    rep.stopped = `the contract's keeper is ${cfg.keeper}, this keeper signs as ${keeperId ?? '(not configured)'}`;
+    await fail('house-chain', rep.stopped);
+    return finish();
+  }
+  await listEligible({ atnx, onChain: markets, cfg, deps, rep, log, fail, dry, deadline: null });
   return finish();
 }
 

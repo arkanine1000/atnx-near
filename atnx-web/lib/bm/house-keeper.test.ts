@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { quoteOnDemand, tickHouse, tickHouseFast, minuteOfTick, type HouseChain, type HouseDb, type HouseDeps, type HouseLogEntry } from './house-keeper';
+import { listHouseMarkets, quoteOnDemand, tickHouse, tickHouseFast, minuteOfTick, type HouseChain, type HouseDb, type HouseDeps, type HouseLogEntry } from './house-keeper';
 import type { HousePushed } from './house-near';
 import type { AtnxMarketRow } from './house-rules';
 import { applyQuotes } from './house-rules';
@@ -514,6 +514,62 @@ test('tickHouse: one failing crank batch does not stop the next', async () => {
   assert.equal(rep.cranked, 6);
   assert.equal(rep.errors, 1);
   assert.equal(chain.sent('list_market').length, 1);
+});
+
+// ------------------------------------------------------ listHouseMarkets
+
+function listingScene() {
+  const clock = new Clock((T + 105) * 1000);
+  const chain = new FakeChain(clock, [], []);
+  // Each transaction takes 20 seconds.
+  chain.sendSecs = 20;
+  const db = new FakeDb();
+  db.atnx = ['1', '2', '3', '4', '5'].map((c) => atnxRow(c));
+  db.atnx.push(atnxRow('6', { current_vi: 50 }));
+  db.accounts.set('user-2', 'bob.atnx.testnet');
+  const logs: HouseLogEntry[] = [];
+  return { clock, chain, db, logs, d: deps(clock, chain, db, logs) };
+}
+
+test('listHouseMarkets: every eligible market in one run, past any tick budget', async () => {
+  const { chain, d, logs } = listingScene();
+  const rep = await listHouseMarkets({ deps: d });
+  assert.equal(rep.run, 'list');
+  assert.deepEqual(
+    chain.sent('list_market').map((c) => c.args.reference),
+    ['1', '2', '3', '4', '5'].map(ref)
+  );
+  assert.equal(chain.sent('list_market')[1].args.finder, 'bob-h.atnx.testnet');
+  assert.equal(rep.listed, 5);
+  assert.deepEqual(
+    chain.calls.map((c) => c.method),
+    Array(5).fill('list_market')
+  );
+  assert.equal(logs.filter((l) => l.action === 'house-list').length, 5);
+  // A five-minute tick lists only what fits in its 45 seconds.
+  const t = listingScene();
+  const tick = await tickHouse({ deps: t.d });
+  assert.equal(tick.listed, 3);
+  assert.ok(t.logs.some((l) => l.action === 'house-budget'));
+});
+
+test('listHouseMarkets: dry by default from the script; a dry run sends and writes nothing', async () => {
+  const { chain, d, logs } = listingScene();
+  const rep = await listHouseMarkets({ dry: true, deps: d });
+  assert.deepEqual(chain.calls, []);
+  assert.deepEqual(logs, []);
+  assert.equal(rep.listed, 5);
+});
+
+test('listHouseMarkets: a settled reference is listed again, a listed one is left alone', async () => {
+  const { chain, d } = listingScene();
+  chain.markets = [mkt(0, '1', [], 'Settled'), mkt(1, '2', [])];
+  const rep = await listHouseMarkets({ deps: d });
+  assert.deepEqual(
+    chain.sent('list_market').map((c) => c.args.reference),
+    ['1', '3', '4', '5'].map(ref)
+  );
+  assert.equal(rep.listed, 4);
 });
 
 // --------------------------------------------------------- tickHouseFast
