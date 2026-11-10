@@ -309,6 +309,50 @@ async fn orders_fill_after_a_fresh_read_and_positions_end() -> anyhow::Result<()
     Ok(())
 }
 
+/// 1x: a long has no liquidation level above zero and a short's is twice
+/// its entry. With the score halved, where a 2x long would be liquidated,
+/// both are still open and close for the stake times the price ratio.
+#[tokio::test]
+async fn positions_at_1x() -> anyhow::Result<()> {
+    let (mut e, m) = setup().await?;
+    let (alice, bob, house) = (e.alice.clone(), e.bob.clone(), e.house.id().clone());
+    let stake = (100 * USDG).to_string();
+
+    let q: Value = view(&e.house, "quote_open", json!({ "market": m, "side": "Long", "leverage": 1, "stake": stake })).await?;
+    assert_eq!((q["allowed"].as_bool(), q["liquidation_e2"].as_str(), q["max_profit"].as_str()), (Some(true), Some("0"), Some("900000000")));
+    let four = json!({ "market": m, "side": "Long", "leverage": 4, "stake": stake, "limit_e2": ANY_LONG });
+    fails_with(&alice, &house, "open", four, "leverage must be 1, 2 or 3").await?;
+
+    let l = e.open(&alice, m, "Long", 1, 100 * USDG, ANY_LONG).await?;
+    let s = e.open(&bob, m, "Short", 1, 100 * USDG, "1").await?;
+    wait(&e.worker, 6).await?;
+    e.reread(m).await?;
+    assert_eq!(e.crank(&[l, s]).await?.0, ["filled", "filled"]);
+    let p: Value = view(&e.house, "get_position", json!({ "id": l.to_string() })).await?;
+    assert_eq!((p["leverage"].as_u64(), p["liquidation_e2"].as_str(), p["reserved"].as_str()), (Some(1), Some("0"), Some("900000000")));
+    let p: Value = view(&e.house, "get_position", json!({ "id": s.to_string() })).await?;
+    assert_eq!((p["leverage"].as_u64(), p["liquidation_e2"].as_str(), p["reserved"].as_str()), (Some(1), Some("100000"), Some("100000000")));
+
+    // The score from 500 to 250 three minutes later (with the score allowed
+    // to move 100 % per five minutes).
+    call_ok(&e.root, &house, "set_config", json!({ "patch": { "max_step_bps": 10_000 } })).await?;
+    wait(&e.worker, 180).await?;
+    e.print(m, 25_000, 25_000).await?;
+    assert_eq!(e.crank(&[l, s]).await?.0, ["waiting", "waiting"]);
+    call_ok(&alice, &house, "close", json!({ "position_id": l.to_string(), "limit_e2": "1" })).await?;
+    call_ok(&bob, &house, "close", json!({ "position_id": s.to_string(), "limit_e2": ANY_LONG })).await?;
+    wait(&e.worker, 6).await?;
+    e.reread(m).await?;
+    let (a0, b0) = (balance(&e.house, alice.id()).await?, balance(&e.house, bob.id()).await?);
+    assert_eq!(e.crank(&[l, s]).await?.0, ["closed", "closed"]);
+    assert_eq!(balance(&e.house, alice.id()).await? - a0, 50 * USDG, "the long: 100 × 250/500");
+    assert_eq!(balance(&e.house, bob.id()).await? - b0, 150 * USDG, "the short: 100 × (2 − 250/500)");
+    let v: Value = view(&e.house, "get_vault", json!({})).await?;
+    assert_eq!((n(&v["reserved"]), n(&v["margin"])), (0, 0));
+    e.invariants().await?;
+    Ok(())
+}
+
 /// One push with a quote for each of 75 markets, the batch the keeper sends
 /// every five minutes, and bad entries skipped inside it.
 #[tokio::test]

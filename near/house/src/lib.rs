@@ -1,6 +1,6 @@
 //! A house market on the ATNX Virality Index (VI), on NEAR.
 //!
-//! Anyone goes long or short a market's VI at 2x or 3x against a vault. The
+//! Anyone goes long or short a market's VI at 1x, 2x or 3x against a vault. The
 //! most a position can lose is its stake; the most it can win is set by
 //! `max_profit_bps` (nine times the stake for a long by default, leverage ×
 //! stake for a short) and is reserved in the vault when the order fills, so
@@ -46,7 +46,8 @@ use near_sdk::{
 
 pub mod quote;
 use quote::{
-    cap_e2, capped, fee_of, liquidatable, liquidation_e2, max_profit, payout, pnl, prices, spread_bps, split_fee,
+    cap_e2, capped, fee_of, leverage_ok, liquidatable, liquidation_e2, max_profit, payout, pnl, prices, spread_bps,
+    split_fee,
     to_assets, to_shares, Prices, BPS,
 };
 
@@ -735,7 +736,7 @@ impl HouseError {
             HouseError::ScoreTooLow => "score is under the minimum to open",
             HouseError::SpreadTooWide => "the two prices are too far apart",
             HouseError::ZeroPrice => "the price is zero",
-            HouseError::BadLeverage => "leverage must be 2 or 3",
+            HouseError::BadLeverage => "leverage must be 1, 2 or 3",
             HouseError::StakeTooSmall => "stake below the minimum",
             HouseError::StakeTooLarge => "stake above the maximum",
             HouseError::LimitRequired => "a limit price is required",
@@ -1356,7 +1357,7 @@ impl Contract {
 
     // ------------------------------------------------------------ trading
 
-    /// Places an order for a position: `stake` at `leverage` (2 or 3) on
+    /// Places an order for a position: `stake` at `leverage` (1, 2 or 3) on
     /// `side`, filling no worse than `limit_e2` (long: the highest entry
     /// accepted; short: the lowest). Debits stake + fee into the vault's
     /// margin; the order fills at the first quote read after it (see
@@ -1753,7 +1754,7 @@ impl Contract {
         let fee = fee_of(stake, self.config.fee_bps as u64);
         let (finder_fee, _) = split_fee(fee, self.config.finder_bps as u64, has_finder);
         let entry = px.open(side);
-        let lev_ok = leverage == 2 || leverage == 3;
+        let lev_ok = leverage_ok(leverage);
         let mp = if lev_ok { max_profit(side, leverage, stake, self.config.max_profit_bps as u64) } else { 0 };
         let (liq, cap, value) = if lev_ok && entry > 0 {
             (
@@ -1889,7 +1890,7 @@ impl Contract {
     ) -> Result<(), HouseError> {
         let c = &self.config;
         let ok = |cond: bool, e: HouseError| if cond { Ok(()) } else { Err(e) };
-        ok(leverage == 2 || leverage == 3, HouseError::BadLeverage)?;
+        ok(leverage_ok(leverage), HouseError::BadLeverage)?;
         ok(stake as u128 >= c.min_stake.0, HouseError::StakeTooSmall)?;
         ok(stake as u128 <= c.max_stake.0, HouseError::StakeTooLarge)?;
         ok(!c.opens_paused, HouseError::OpensPaused)?;

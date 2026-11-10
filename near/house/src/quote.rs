@@ -169,11 +169,20 @@ pub fn payout(stake: u64, pnl: i128, max_profit: u64) -> u64 {
     v.clamp(0, stake as i128 + max_profit as i128) as u64
 }
 
+/// The leverage an order may take: 1x (the stake itself), 2x or 3x.
+pub const MAX_LEVERAGE: u8 = 3;
+
+pub fn leverage_ok(leverage: u8) -> bool {
+    (1..=MAX_LEVERAGE).contains(&leverage)
+}
+
 /// Liquidation, compared exactly (no rounding): a long when the buy price is
 /// at or below entry × (1 − 1/leverage), so both the score and the lead are
 /// there; a short when the sell price is at or above entry × (1 + 1/leverage).
+/// At 1x a long's level is 0, so no price above zero liquidates it, and a
+/// short's is twice its entry.
 pub fn liquidatable(side: Side, leverage: u8, entry: u64, p: &Prices) -> bool {
-    let lev = leverage.max(2) as u128;
+    let lev = leverage.max(1) as u128;
     let e = entry as u128;
     match side {
         Side::Long => p.buy as u128 * lev <= e * (lev - 1),
@@ -182,9 +191,9 @@ pub fn liquidatable(side: Side, leverage: u8, entry: u64, p: &Prices) -> bool {
 }
 
 /// The liquidation level as a price: the highest buy price that liquidates
-/// a long, the lowest sell price that liquidates a short.
+/// a long (0 at 1x), the lowest sell price that liquidates a short.
 pub fn liquidation_e2(side: Side, leverage: u8, entry: u64) -> u64 {
-    let lev = leverage.max(2) as u128;
+    let lev = leverage.max(1) as u128;
     let e = entry as u128;
     match side {
         Side::Long => sat_u64(e * (lev - 1) / lev),
