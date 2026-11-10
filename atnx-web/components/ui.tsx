@@ -266,9 +266,9 @@ export function EmptyState({
       <div className="mx-auto mb-4 h-12 w-12 rounded-2xl bg-elevated border border-surface flex items-center justify-center text-tertiary text-xl">
         {"⌘"}
       </div>
-      <p className="text-primary text-sm font-bold">{title}</p>
+      <p className="text-primary text-base font-bold">{title}</p>
       {body && (
-        <p className="text-tertiary text-xs mt-2 max-w-sm mx-auto leading-relaxed">
+        <p className="text-secondary text-sm mt-2 max-w-sm mx-auto leading-relaxed">
           {body}
         </p>
       )}
