@@ -43,7 +43,9 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
   const sentRecently = tracks.some((t) => nowMs - t.sentAtMs < 20_000);
   const account = useHouseAccount(accountId, { enabled: basics.status === "ready", fast: sentRecently });
   const data = account.data;
-  const ids = useMemo(() => [...(data?.positions ?? []).map((p) => p.market), ...(data?.history ?? []).map((c) => c.market)], [data]);
+  // The markets of the positions still running: their prices value them.
+  // Closed ones need no market read (their names come from `markets`).
+  const ids = useMemo(() => (data?.positions ?? []).map((p) => p.market), [data]);
   const chainMarkets = useHouseMarkets(ids, { enabled: basics.status === "ready", fast: sentRecently || anyWaiting(data?.positions) });
   const meta = useMemo(() => new Map(markets.map((m) => [m.id, m])), [markets]);
   const [busy, setBusy] = useState<string | null>(null);
