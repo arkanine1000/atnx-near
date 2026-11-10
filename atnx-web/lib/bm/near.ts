@@ -26,9 +26,11 @@ export const KEEPER_FLOAT = 10_000_000_000n;
 const TGAS = 1_000_000_000_000n;
 // Plain calls only touch the contract's own state and burn 2–6 TGas
 // (measured by the e2e); faucet and withdraw attach 15 TGas of
-// cross-contract work on top. The signer must hold the prepaid gas at the
-// pessimistic price (about ten times the gas price, roughly 0.001 NEAR per
-// TGas) until the call's refund lands, a block after its outcome, so a
+// cross-contract work on top. On protocol 88 (testnet and mainnet,
+// November 2026) a call and a transaction may each prepay up to 1 PGas,
+// gas costs 0.0001 NEAR per TGas and the pessimistic inflation is 1, so
+// the signer needs the prepaid gas at that price in hand (0.002 NEAR for
+// 20 TGas) until the call's refund lands, a block after its outcome. A
 // small prepaid amount keeps a thinly funded account able to send the
 // next call.
 export const GAS_CALL = 20n * TGAS;
