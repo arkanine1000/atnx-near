@@ -180,14 +180,19 @@ export function rpcProvider(urls: string | readonly string[], opts: RpcProviderO
   }
 
   // The transaction's status at one endpoint, waiting as the send would
-  // have; null when that endpoint does not know it.
+  // have; null when that endpoint does not know it. Asked first without
+  // waiting: a node asked to wait for a transaction it does not know waits
+  // until its own timeout instead of saying so.
   async function statusAt(e: Endpoint, tx: { hash: string; signerId: string }, waitUntil: string): Promise<unknown | null> {
+    const ask = (w: string) => e.client.sendJsonRpc('tx', { tx_hash: tx.hash, sender_account_id: tx.signerId, wait_until: w });
+    let now: unknown;
     try {
-      return await e.client.sendJsonRpc('tx', { tx_hash: tx.hash, sender_account_id: tx.signerId, wait_until: waitUntil });
+      now = await ask('NONE');
     } catch (err) {
       if (!isRetryableRpcError(err) && UNKNOWN_TX.test(texts(err))) return null;
       throw err;
     }
+    return waitUntil === 'NONE' ? now : ask(waitUntil);
   }
 
   async function send(method: string, params: unknown): Promise<unknown> {

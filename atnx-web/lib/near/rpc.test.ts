@@ -147,7 +147,8 @@ test('a send refused by a rate limit is looked up by hash, then sent to the next
     calls.map((c) => `${c.url} ${c.method}`),
     [`${A} send_tx`, `${B} tx`, `${B} send_tx`],
   );
-  assert.deepEqual(asked[0].params, { tx_hash: s.hash, sender_account_id: s.signerId, wait_until: 'EXECUTED_OPTIMISTIC' });
+  // Asked without waiting: a node waits out its timeout for a transaction it does not know.
+  assert.deepEqual(asked[0].params, { tx_hash: s.hash, sender_account_id: s.signerId, wait_until: 'NONE' });
 });
 
 test('a send that failed but landed is not sent again', async () => {
@@ -164,9 +165,10 @@ test('a send that failed but landed is not sent again', async () => {
   const p = rpcProvider([A, B], { make, log });
   const res = (await p.sendJsonRpc('send_tx' as never, { signed_tx_base64: s.b64, wait_until: 'EXECUTED_OPTIMISTIC' } as never)) as { transaction: { hash: string } };
   assert.equal(res.transaction.hash, s.hash);
+  // Known: then waited for as the send would have.
   assert.deepEqual(
     calls.map((c) => c.method),
-    ['send_tx', 'tx'],
+    ['send_tx', 'tx', 'tx'],
   );
 });
 
