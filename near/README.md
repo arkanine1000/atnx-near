@@ -4,7 +4,7 @@ ATNX's contracts on NEAR: a test token, the rolling VI rounds, and the house mar
 
 - `usdg/` is USDG, "ATNX test USD": a NEP-141 test token with 6 decimals. Its only minter is the rounds contract. Transfers register an unregistered receiver at the token contract's expense, so nobody has to call `storage_deposit` first.
 - `rounds/` is the rounds contract. Each series runs back-to-back rounds on one subject's VI: presale commits, an open at the VI target, live buys on Pennock's dynamic pari-mutuel market, a keeper settle on the 30-minute average, then claims or rollovers. `src/math.rs` is a verbatim copy of `programs/vi_rounds/src/math.rs`; change that file and copy it here.
-- `house/` is the house contract: anyone goes long or short a market's VI at 2x or 3x against a vault, at two prices quoted from each print. `src/quote.rs` holds its price arithmetic.
+- `house/` is the house contract: anyone goes long or short a market's VI at 1x, 2x or 3x against a vault, at two prices quoted from each print. `src/quote.rs` holds its price arithmetic.
 - `integration-tests/` deploys the wasm files to a local near-sandbox and runs them end to end (`tests/rounds.rs`, `tests/house.rs`).
 
 ## How money moves
@@ -123,7 +123,7 @@ NEAR adds messages where Anchor's account checks did the work: "not the owner", 
 
 ## house
 
-Anyone goes long or short a market's VI at 2x or 3x against a vault. Money is an internal ledger, as in rounds: no trading call takes a deposit, so a function-call key or a relayer can sign every one. The numbers below are the defaults that `new` sets; `set_config` changes them, each inside a range fixed in the code.
+Anyone goes long or short a market's VI at 1x, 2x or 3x against a vault. Money is an internal ledger, as in rounds: no trading call takes a deposit, so a function-call key or a relayer can sign every one. The numbers below are the defaults that `new` sets; `set_config` changes them, each inside a range fixed in the code.
 
 ### Two prices
 
@@ -137,12 +137,12 @@ Integer arithmetic on hundredths, every rounding in the vault's favour: the gap,
 
 ### Positions
 
-- Stake 10 to 250 USDG at 2x or 3x; 10 pending, open or closing positions per account. The fee, 1 % of the stake, is charged on top of it at the fill: half to the market's finder and half to the treasury, or all to the treasury when the market has none.
+- Stake 10 to 250 USDG at 1x, 2x or 3x; 10 pending, open or closing positions per account. The fee, 1 % of the stake, is charged on top of it at the fill: half to the market's finder and half to the treasury, or all to the treasury when the market has none.
 - PnL: long stake × leverage × (exit / entry − 1); short stake × leverage × (1 − exit / entry). The payout, stake + PnL, is at least 0 and at most stake + the maximum profit: 9 × stake for a long (`max_profit_bps`), leverage × stake for a short.
 - `open` and `close` only place a request, and each names the worst price it accepts. A request fills at the earliest quote in the market's ring of the last 8 whose `last_read_at` is at least `min_fill_delay_secs` (5 s) after it, so the price never depends on who calls `crank` or when. An order with no such quote within `order_ttl_secs` (15 minutes), or whose quote has left the ring, is refunded in full; a close past its limit goes back to Open and the trader asks again. A close can't be withdrawn; an order can be cancelled only once its time to live has passed with no quote to fill at.
 - At the fill the maximum profit is reserved in the vault, inside 2 % of the vault's assets per market and side (`market_cap_bps`) and 80 % in all (`utilisation_cap_bps`); an order that doesn't fit is refunded as "market full". It is also refunded when the price is past its limit or 0, the two prices are more than 10 % of S apart (`max_open_gap_bps`), the score is under 100, or the market is no longer open.
 - `open` refuses an order while opens are paused, on a market that isn't open, inside the 48-hour cool-off after the market went live, when the newest quote was last read more than 15 minutes ago, when the score is under 100 or the two prices are more than 10 % apart, or when the contract's free NEAR is under its storage floor.
-- At the newest quote: a long is liquidated when the buy price is at or below entry × (1 − 1/leverage), a short when the sell price is at or above entry × (1 + 1/leverage), so the score has to be there and not only the reading; the stake goes to the vault, less 1 % of it to whoever cranked (`liq_reward_bps`). A position whose close-side PnL reaches the maximum profit is closed at the cap.
+- At the newest quote: a long is liquidated when the buy price is at or below entry × (1 − 1/leverage), a short when the sell price is at or above entry × (1 + 1/leverage), so the score has to be there and not only the reading (at 1x a long's level is 0, so no price above zero liquidates it, and a short's is twice its entry); the stake goes to the vault, less 1 % of it to whoever cranked (`liq_reward_bps`). A position whose close-side PnL reaches the maximum profit is closed at the cap.
 - 14 days after its fill (`max_position_secs`, fixed at the fill) a position closes through the close path at the first quote read after that moment that has a non-zero close-side price and its two prices no more than `max_open_gap_bps` apart. This close has no limit, so it skips every other print; while it waits the position can still be liquidated or capped.
 
 ### Quotes and markets
@@ -185,7 +185,7 @@ Views: `get_config()`, `get_vault()`, `total_assets()`, `convert_to_shares(asset
 
 NEP-297 logs with `"standard":"atnx_house","version":"1.0.0"`, every value a string: `quotes_pushed` (count, accepted, skipped, first_print_id, last_print_id, commitment), `market_listed`, `market_status`, `order_placed`, `order_filled`, `order_refunded` (with `reason`: limit, zero_price, spread, score, market_closed, market_full, expired, rolled_out, cancelled), `close_requested` (`by` trader or expiry), `close_missed` (with `reason`: limit or zero_price), `position_closed` (with `reason`: close, cap, liquidation, expiry, settled), `lp_deposit`, `lp_withdraw_requested`, `lp_withdraw`, `lp_withdraw_lapsed`, `deposit`, `withdraw`, `faucet`, `opens_paused`, `config_set` and `migrated`. A `crank` writes at most one event per id.
 
-Failures panic with fixed messages, among them "not the owner", "not the keeper", "not the owner or the keeper", "already listed", "market is not open", "new orders are paused", "market is inside its cool-off", "the market's newest quote is too old", "score is under the minimum to open", "the two prices are too far apart", "the price is zero", "leverage must be 2 or 3", "stake below the minimum", "stake above the maximum", "a limit price is required", "position limit reached for this account", "the contract is under its storage floor", "balance too low", "position is not open", "order is not pending", "an order can be cancelled only once its time to live has passed", "order has a quote to fill at", "market has had a quote within the emergency period", "faucet limit reached for this account", "faucet pool too low", "vault deposits are open to the treasury only", "withdrawal request is not ready yet", "not enough unreserved assets in the vault" and "config value out of range: <field>".
+Failures panic with fixed messages, among them "not the owner", "not the keeper", "not the owner or the keeper", "already listed", "market is not open", "new orders are paused", "market is inside its cool-off", "the market's newest quote is too old", "score is under the minimum to open", "the two prices are too far apart", "the price is zero", "leverage must be 1, 2 or 3", "stake below the minimum", "stake above the maximum", "a limit price is required", "position limit reached for this account", "the contract is under its storage floor", "balance too low", "position is not open", "order is not pending", "an order can be cancelled only once its time to live has passed", "order has a quote to fill at", "market has had a quote within the emergency period", "faucet limit reached for this account", "faucet pool too low", "vault deposits are open to the treasury only", "withdrawal request is not ready yet", "not enough unreserved assets in the vault" and "config value out of range: <field>".
 
 ## Known limits
 

@@ -797,6 +797,87 @@ fn a_short_is_liquidated_only_when_both_prices_reach_the_level() {
     assert_eq!(t.vault().reserved.0, 0);
 }
 
+// ------------------------------------------------------------------ 1x
+
+/// 1x is the stake itself: the same two prices, a third of what a 3x
+/// position gains or loses.
+#[test]
+fn worked_example_both_sides_at_1x() {
+    let (up, down) = ((40_000, 42_000), (48_000, 47_000));
+    // A long: in at the buy price 408.80, out at the sell price 476.41.
+    assert_eq!(round_trip(Side::Long, 1, up, down, true), (40_880, 47_641, 116_538_649, 500_000, 500_000));
+    // A short the same way, 400 to 480, loses a fifth; the other way, in at
+    // 476.41 and out at 408.80, it gains 14.19 %.
+    assert_eq!(round_trip(Side::Short, 1, up, down, true), (40_000, 48_000, 80_000_000, 500_000, 500_000));
+    assert_eq!(round_trip(Side::Short, 1, down, up, true), (47_641, 40_880, 114_191_557, 500_000, 500_000));
+}
+
+/// What `quote_open` says of a 1x order, and the leverage an order may take.
+#[test]
+fn quote_open_at_1x() {
+    let (t, m) = setup(40_000, 42_000);
+    let q = t.view().quote_open(m, Side::Long, 1, u(STAKE), Some(alice()));
+    assert!(q.allowed && q.would_fill, "{:?} {:?}", q.reason, q.fill_reason);
+    assert_eq!((q.entry_e2.0, q.fee.0, q.cost.0), (40_880, USDG as u128, 101 * USDG as u128));
+    assert_eq!((q.liquidation_e2.0, q.cap_e2.0, q.max_profit.0), (0, 408_800, 900 * USDG as u128));
+    // Closed at once at the sell price, 400.00: 100 × (400 / 408.8 − 1) = −2.1526…
+    assert_eq!(q.value_on_fill.0, 97_847_358);
+    let q = t.view().quote_open(m, Side::Short, 1, u(STAKE), Some(alice()));
+    assert!(q.allowed && q.would_fill, "{:?} {:?}", q.reason, q.fill_reason);
+    assert_eq!((q.entry_e2.0, q.liquidation_e2.0, q.cap_e2.0, q.max_profit.0), (40_000, 80_000, 0, STAKE as u128));
+
+    assert_eq!([0u8, 1, 2, 3, 4, 255].map(leverage_ok), [false, true, true, true, false, false]);
+    let at = |buy: u64, sell: u64| Prices { score: sell, lead: buy, buy, sell };
+    assert!(!liquidatable(Side::Long, 1, 40_880, &at(1, 1)), "any price above zero leaves a 1x long open");
+    assert!(liquidatable(Side::Long, 1, 40_880, &at(0, 0)));
+    assert!(!liquidatable(Side::Short, 1, 40_000, &at(79_999, 79_999)));
+    assert!(liquidatable(Side::Short, 1, 40_000, &at(80_000, 80_000)));
+}
+
+/// A 1x long has no liquidation level above zero. Where a 2x long from the
+/// same entry is liquidated it is still open, and far below that it closes
+/// for its stake times the price ratio.
+#[test]
+fn a_1x_long_is_not_liquidated_above_zero() {
+    let (mut t, m) = setup(60_000, 60_000);
+    let one = t.filled(&alice(), m, Side::Long, 1, STAKE);
+    let two = t.filled(&bob(), m, Side::Long, 2, STAKE);
+    let p = t.pos(one).unwrap();
+    assert_eq!((n(p.liquidation_e2), n(p.cap_e2), p.reserved.0), (0, 600_000, 900 * USDG as u128));
+    assert_eq!(n(t.pos(two).unwrap().liquidation_e2), 30_000);
+    t.walk(m, 30_000, 30_000);
+    assert_eq!(t.crank(&carol(), &[one, two]), ["waiting", "liquidated"]);
+    // A tenth of the entry: the position is worth a tenth of its stake.
+    t.walk(m, 6_000, 6_000);
+    assert_eq!(t.crank(&carol(), &[one]), ["waiting"]);
+    let p = t.pos(one).unwrap();
+    assert_eq!((p.value.unwrap().0, p.at_risk), (10 * USDG as u128, false));
+    t.now += 10;
+    t.close(&alice(), one, ANY_SHORT);
+    t.now += 10;
+    t.reread(m);
+    assert_eq!(t.crank(&keeper(), &[one]), ["closed"]);
+    let h = t.last_closed(&alice());
+    assert_eq!((h.reason.as_str(), h.payout.0, h.exit_e2.0), ("close", 10 * USDG as u128, 6_000));
+    assert_eq!(t.vault().reserved.0, 0);
+}
+
+/// A 1x short reserves its stake, the most it can win, and is liquidated
+/// when the sell price is at or above twice its entry.
+#[test]
+fn a_1x_short_is_liquidated_at_twice_its_entry() {
+    let (mut t, m) = setup(60_000, 60_000);
+    let id = t.filled(&alice(), m, Side::Short, 1, STAKE);
+    let p = t.pos(id).unwrap();
+    assert_eq!((n(p.liquidation_e2), n(p.cap_e2), p.reserved.0), (120_000, 0, STAKE as u128));
+    t.walk(m, 119_999, 119_999);
+    assert_eq!(t.crank(&bob(), &[id]), ["waiting"]);
+    t.next(m, 120_000, 120_000);
+    assert_eq!(t.crank(&bob(), &[id]), ["liquidated"]);
+    assert_eq!(t.vault().reserved.0, 0);
+    assert_eq!(t.last_closed(&alice()).payout.0, 0);
+}
+
 /// A 3x long from 500 reaches its cap (a payout of ten times the stake) when
 /// the sell price is 2,000; it is closed there.
 #[test]
@@ -1440,8 +1521,8 @@ fn open_checks_every_term_before_it_debits() {
             c.open(m, side, lev, u(stake), U64(limit));
         });
     };
-    for lev in [0, 1, 4] {
-        try_open(&mut t, "leverage must be 2 or 3", Side::Long, lev, STAKE, ANY_LONG);
+    for lev in [0, 4, 10] {
+        try_open(&mut t, "leverage must be 1, 2 or 3", Side::Long, lev, STAKE, ANY_LONG);
     }
     try_open(&mut t, "stake below the minimum", Side::Long, 3, 10 * USDG - 1, ANY_LONG);
     try_open(&mut t, "stake above the maximum", Side::Short, 3, 250 * USDG + 1, ANY_SHORT);
@@ -1453,8 +1534,8 @@ fn open_checks_every_term_before_it_debits() {
     t.fails(&alice(), "no such market", |c| {
         c.open(9, Side::Long, 3, u(STAKE), U64(ANY_LONG));
     });
-    let q = t.view().quote_open(m, Side::Long, 1, u(STAKE), None);
-    assert_eq!((q.allowed, q.reason.as_deref(), q.fill_reason.as_deref()), (false, Some("leverage must be 2 or 3"), Some("leverage")));
+    let q = t.view().quote_open(m, Side::Long, 4, u(STAKE), None);
+    assert_eq!((q.allowed, q.reason.as_deref(), q.fill_reason.as_deref()), (false, Some("leverage must be 1, 2 or 3"), Some("leverage")));
     assert_eq!(t.bal(&alice()), 10_000 * USDG, "nothing debited");
 
     // The edges of the stake range, then the position limit (pending included).
@@ -1958,9 +2039,9 @@ fn random_run(seed: u64, coverage: bool) {
                 let f = *rng.pick(&live);
                 let (m, side) = (f.id, if rng.below(2) == 0 { Side::Long } else { Side::Short });
                 let leverage = match rng.below(40) {
-                    0 => 1,
+                    0 => 0,
                     1 => 4,
-                    x => 2 + (x % 2) as u8,
+                    x => 1 + (x % 3) as u8,
                 };
                 let stake = match rng.below(20) {
                     0 => rng.below(10 * USDG),
@@ -2135,7 +2216,10 @@ fn random_run(seed: u64, coverage: bool) {
             break;
         }
         let out = t.crank(&keeper(), &ids);
-        assert!(out.iter().all(|a| a == "closed" || a == "refunded"), "{out:?}");
+        // A close that was waiting on its own quote is tried there first: if
+        // that quote is outside its limit it goes back to open, and the next
+        // pass closes it at the market's final price.
+        assert!(out.iter().all(|a| a == "closed" || a == "refunded" || a == "close_missed"), "{out:?}");
         tally(&out, &mut actions);
     }
     let v = t.vault();
@@ -2168,7 +2252,7 @@ fn random_run(seed: u64, coverage: bool) {
 
 #[test]
 fn a_random_sequence_keeps_every_invariant() {
-    random_run(0x4855_5345_2026_1110, true);
+    random_run(0x4855_5345_2026_111e, true);
 }
 
 #[test]

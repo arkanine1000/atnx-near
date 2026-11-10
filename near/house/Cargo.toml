@@ -1,6 +1,6 @@
 [package]
 name = "house"
-description = "A house market on the VI on NEAR: long or short at 2x or 3x against a vault, at two prices"
+description = "A house market on the VI on NEAR: long or short at 1x, 2x or 3x against a vault, at two prices"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
