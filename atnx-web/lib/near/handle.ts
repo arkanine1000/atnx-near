@@ -32,10 +32,22 @@ const RESERVED = new Set([
   'www',
 ]);
 
-// `guest`, and `guest-…` or `guest_…`, belong to the guest accounts
-// (lib/near/guest.ts), so a user's account never looks like one.
+// The suffix of a house account's label (lib/near/house-account.ts):
+// bob.atnx.testnet trades on the house contract as bob-h.atnx.testnet.
+export const HOUSE_ACCOUNT_SUFFIX = '-h';
+
+// Handles no user account may take:
+//   - the platform's own names (RESERVED);
+//   - `guest`, and `guest-…` or `guest_…`, which belong to the guest
+//     accounts (lib/near/guest.ts), so a user's account never looks like one;
+//   - anything ending in "-h": that is the label of another handle's house
+//     account (bob-h is bob's), so the two names would collide.
+// Every place a handle is chosen goes through here: sanitizeHandle for the
+// user's own names, pickAccountId for every name it tries.
 export function isReservedHandle(h: string): boolean {
-  return RESERVED.has(h) || h === 'guest' || /^guest[-_]/.test(h);
+  if (typeof h !== 'string') return false;
+  const v = h.trim().toLowerCase();
+  return RESERVED.has(v) || v === 'guest' || /^guest[-_]/.test(v) || v.endsWith(HOUSE_ACCOUNT_SUFFIX);
 }
 
 // The longest handle that still fits <handle>.<parent> in 64 characters.
@@ -125,6 +137,7 @@ export async function pickAccountId(
   }
   for (let i = 0; i < 4; i++) tries.push(randomHandle(rand));
   for (const h of tries) {
+    if (isReservedHandle(h)) continue;
     const id = `${h}.${parent}`;
     if (!isValidAccountId(id)) continue;
     if (!(await isTaken(id))) return id;
