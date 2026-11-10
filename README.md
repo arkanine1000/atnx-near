@@ -1,6 +1,6 @@
 # ATNX house market on NEAR
 
-ATNX scores how much attention a trend, a person or a brand gets online: the Virality Index (VI), recomputed every five minutes from public sources. This repository is ATNX's entry in the NEAR Hackathon: a house market on NEAR testnet where anyone goes UP or DOWN on a market's VI at 2x or 3x leverage against a vault. A trader signs in with Google or X, or tries it as a guest, and never holds NEAR: every call is gasless. One contract, `house.atnx.testnet`, holds the money, the positions and the prices; a keeper pushes each market's newest VI print to it every five minutes, with a commitment to the public rows the print came from.
+ATNX scores how much attention a trend, a person or a brand gets online: the Virality Index (VI), recomputed every five minutes from public sources. This repository is ATNX's entry in the NEAR Hackathon: a house market on NEAR testnet where anyone goes UP or DOWN on a market's VI at 1x, 2x or 3x against a vault. A trader signs in with Google or X, or tries it as a guest, and never holds NEAR: every call is gasless. One contract, `house.atnx.testnet`, holds the money, the positions and the prices; a keeper pushes each market's newest VI print to it every five minutes, with a commitment to the public rows the print came from.
 
 **The problem.** The VI is a number that moves with a trend, but there is no plain way to take a position on that number, and a first on-chain trade usually needs a wallet, a gas token and a funded account before it can happen. The house market lists each trend's VI as a market, prices it on chain, and lets a first trade happen from a Google sign-in or a guest account with no wallet and no gas.
 
@@ -196,7 +196,7 @@ Use a recent Chrome, Firefox or Safari. The account's key lives in this browser'
 
 **b2.** Tap "Try as a guest". See "Setting up your test account…" for about 5 to 10 seconds, then "You need test USDG to trade." and a "Get 10,000 test USDG" button.
 
-**b3.** Tap "Get 10,000 test USDG". See "Getting test USDG…" for about 4 to 8 seconds, a "Got 10,000 test USDG" notice, then the order form: UP and DOWN with "in at <price>", Amount 100, Leverage 2× and 3×.
+**b3.** Tap "Get 10,000 test USDG". See "Getting test USDG…" for about 4 to 8 seconds, a "Got 10,000 test USDG" notice, then the order form: UP and DOWN with "in at <price>", Amount 100, Leverage 1×, 2× and 3× with 2× selected.
 
 **b4.** Leave UP, 100 and 2×. See "You get in at the buy price", "Worst price you accept" (1 % past the price), "Fee (1 %), on top 1.00 USDG", "Liquidation at", "Maximum win +900.00 USDG" and "Worth on fill". When the market's two prices differ, as they usually do, "Worth on fill" is a little under 100 USDG, in red, with "Closing at once pays at the sell price, so a new position usually starts a little down.": the position is valued at the price it would close at, and a long closes at the sell price. The button reads "Open UP 2× · 100 USDG", above "Costs 101.00 USDG with the fee. It fills in a few seconds at a price read after you tap."
 
@@ -239,7 +239,7 @@ Needs git, Node 20 or later with npm, and for the contract tests rustup and carg
 git clone https://github.com/arkanine1000/atnx-near && cd atnx-near
 ```
 
-**c1. The contract's unit tests.** In `near/`, run `cargo test -p house --lib`. See `test result: ok. 54 passed; 0 failed`, among them the worked example of [docs/house.md](docs/house.md#an-order-step-by-step) (`cargo test -p house --lib worked_example` runs those two alone: a 3x long of 100 filled at 408.80 and closed at 476.41 pays 149.615949).
+**c1. The contract's unit tests.** In `near/`, run `cargo test -p house --lib`. See `test result: ok. 58 passed; 0 failed`, among them the worked example of [docs/house.md](docs/house.md#an-order-step-by-step) (`cargo test -p house --lib worked_example` runs the three worked-example tests alone: a 3x long of 100 filled at 408.80 and closed at 476.41 pays 149.615949).
 
 **c2. The sandbox tests**, which deploy `usdg` and `house` to a local near-sandbox. In `near/`, run:
 
@@ -249,7 +249,7 @@ cargo near build non-reproducible-wasm --manifest-path house/Cargo.toml
 cargo test -p integration-tests --test house -- --test-threads=1
 ```
 
-See `test result: ok. 5 passed; 0 failed` after about two minutes: faucet, deposits and withdraw; orders filling after a fresh read and positions ending; a push of 75 markets in one call; the vault's exit and `migrate`; a failed withdraw refunded.
+See `test result: ok. 6 passed; 0 failed` after about three minutes: faucet, deposits and withdraw; orders filling after a fresh read and positions ending; positions at 1x; a push of 75 markets in one call; the vault's exit and `migrate`; a failed withdraw refunded.
 
 **c3. The deployed code, rebuilt** (needs Docker; not run on the machine that wrote this README, which has none; CI run 42746055574 ran it). From the repository root, run:
 
@@ -295,7 +295,7 @@ OK: the rows hash to the commitment on chain and every quote matches its row.
 
 - **Two prices.** Each print carries the score S and the reading R the score is smoothing towards. The contract quotes a lead, S moved λ of the way to R (λ is 30 % at no gap and 100 % from a 25 % gap), and two prices: buy = max(S, lead), sell = min(S, lead). Longs open at the buy price and close at the sell price; shorts the other way round. Orders are refused while the two prices are more than 10 % of S apart. ([docs/house.md](docs/house.md#the-two-prices))
 - **Orders.** `open` and `close` only place a request, with the worst price it accepts. It fills at the earliest quote read at least 5 s after it, whoever calls `crank` and whenever. Right after the relay sends an order, the keeper sends that market's quote and the crank in one transaction, so a fill takes about 10 seconds; a request with no quote for 15 minutes is refunded. ([An order, step by step](docs/house.md#an-order-step-by-step))
-- **Positions.** 10 to 250 USDG at 2x or 3x, a 1 % fee on top, at most 10 per account. A position can lose at most its stake; a long can win at most nine times its stake and a short its leverage times its stake, and that maximum is reserved in the vault at the fill. Liquidation needs both prices at the level. A position ends after 14 days. ([Positions](docs/house.md#positions))
+- **Positions.** 10 to 250 USDG at 1x (no leverage), 2x or 3x, a 1 % fee on top, at most 10 per account. A position can lose at most its stake; a long can win at most nine times its stake and a short its leverage times its stake, and that maximum is reserved in the vault at the fill. Liquidation needs both prices at the level; a 1x long has no level above zero. A position ends after 14 days. ([Positions](docs/house.md#positions))
 - **The vault.** Shares on realised results only, 2 % of the assets per market and side, 80 % in all; exits by 24 hours' notice. ([The vault](docs/house.md#the-vault))
 - **The keeper.** Three runs: the five-minute tick (push every market, crank, list), the every-minute run (orders waiting for a quote), and quotes on demand after a trader's order. ([The keeper](docs/house.md#the-keeper))
 - **Accounts.** A browser key that page script cannot read, a named account with 0 NEAR under `atnx.testnet`, and a relayer that checks every delegate against the house contract before paying for it. ([Accounts and relaying](docs/house.md#accounts-and-relaying))
@@ -326,7 +326,7 @@ Each class below is described with what the contract or the platform does about 
 
 As of 2026-11-10. Details in [docs/house.md](docs/house.md#built--not-built).
 
-Built: the `near/house` contract with 54 unit tests and 5 sandbox tests; a reproducible CI build deployed to `house.atnx.testnet`, seeded and with 57 markets listed; the keeper's three runs on Vercel cron with a commitment on every push; the public push and verify routes and `house:verify:public`; gasless named accounts for signed-in users and guests, with the relayer's house policy; the ticket, the portfolio and Settings on https://atnx-near.vercel.app; "Fund from any chain" with dry 1Click quotes.
+Built: the `near/house` contract with 58 unit tests and 6 sandbox tests; a reproducible CI build deployed to `house.atnx.testnet`, seeded and with 57 markets listed; the keeper's three runs on Vercel cron with a commitment on every push; the public push and verify routes and `house:verify:public`; gasless named accounts for signed-in users and guests, with the relayer's house policy; the ticket, the portfolio and Settings on https://atnx-near.vercel.app; "Fund from any chain" with dry 1Click quotes.
 
 Not built: real cross-chain deposits through NEAR Intents (mainnet only); vault deposits from anyone, and a page for vault shares; a Withdraw button (the contract method exists); storage charged to the accounts that add it; the deploy key removed; any check of the index on chain; mainnet.
 

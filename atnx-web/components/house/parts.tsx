@@ -203,7 +203,7 @@ export function PositionLine({
           </div>
           {mark && (
             <div className="text-tertiary tabular-nums mt-0.5">
-              Liquidation {fmtPriceE2(mark.liquidationE2)}
+              {p.side === "Long" && p.leverage === 1 ? "No liquidation" : <>Liquidation {fmtPriceE2(mark.liquidationE2)}</>}
               {left !== null && <> · {left > 0 ? `${fmtDuration(left)} left` : "ending now"}</>}
             </div>
           )}
@@ -306,11 +306,11 @@ export function HouseFooter() {
       </div>
       {open && (
         <ul className="mt-2 list-disc pl-4 space-y-1 text-secondary">
-          <li>UP gains when the index rises, DOWN when it falls, at 2× or 3× leverage.</li>
+          <li>UP gains when the index rises, DOWN when it falls, at 1× (no leverage), 2× or 3×.</li>
           <li>There are two prices. You get in at the buy price on UP and out at the sell price; DOWN the other way round. When the index is still catching up with a new reading they differ, so a new position usually starts a little down.</li>
           <li>Your order fills a few seconds after you tap, at a price read after the tap, and never worse than the worst price you accept.</li>
           <li>You can lose at most what you put in. A win is capped: an UP position pays back at most ten times its amount.</li>
-          <li>If both prices reach the liquidation level, the position closes and its amount is lost.</li>
+          <li>If both prices reach the liquidation level, the position closes and its amount is lost. A 1× UP position has no such level.</li>
           <li>The fee is 1 % of the amount, paid when the order fills. A position ends by itself after 14 days.</li>
           <li>When you close, the payout goes straight to your balance.</li>
         </ul>

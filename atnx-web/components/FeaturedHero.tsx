@@ -94,7 +94,7 @@ const STEPS = [
   {
     n: "2",
     // The house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) has no rounds.
-    title: isHouseProduct() ? "UP or DOWN, 2× or 3×" : "UP or DOWN, round by round",
+    title: isHouseProduct() ? "UP or DOWN, up to 3×" : "UP or DOWN, round by round",
     cls: "bg-atnx-magenta/10 text-atnx-magenta light:text-atnx-magenta-light border-atnx-magenta/25",
   },
   {

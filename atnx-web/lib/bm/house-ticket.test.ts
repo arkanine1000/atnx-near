@@ -143,6 +143,21 @@ test('levels and the maximum win, both sides and leverages', () => {
   assert.ok(t.valueOnFillPct < -6.5 && t.valueOnFillPct > -6.7);
 });
 
+test('1x: no liquidation level for a long, twice the entry for a short', () => {
+  assert.equal(liquidationLevelE2('Long', 1, 40880n), 0n);
+  assert.equal(liquidationLevelE2('Short', 1, 40000n), 80000n);
+  assert.equal(capLevelE2('Long', 1, 100n * USDG, 40880n, 900n * USDG), 408800n);
+  assert.equal(maxProfitOf('Short', 1, 100n * USDG, 90000), 100n * USDG);
+  // The contract's worked example at 1x: in at the buy price 408.80, worth
+  // 97.847358 at the sell price 400.00.
+  const up = ticketNumbers({ cfg: CFG, quote: q(400, 420), side: 'Long', leverage: 1, stake: 100n * USDG });
+  assert.deepEqual([up.entryE2, up.liquidationE2, up.maxProfit, up.valueOnFill], [40880n, 0n, 900n * USDG, 97_847_358n]);
+  const down = ticketNumbers({ cfg: CFG, quote: q(400, 420), side: 'Short', leverage: 1, stake: 100n * USDG });
+  assert.deepEqual([down.entryE2, down.liquidationE2, down.maxProfit], [40000n, 80000n, 100n * USDG]);
+  // A round trip: 408.80 to 476.41 pays 116.538649, as in the contract's tests.
+  assert.equal(payoutOf(100n * USDG, pnlOf('Long', 1, 100n * USDG, 40880n, 47641n), 900n * USDG), 116_538_649n);
+});
+
 test('value on fill: no gap costs nothing; a gap costs its distance once', () => {
   const flat = ticketNumbers({ cfg: CFG, quote: q(500, 500), side: 'Long', leverage: 2, stake: 50n * USDG });
   assert.equal(flat.valueOnFill, 50n * USDG);
@@ -203,6 +218,7 @@ const okOrder = { cfg: CFG, market: market(), vault: VAULT, nowSecs: NOW, side: 
 test('openBlock: a good order is taken', () => {
   assert.equal(openBlock(okOrder), null);
   assert.equal(openBlock({ ...okOrder, side: 'Short', leverage: 2 }), null);
+  assert.equal(openBlock({ ...okOrder, leverage: 1 }), null);
 });
 
 test('openBlock: each market state', () => {
@@ -228,6 +244,7 @@ test('openBlock: each market state', () => {
 
 test('openBlock: the order, the caps and the account', () => {
   assert.equal(openBlock({ ...okOrder, leverage: 5 }), 'leverage');
+  assert.equal(openBlock({ ...okOrder, leverage: 0 }), 'leverage');
   assert.equal(openBlock({ ...okOrder, stake: 10n * USDG - 1n }), 'stake_low');
   assert.equal(openBlock({ ...okOrder, stake: 250n * USDG + 1n }), 'stake_high');
   assert.equal(openBlock({ ...okOrder, openCount: 10 }), 'positions');

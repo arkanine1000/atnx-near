@@ -26,7 +26,7 @@ const STEPS = [
     n: 2,
     title: "UP or DOWN",
     body: HOUSE
-      ? "Think a trend's attention will rise? Go UP. Fall? Go DOWN. Pick 2× or 3× leverage and an amount. Your order fills a few seconds after you tap, at a price read after the tap and never worse than the worst price you accept."
+      ? "Think a trend's attention will rise? Go UP. Fall? Go DOWN. Pick an amount and 1× (no leverage), 2× or 3×. Your order fills a few seconds after you tap, at a price read after the tap and never worse than the worst price you accept."
       : "Markets run in rounds. Each round opens at the market's Virality Index of that moment, which becomes its target, and runs for 24 hours. Think attention will be higher at the close? Take UP. Lower? Take DOWN. Buy while the round runs. Before a market's first round opens, early commits on a side all pay the same price.",
     tone: "magenta" as const,
   },

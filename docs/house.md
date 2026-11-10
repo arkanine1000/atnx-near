@@ -1,6 +1,6 @@
 # The house market on NEAR testnet
 
-The house market lets anyone go UP (long) or DOWN (short) on a market's Virality Index at 2x or 3x leverage, against a vault, on NEAR testnet. The contract is `near/house`, deployed at `house.atnx.testnet`. It holds every balance, position and price; a keeper pushes each market's newest VI print to it; traders sign in with Google or X, or as a guest, and never hold NEAR. Every number on this page is a contract default (`Config::defaults` in `near/house/src/lib.rs`) unless it says otherwise. The contract's methods, views, events and error messages are listed in [near/README.md](../near/README.md#house); how the VI itself is computed is in [virality-index.md](virality-index.md).
+The house market lets anyone go UP (long) or DOWN (short) on a market's Virality Index at 1x (no leverage), 2x or 3x, against a vault, on NEAR testnet. The contract is `near/house`, deployed at `house.atnx.testnet`. It holds every balance, position and price; a keeper pushes each market's newest VI print to it; traders sign in with Google or X, or as a guest, and never hold NEAR. Every number on this page is a contract default (`Config::defaults` in `near/house/src/lib.rs`) unless it says otherwise. The contract's methods, views, events and error messages are listed in [near/README.md](../near/README.md#house); how the VI itself is computed is in [virality-index.md](virality-index.md).
 
 The house replaced the [rolling rounds](rounds.md) as the product on NEAR. `rounds.atnx.testnet` is still deployed.
 
@@ -44,27 +44,30 @@ The worked example is the contract's own test, `worked_example_long_3x_to_the_ce
 5. Later prints walk the score to 480.00 with the reading at 470.00. The gap is 2.09 % (rounded up to 209 bps), λ is 35.86 %, the lead is 476.41: buy 480.00, sell 476.41.
 6. `close(id, limit 470.00)`, then the next quote and a crank: the long closes at the sell price, 476.41. PnL = 3 × 100 × (476.41 / 408.80 − 1) = 49.615949; the payout, 149.615949, is credited to the trader's balance. The vault's assets fall by 49.615949 and the reserve and the margin go back to 0.
 
-The same two prints, both sides and both leverages (`worked_example_both_sides_at_2x_and_3x`), stake 100:
+The same two prints, both sides at each leverage (`worked_example_both_sides_at_2x_and_3x`, `worked_example_both_sides_at_1x`), stake 100:
 
 | Position | In at | Out at | Payout |
 |---|---|---|---|
 | Long 3x | 408.80 (buy, first print) | 476.41 (sell, second print) | 149.615949 |
 | Long 2x | 408.80 | 476.41 | 133.077299 |
+| Long 1x | 408.80 | 476.41 | 116.538649 |
 | Short 3x | 400.00 (sell, first print) | 480.00 (buy, second print) | 40.000000 |
 | Short 2x | 400.00 | 480.00 | 60.000000 |
+| Short 1x | 400.00 | 480.00 | 80.000000 |
 | Short 3x, the other way | 476.41 (sell, second print) | 408.80 (buy, first print) | 142.574673 |
 | Short 2x, the other way | 476.41 | 408.80 | 128.383115 |
+| Short 1x, the other way | 476.41 | 408.80 | 114.191557 |
 
 ## Positions
 
-- A stake is 10 to 250 USDG, at 2x or 3x; an account holds at most 10 pending, open or closing positions.
+- A stake is 10 to 250 USDG, at 1x (the stake itself, no leverage), 2x or 3x; an account holds at most 10 pending, open or closing positions.
 - The fee is 1 % of the stake, on top of it, rounded up. `open` debits stake and fee together; at the fill half the fee goes to the market's finder and half to the treasury, or all of it to the treasury when the market has no finder. A refunded order gets both back in full.
 - PnL: a long earns stake × leverage × (exit / entry − 1), a short stake × leverage × (1 − exit / entry). The payout, stake + PnL, is never under 0 (the most a position loses is its stake) and never over stake + the maximum profit: nine times the stake for a long (`max_profit_bps` 90,000), leverage × stake for a short. The maximum profit is reserved in the vault at the fill, so the vault can always pay every open position in full.
 - **Fills at a price read after the order.** `open` and `close` only place a request, and each names the worst price it accepts. The request fills at the earliest quote in the market's ring of the last 8 whose `last_read_at` is at least 5 s after it (`min_fill_delay_secs`). Which quote that is does not depend on who calls `crank` or when. An order with no such quote within 15 minutes (`order_ttl_secs`), or whose quote has left the ring, is refunded in full. An order can be cancelled only after those 15 minutes, and only when no quote is there to fill it.
 - **At the fill** the order is refunded instead when the price is past its limit or 0, the two prices are more than 10 % apart, the score is under 100, the market is no longer open, or the reserve would break a cap: 2 % of the vault's assets per market and side (`market_cap_bps`), 80 % in all (`utilisation_cap_bps`), the refund reason being "market full".
 - **`open` refuses** an order while new orders are paused, on a market that isn't open, inside the 48 hours after the market went live on atnx.app (`cooloff_secs`), when the market's newest quote was last read more than 15 minutes ago (`max_quote_age_secs`), when the score is under 100 (`min_score_e2`) or the two prices are more than 10 % apart, or when the contract's free NEAR is under its storage floor. Nothing is debited when `open` refuses.
 - **A close** settles at the first quote read at least 5 s after the request. Past its limit, the position goes back to `Open` and the trader asks again. A close cannot be withdrawn.
-- **Liquidation.** At the newest quote, a long is liquidated when the buy price is at or below entry × (1 − 1/leverage), and a short when the sell price is at or above entry × (1 + 1/leverage): both prices have to be there, not only the reading. The stake goes to the vault, less 1 % of it to whoever cranked (`liq_reward_bps`).
+- **Liquidation.** At the newest quote, a long is liquidated when the buy price is at or below entry × (1 − 1/leverage), and a short when the sell price is at or above entry × (1 + 1/leverage): both prices have to be there, not only the reading. At 1x a long's level is 0, so no price above zero liquidates it, and a short's is twice its entry. The stake goes to the vault, less 1 % of it to whoever cranked (`liq_reward_bps`).
 - **The cap.** A position whose close-side PnL reaches the maximum profit is closed at the cap.
 - **The end.** 14 days after its fill (`max_position_secs`, fixed at the fill), a position closes at the first quote read after that moment with a non-zero close-side price and the two prices no more than 10 % apart. This close has no limit; while it waits, the position can still be liquidated or capped.
 - A position that is worth nothing at its close-side price, but not liquidated because the other price has not reached the level, is shown as "At risk".
@@ -152,7 +155,7 @@ The ticket is on every market page with the house on (`atnx-web/components/house
 | No test USDG | "You need test USDG to trade.", a "Get 10,000 test USDG" button (about 4 to 8 seconds) and "Have USDC on another chain? See what bringing it to NEAR would cost." |
 | Lasting refusals, instead of the form | Ended: "This market has ended. Its positions closed at its last score." Close only: "Close only: you can close positions here, not open new ones." No price: "No price on chain yet. Try again in a few minutes." The cool-off and the minimum score as above |
 | Passing refusals: the form stays with the button off | "The two prices are too far apart right now. Try again in a few minutes."; "New orders are paused for now. You can still close positions."; "The price feed is late. New orders wait for a fresh price."; "This market is full on the UP side right now."; "You hold the most positions allowed. Close one to open another."; "The amount has to be between 10 and 250 USDG."; "Not enough test USDG for this amount and the fee." |
-| The form | UP and DOWN, each with "in at <price>"; the amount (100 by default); 2× or 3×; then "You get in at the buy price", "Worst price you accept" (1 % past the price, editable), "Fee (1 %), on top", "Liquidation at", "Maximum win" and "Worth on fill", with "Closing at once pays at the sell price, so a new position usually starts a little down."; the button "Open UP 2× · 100 USDG" and "Costs 101.00 USDG with the fee. It fills in a few seconds at a price read after you tap." |
+| The form | UP and DOWN, each with "in at <price>"; the amount (100 by default); 1×, 2× or 3× (2× by default); then "You get in at the buy price", "Worst price you accept" (1 % past the price, editable), "Fee (1 %), on top", "Liquidation at", "Maximum win" and "Worth on fill", with "Closing at once pays at the sell price, so a new position usually starts a little down."; the button "Open UP 2× · 100 USDG" and "Costs 101.00 USDG with the fee. It fills in a few seconds at a price read after you tap." |
 | After the tap | "Confirming your order… This usually takes about 10 seconds.", then "Filled at <entry>." or a refund line such as "Not filled: the two prices were too far apart. Your stake and fee are back in your balance."; after a while "This is taking longer than usual. If it has not filled after 15 minutes, you can cancel it and get your stake and fee back.", and after 15 minutes a Cancel button |
 | Your positions here | Side, leverage, stake and entry; the liquidation level and the time left of the 14 days; the value at the price it would close at, its PnL and percentage; "At risk" when it is worth nothing at that price but not liquidated; a "Close" button |
 | Closing | "Closing… This usually takes about 10 seconds.", then "Closed. <payout> USDG is back in your balance." or "Not closed: the price moved past your limit in those seconds. Tap Close to try again." |
@@ -175,8 +178,8 @@ All scripts run from `atnx-web/`. The ones that read `.env.local` refuse to sign
 | `npm run house:seed -- --contract house.atnx.testnet --vault 10000000 --faucet 2000000` | Plans seeding the vault and the faucet pool from the parent account, in whole USDG; `--live` sends: faucet calls on the rounds contract, a withdraw, `ft_transfer_call` to the house and `lp_deposit` |
 | `npm run house:verify:public -- <tx> --supabase-url <url> --anon-key <key>` | Checks one push with no env file ([The commitment](#the-commitment)) |
 | `npm run test:near`, `npm run test:bm` | The web layer's tests: accounts, the relayer and its house policy, the house checks, the public routes; the keeper's rules, the commitment, the ticket's numbers |
-| `cd near && cargo test -p house --lib` | The contract's unit tests (54 on 2026-11-10) |
-| `cd near && cargo test -p integration-tests --test house -- --test-threads=1` | The near-sandbox tests (5), after building `usdg` and `house` with `cargo near build non-reproducible-wasm` |
+| `cd near && cargo test -p house --lib` | The contract's unit tests (58 on 2026-11-10) |
+| `cd near && cargo test -p integration-tests --test house -- --test-threads=1` | The near-sandbox tests (6), after building `usdg` and `house` with `cargo near build non-reproducible-wasm` |
 
 First deploy, in order: deploy the `house-wasm` artifact of a green `near-build` run with `new(owner, keeper, treasury, token)`; seed with `house:seed … --live`; list with `BM_NEAR_HOUSE_ENABLED=1 npm run house:tick -- --live --list`; then turn on the cron runs with `BM_NEAR_HOUSE_ENABLED=1` on the deployment. Nothing in the repository deploys the contract. A code-only redeploy keeps the state; `migrate` re-reads it if a later layout needs converting.
 
@@ -206,7 +209,7 @@ Watching the keeper:
 As of 2026-11-10.
 
 - [x] Contract `near/house` (near-sdk 5.30): two prices, orders filled at a quote read after them, liquidation, the cap, the 14-day end, the vault with notice-period exits, the faucet pool, close-only and stale markets, `quote_open`, NEP-297 events, `migrate`
-- [x] Tests: 54 unit tests (the worked examples, fill timing, refunds, liquidation and the cap on both sides, the score clip, the vault, the storage floor, access control, the config ranges, and two random sequences checking both invariants after every call) and 5 near-sandbox tests (`near/integration-tests/tests/house.rs`, among them a push of 75 markets in one call)
+- [x] Tests: 58 unit tests (the worked examples, fill timing, refunds, liquidation and the cap on both sides, the score clip, the vault, the storage floor, access control, the config ranges, and two random sequences checking both invariants after every call) and 5 near-sandbox tests (`near/integration-tests/tests/house.rs`, among them a push of 75 markets in one call)
 - [x] Reproducible build in CI with NEP-330 metadata; deployed from CI run 42746055574 (commit `5cff59c`) to `house.atnx.testnet`
 - [x] Seeded: 10,000,000 USDG in the vault, 2,000,000 in the faucet pool; 57 markets listed
 - [x] The keeper's three runs on Vercel cron, with dry mode, the commitment on every push, and `house:verify:public`

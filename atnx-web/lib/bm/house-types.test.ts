@@ -242,11 +242,13 @@ test('decodePushResult: push_quotes returns the same fields as its event', () =>
 
 // -------------------------------------------- the trader's calls and views
 
-test('the trader calls: market a u32, leverage 2 or 3, amounts U128, ids and limits U64, sides by name', () => {
+test('the trader calls: market a u32, leverage 1, 2 or 3, amounts U128, ids and limits U64, sides by name', () => {
   const open = openArgs({ market: 4, side: 'Long', leverage: 3, stake: 100_000_000n, limitE2: 41289n });
   assert.deepEqual(open, { market: 4, side: 'Long', leverage: 3, stake: '100000000', limit_e2: '41289' });
   assert.deepEqual(readOpenArgs(JSON.parse(JSON.stringify(open))), { market: 4, side: 'Long', leverage: 3, stake: 100_000_000n, limitE2: 41289n });
   assert.throws(() => openArgs({ market: 4, side: 'Long', leverage: 4, stake: 1n, limitE2: 1n }), /leverage/);
+  assert.throws(() => openArgs({ market: 4, side: 'Long', leverage: 0, stake: 1n, limitE2: 1n }), /leverage/);
+  assert.equal(openArgs({ market: 4, side: 'Short', leverage: 1, stake: 1n, limitE2: 1n }).leverage, 1);
   assert.throws(() => openArgs({ market: 4, side: 'Long', leverage: 3, stake: 1n, limitE2: 0n }), /limit/);
   assert.deepEqual(closeArgs(7n, 39600n), { position_id: '7', limit_e2: '39600' });
   assert.deepEqual(readCloseArgs({ position_id: '7', limit_e2: '39600' }), { positionId: 7n, limitE2: 39600n });

@@ -325,7 +325,7 @@ export const positionArgs = (id: bigint) => ({ id: encU64(id) });
 export const accountArgs = (account: string) => ({ account });
 
 export function encLeverage(v: number): number {
-  if (v !== 2 && v !== 3) throw new Error(`leverage must be 2 or 3, got ${String(v)}`);
+  if (v !== 1 && v !== 2 && v !== 3) throw new Error(`leverage must be 1, 2 or 3, got ${String(v)}`);
   return v;
 }
 
