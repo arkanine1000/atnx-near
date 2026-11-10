@@ -34,7 +34,7 @@ import { useNearHouse } from "./useNearHouse";
 // The house ticket on a market page (NEXT_PUBLIC_BM_NEAR_PRODUCT=house):
 // atnx.app's long/short ticket on NEAR testnet, against the house
 // contract's vault. UP (a long) or DOWN (a short), an amount of 10 to 250
-// USDG, 2× or 3×, and what the order would do: the two prices, the worst
+// USDG, 1×, 2× or 3×, and what the order would do: the two prices, the worst
 // price accepted (filled in 1 % past the current price, editable), the
 // fee, the liquidation level, the maximum win and what it would be worth
 // the moment it filled. Every number is worked out here from the
@@ -114,7 +114,7 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
   const account = house.account.data;
 
   const [side, setSide] = useState<HouseSide>(initialSide === "down" ? "Short" : "Long");
-  const [leverage, setLeverage] = useState<"2" | "3">("2");
+  const [leverage, setLeverage] = useState<"1" | "2" | "3">("1");
   const [amount, setAmount] = useState("100");
   // The worst price, as typed; null follows the price.
   const [limitText, setLimitText] = useState<string | null>(null);
@@ -361,7 +361,7 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
 
       <div className="flex items-center justify-between gap-3 mt-4">
         <span className="text-xs text-secondary">Leverage</span>
-        <Segmented ariaLabel="Leverage" value={leverage} onChange={(v) => setLeverage(v)} options={[{ value: "2", label: "2×" }, { value: "3", label: "3×" }]} />
+        <Segmented ariaLabel="Leverage" value={leverage} onChange={(v) => setLeverage(v)} options={[{ value: "1", label: "1×" }, { value: "2", label: "2×" }, { value: "3", label: "3×" }]} />
       </div>
 
       {nums && (
@@ -387,7 +387,8 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
             </dd>
           </div>
           <Row k={`Fee (${(cfg.feeBps ?? 100) / 100} %), on top`} v={`${fmtUsdg(nums.fee)} USDG`} />
-          <Row k="Liquidation at" v={fmtPriceE2(nums.liquidationE2)} />
+          {/* A 1× UP position has no liquidation level above zero. */}
+          <Row k="Liquidation at" v={side === "Long" && lev === 1 ? "None" : fmtPriceE2(nums.liquidationE2)} />
           <Row k="Maximum win" v={`+${fmtUsdg(nums.maxProfit)} USDG`} />
           <div className="flex items-center justify-between gap-3">
             <dt className="text-tertiary" title="What closing at once would pay back">

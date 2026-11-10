@@ -135,7 +135,7 @@ test('open: the market has to be listed, open and fresh', async () => {
 
 test('open: leverage, stake, limit, balance, position limit', async () => {
   const v = viewer();
-  await refused(houseAppCheck(v)(call('open', { ...OPEN, leverage: 5 })), 'would_fail', 'leverage must be 2 or 3');
+  await refused(houseAppCheck(v)(call('open', { ...OPEN, leverage: 5 })), 'would_fail', 'leverage must be 1, 2 or 3');
   await refused(houseAppCheck(v)(call('open', { ...OPEN, stake: '9999999' })), 'would_fail', 'stake below the minimum');
   await refused(houseAppCheck(v)(call('open', { ...OPEN, stake: '250000001' })), 'would_fail', 'stake above the maximum');
   await houseAppCheck(v)(call('open', { ...OPEN, stake: '250000000' }));

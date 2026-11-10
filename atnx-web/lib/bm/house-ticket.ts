@@ -212,7 +212,7 @@ export function openBlock(a: {
 }): OpenBlock | null {
   const m = marketBlock({ cfg: a.cfg, market: a.market, nowSecs: a.nowSecs, side: a.side });
   if (m) return m;
-  if (a.leverage !== 2 && a.leverage !== 3) return 'leverage';
+  if (a.leverage !== 1 && a.leverage !== 2 && a.leverage !== 3) return 'leverage';
   if (a.cfg.minStake !== null && a.stake < a.cfg.minStake) return 'stake_low';
   if (a.cfg.maxStake !== null && a.stake > a.cfg.maxStake) return 'stake_high';
   if (a.market && wouldBeFull({ cfg: a.cfg, market: a.market, vault: a.vault, side: a.side, leverage: a.leverage, stake: a.stake })) return 'full';
@@ -235,7 +235,7 @@ export const CONTRACT_MESSAGE: Record<Exclude<OpenBlock, 'full'>, string> = {
   spread: 'the two prices are too far apart',
   zero_price: 'the price is zero',
   positions: 'position limit reached for this account',
-  leverage: 'leverage must be 2 or 3',
+  leverage: 'leverage must be 1, 2 or 3',
   stake_low: 'stake below the minimum',
   stake_high: 'stake above the maximum',
   balance: 'balance too low',
@@ -459,7 +459,7 @@ export function blockLine(
     case 'positions':
       return 'You hold the most positions allowed. Close one to open another.';
     case 'leverage':
-      return 'Pick 2x or 3x.';
+      return 'Pick 1x, 2x or 3x.';
     case 'stake_low':
     case 'stake_high':
       return `The amount has to be between ${a.minStake ?? 10} and ${a.maxStake ?? 250} USDG.`;

@@ -98,9 +98,10 @@ export function payoutOf(stake: bigint, pnl: bigint, maxProfit: bigint): bigint 
 
 // The liquidation level: the highest buy price that liquidates a long,
 // entry × (1 − 1/L) rounded down; the lowest sell price that liquidates a
-// short, entry × (1 + 1/L) rounded up.
+// short, entry × (1 + 1/L) rounded up. At 1x a long's level is 0 (no price
+// above zero liquidates it) and a short's is twice its entry.
 export function liquidationLevelE2(side: Side, leverage: number, entryE2: bigint): bigint {
-  const lev = BigInt(Math.max(leverage, 2));
+  const lev = BigInt(Math.max(leverage, 1));
   return side === 'Long' ? (entryE2 * (lev - 1n)) / lev : ceilDiv(entryE2 * (lev + 1n), lev);
 }
 
