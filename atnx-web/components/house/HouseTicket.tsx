@@ -6,15 +6,18 @@ import { Card, Segmented } from "@/components/ui";
 import { fmtUsdg, parseUsdg, shortHash } from "@/components/bm/format";
 import { FUND_HREF } from "@/components/rounds/FundFromAnyChain";
 import { AccountGate, useAutoAccount } from "@/components/rounds/NearAccountGate";
+import { NearGuestChoice } from "@/components/rounds/NearGuestChoice";
 import { AmountInput, Row, SideButton } from "@/components/rounds/ticket-parts";
 import { useNow } from "@/components/rounds/time";
 import { useNearAccount } from "@/components/rounds/useNearAccount";
+import { useAuth } from "@/context/AuthContext";
 import {
   blockLine,
   fmtDuration,
   fmtPriceE2,
   fundingState,
   limitPastE2,
+  marketBlock,
   maxStakeFor,
   notListedReason,
   openBlock,
@@ -88,6 +91,7 @@ const usdgNumber = (u: bigint | null | undefined) => (u === null || u === undefi
 
 function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initialSide = "up", onToast }: Props) {
   const near = useNearAccount();
+  const { openLoginModal } = useAuth();
   const ready = near.status === "ready";
   const accountId = ready ? near.accountId : null;
   const auto = useAutoAccount(near, true);
@@ -189,10 +193,28 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
   // ------------------------------------------------------------- the account
 
   if (!ready) {
+    // Why the market takes no order now, said before the sign-in too.
+    const mb = marketBlock({ cfg, market, nowSecs });
+    // Signed out, and while a guest account is being set up: the sign-in
+    // and the guest choice stay mounted from one to the other, so a failed
+    // set-up's message stays on screen.
+    const guestFlow = near.status === "signed-out" || (near.isGuest && near.status === "creating");
     return (
       <Shell name={name}>
         {priceLine}
-        <AccountGate near={near} label="Sign in to trade" autoError={auto.error} onRetry={auto.retry} guest />
+        {mb && <p className="text-xs text-secondary mb-3">{marketLine(mb)}</p>}
+        {guestFlow ? (
+          <>
+            <button type="button" onClick={openLoginModal} className={BUTTON}>
+              Sign in to trade
+            </button>
+            <div className="mt-2.5">
+              <NearGuestChoice />
+            </div>
+          </>
+        ) : (
+          <AccountGate near={near} label="Sign in to trade" autoError={auto.error} onRetry={auto.retry} guest />
+        )}
       </Shell>
     );
   }
@@ -323,7 +345,8 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
         <SideButton side="down" caption={prices ? `in at ${fmtPriceE2(prices.sell)}` : "DOWN"} selected={!up} onClick={() => (setSide("Short"), setLimitText(null))} />
       </div>
 
-      <AmountInput amount={amount} setAmount={setAmount} usdg={account.balance} maxBuy={maxS !== null ? fmtUsdg(maxS, 2).replace(/,/g, "") : String(minStake)} label="Amount" />
+      {/* Whole USDG, rounded down, so "You have" never reads more than the balance. */}
+      <AmountInput amount={amount} setAmount={setAmount} usdg={account.balance - (account.balance % USDG)} maxBuy={maxS !== null ? fmtUsdg(maxS, 2).replace(/,/g, "") : String(minStake)} label="Amount" />
 
       <div className="flex items-center justify-between gap-3 mt-4">
         <span className="text-xs text-secondary">Leverage</span>
@@ -375,7 +398,7 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
         disabled={!canSubmit}
         className={`mt-4 w-full h-12 rounded-xl font-bold text-sm cursor-pointer disabled:opacity-40 ${up ? "btn-cyan" : "btn-magenta"}`}
       >
-        {busy === "open" ? "Sending…" : `Open ${up ? "UP" : "DOWN"} ${lev}×${stake && stake > 0n ? ` · ${fmtUsdg(stake, 0)} USDG` : ""}`}
+        {busy === "open" ? "Sending…" : `Open ${up ? "UP" : "DOWN"} ${lev}×${stake && stake > 0n ? ` · ${fmtUsdg(stake, stake % USDG === 0n ? 0 : 2)} USDG` : ""}`}
       </button>
       {formError && <p className="mt-2 text-xs text-secondary">{formError}</p>}
       {nums && !formError && (
