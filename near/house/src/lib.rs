@@ -371,7 +371,8 @@ pub struct Position {
     pub close_limit_e2: u64,
 }
 
-/// A closed position or a refunded order, kept in its account's history.
+/// A closed position, kept in its account's history. Refunded orders are
+/// not history: their events say why.
 #[near(serializers = [borsh])]
 #[derive(Clone, Debug)]
 pub struct Closed {
@@ -380,16 +381,12 @@ pub struct Closed {
     pub side: Side,
     pub leverage: u8,
     pub stake: u64,
-    pub fee: u64,
     pub entry_e2: u64,
     pub exit_e2: u64,
-    /// What the account was credited: the payout, or stake + fee for a refund.
-    pub paid: u64,
-    /// close, cap, liquidation, expiry, settled or refunded.
+    /// What the account was credited.
+    pub payout: u64,
+    /// close, cap, liquidation, expiry or settled.
     pub reason: String,
-    /// For a refund, why.
-    pub detail: String,
-    pub placed_at: u64,
     pub opened_at: u64,
     pub closed_at: u64,
 }
@@ -565,8 +562,6 @@ pub struct PositionView {
     /// What closing would pay at the newest quote's close-side price (the
     /// final price on a settled market); null while pending.
     pub value: Option<U128>,
-    /// value − stake, signed.
-    pub pnl: Option<String>,
     /// Worth nothing at the close-side price, but not liquidated.
     pub at_risk: bool,
 }
@@ -579,15 +574,12 @@ pub struct ClosedView {
     pub side: Side,
     pub leverage: u8,
     pub stake: U128,
-    pub fee: U128,
     pub entry_e2: U64,
     pub exit_e2: U64,
-    pub paid: U128,
-    /// paid − stake for a position (signed); 0 for a refund.
-    pub pnl: String,
+    /// What the account was credited: the profit is payout − stake.
+    pub payout: U128,
+    /// close, cap, liquidation, expiry or settled.
     pub reason: String,
-    pub detail: String,
-    pub placed_at: U64,
     pub opened_at: U64,
     pub closed_at: U64,
 }
@@ -639,6 +631,7 @@ pub struct OpenQuote {
     pub reason: Option<String>,
     pub score_e2: U64,
     pub reading_e2: U64,
+    pub lead_e2: U64,
     pub buy_e2: U64,
     pub sell_e2: U64,
     pub spread_bps: U64,
@@ -1456,7 +1449,7 @@ impl Contract {
         check(now >= p.placed_at.saturating_add(self.config.order_ttl_secs.0), HouseError::CancelTooEarly);
         let m = self.market_or_fail(p.market);
         check(!matches!(self.fill_due(&m, &p, now), FillDue::At(_)), HouseError::HasQuote);
-        self.refund(id, p, Refund::Cancelled, now);
+        self.refund(id, p, Refund::Cancelled);
     }
 
     /// Anyone. For each id, does the one thing that is due and returns what
@@ -1664,8 +1657,7 @@ impl Contract {
         set.iter().filter_map(|id| self.positions.get(id).map(|p| self.position_view(*id, p))).collect()
     }
 
-    /// An account's last `HISTORY_LEN` closed positions and refunded orders,
-    /// newest first.
+    /// An account's last `HISTORY_LEN` closed positions, newest first.
     pub fn history_of(&self, account: AccountId) -> Vec<ClosedView> {
         let Some(h) = self.history.get(&account) else {
             return Vec::new();
@@ -1728,7 +1720,7 @@ impl Contract {
     /// What `open` would do with these terms now, with the same checks and
     /// arithmetic: both prices, the entry, the fee, the levels, the maximum
     /// profit, the value on fill at the newest quote, and either `allowed` or
-    /// the reason `open` would fail. With `account_id`, the account's
+    /// the reason `open` would fail. It never panics. With `account_id`, the account's
     /// position limit and balance are checked too. `would_fill` runs the
     /// fill-time checks (the caps included, the limit aside) at the newest
     /// quote.
@@ -1777,6 +1769,7 @@ impl Contract {
             reason: verdict.err().map(|e| e.msg().to_string()),
             score_e2: U64(px.score),
             reading_e2: U64(q.map(|q| q.reading_e2).unwrap_or(0)),
+            lead_e2: U64(px.lead),
             buy_e2: U64(px.buy),
             sell_e2: U64(px.sell),
             spread_bps: U64(spread_bps(&px)),
@@ -1799,21 +1792,16 @@ impl Contract {
 // ------------------------------------------------------------- internals
 
 fn closed_view(c: &Closed) -> ClosedView {
-    let pnl = if c.reason == "refunded" { 0i128 } else { c.paid as i128 - c.stake as i128 };
     ClosedView {
         id: U64(c.id),
         market: c.market,
         side: c.side,
         leverage: c.leverage,
         stake: u(c.stake),
-        fee: u(c.fee),
         entry_e2: U64(c.entry_e2),
         exit_e2: U64(c.exit_e2),
-        paid: u(c.paid),
-        pnl: pnl.to_string(),
+        payout: u(c.payout),
         reason: c.reason.clone(),
-        detail: c.detail.clone(),
-        placed_at: U64(c.placed_at),
         opened_at: U64(c.opened_at),
         closed_at: U64(c.closed_at),
     }
@@ -2035,7 +2023,7 @@ impl Contract {
 
     fn crank_pending(&mut self, id: u64, p: Position, m: &mut Market, now: u64) -> &'static str {
         if m.status != MarketStatus::Open {
-            self.refund(id, p, Refund::MarketClosed, now);
+            self.refund(id, p, Refund::MarketClosed);
             return "refunded";
         }
         match self.fill_due(m, &p, now) {
@@ -2047,17 +2035,17 @@ impl Contract {
                         "filled"
                     }
                     Err(r) => {
-                        self.refund(id, p, r, now);
+                        self.refund(id, p, r);
                         "refunded"
                     }
                 }
             }
             FillDue::RolledOut => {
-                self.refund(id, p, Refund::RolledOut, now);
+                self.refund(id, p, Refund::RolledOut);
                 "refunded"
             }
             FillDue::Expired => {
-                self.refund(id, p, Refund::Expired, now);
+                self.refund(id, p, Refund::Expired);
                 "refunded"
             }
             FillDue::Waiting => "waiting",
@@ -2083,6 +2071,7 @@ impl Contract {
                 CloseDue::Missed(i) => {
                     let q = &m.quotes[i];
                     let price = self.prices_of(q).close(p.side);
+                    let reason = if price == 0 { "zero_price" } else { "limit" };
                     emit(
                         "close_missed",
                         &[
@@ -2091,6 +2080,7 @@ impl Contract {
                             ("print_id", q.print_id.to_string()),
                             ("price_e2", price.to_string()),
                             ("limit_e2", p.close_limit_e2.to_string()),
+                            ("reason", reason.to_string()),
                         ],
                     );
                     p.state = PositionState::Open;
@@ -2191,7 +2181,7 @@ impl Contract {
     }
 
     /// Returns a pending order's stake and fee in full.
-    fn refund(&mut self, id: u64, p: Position, reason: Refund, now: u64) {
+    fn refund(&mut self, id: u64, p: Position, reason: Refund) {
         let amount = add(p.stake, p.fee);
         self.vault.margin = sub(self.vault.margin, amount);
         self.credit(&p.account, amount);
@@ -2205,7 +2195,6 @@ impl Contract {
                 ("reason", reason.as_str().to_string()),
             ],
         );
-        self.record(&p, id, 0, amount, "refunded", reason.as_str(), now);
         self.remove_position(id, &p.account);
     }
 
@@ -2252,7 +2241,7 @@ impl Contract {
                 ("print_id", print_id.map(|i| i.to_string()).unwrap_or_default()),
             ],
         );
-        self.record(&p, id, exit_e2, paid, reason, "", now);
+        self.record(&p, id, exit_e2, paid, reason, now);
         self.remove_position(id, &p.account);
     }
 
@@ -2285,7 +2274,7 @@ impl Contract {
                 ("caller", caller.to_string()),
             ],
         );
-        self.record(&p, id, exit, 0, "liquidation", "", now);
+        self.record(&p, id, exit, 0, "liquidation", now);
         self.remove_position(id, &p.account);
     }
 
@@ -2297,21 +2286,17 @@ impl Contract {
         b.count = b.count.checked_sub(1).unwrap_or_else(|| fail(HouseError::Overflow));
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn record(&mut self, p: &Position, id: u64, exit_e2: u64, paid: u64, reason: &str, detail: &str, now: u64) {
+    fn record(&mut self, p: &Position, id: u64, exit_e2: u64, payout: u64, reason: &str, now: u64) {
         let c = Closed {
             id,
             market: p.market,
             side: p.side,
             leverage: p.leverage,
             stake: p.stake,
-            fee: p.fee,
             entry_e2: p.entry_e2,
             exit_e2,
-            paid,
+            payout,
             reason: reason.to_string(),
-            detail: detail.to_string(),
-            placed_at: p.placed_at,
             opened_at: p.opened_at,
             closed_at: now,
         };
@@ -2451,7 +2436,6 @@ impl Contract {
             liquidation_e2: when(filled, liquidation_e2(p.side, p.leverage, p.entry_e2)),
             cap_e2: when(filled, cap_e2(p.side, p.leverage, p.stake, p.entry_e2, p.reserved)),
             value: value.map(u),
-            pnl: value.map(|v| (v as i128 - p.stake as i128).to_string()),
             at_risk: value == Some(0),
         }
     }

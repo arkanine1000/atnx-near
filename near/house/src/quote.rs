@@ -154,7 +154,12 @@ pub fn pnl(side: Side, leverage: u8, stake: u64, entry: u64, exit: u64) -> i128 
         Side::Long => exit as i128 - entry as i128,
         Side::Short => entry as i128 - exit as i128,
     };
-    (notional * diff).div_euclid(entry as i128)
+    // Saturates far outside any stake the settings allow (views may ask).
+    match notional.checked_mul(diff) {
+        Some(x) => x.div_euclid(entry as i128),
+        None if diff > 0 => i128::MAX,
+        None => i128::MIN,
+    }
 }
 
 /// What a position pays back: stake + PnL, floored at 0 (the loss is at most
@@ -214,9 +219,13 @@ pub const MIN_STEP_BPS: u64 = 10;
 
 /// The score a new print may take, `elapsed_secs` after the stored print:
 /// within max_step_bps × elapsed / 300 of the stored score (at least
-/// MIN_STEP_BPS, and at least one hundredth so a score at or near 0 can still
-/// move), rounded towards the stored score.
+/// MIN_STEP_BPS, and at least one hundredth so a score near 0 can still
+/// move), rounded towards the stored score. From a stored score of 0 the
+/// pushed score is taken as it is: no share of 0 would let it move.
 pub fn clip_score(stored: u64, pushed: u64, max_step_bps: u64, elapsed_secs: u64) -> u64 {
+    if stored == 0 {
+        return pushed;
+    }
     let allowance = (max_step_bps as u128 * elapsed_secs as u128 / STEP_SECS as u128).max(MIN_STEP_BPS as u128);
     let step = sat_u64((stored as u128).saturating_mul(allowance) / BPS as u128).max(1);
     pushed.clamp(stored.saturating_sub(step), stored.saturating_add(step))
@@ -337,6 +346,8 @@ mod tests {
         assert_eq!(payout(s, -150_000_000, 300_000_000), 0);
         assert_eq!(payout(s, 2_000_000_000, 900_000_000), 1_000_000_000);
         assert_eq!(pnl(Side::Long, 3, s, 0, 100), 0);
+        assert_eq!(pnl(Side::Long, 3, u64::MAX, 1, u64::MAX), i128::MAX);
+        assert_eq!(payout(u64::MAX, pnl(Side::Short, 3, u64::MAX, 1, u64::MAX), 7), 0);
     }
 
     #[test]
@@ -382,8 +393,9 @@ mod tests {
         assert_eq!(clip_score(10_000, 20_000, 1_500, 600), 13_000);
         // One second: the 10 bps minimum.
         assert_eq!(clip_score(100_000, 200_000, 1_500, 1), 100_100);
-        // Near 0: at least one hundredth either way.
-        assert_eq!(clip_score(0, 50_000, 1_500, 300), 1);
+        // From 0, the pushed score; near 0, at least one hundredth either way.
+        assert_eq!(clip_score(0, 50_000, 1_500, 300), 50_000);
+        assert_eq!(clip_score(0, 50_000, 1_500, 1), 50_000);
         assert_eq!(clip_score(1, 0, 1_500, 300), 0);
         assert_eq!(clip_score(6, 100, 1_500, 300), 7);
         // No overflow at the extremes.

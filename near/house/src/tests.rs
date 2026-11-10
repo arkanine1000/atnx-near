@@ -402,6 +402,13 @@ fn logs_with(event: &str) -> Vec<String> {
     get_logs().into_iter().filter(|l| l.contains(&format!("\"event\":\"{event}\""))).collect()
 }
 
+/// The reason in the last call's `order_refunded` event for position `id`.
+fn refunded(id: u64) -> String {
+    let ev = logs_with("order_refunded");
+    let l = ev.iter().find(|l| l.contains(&format!(r#""id":"{id}""#))).unwrap_or_else(|| panic!("no refund of {id} in {ev:?}"));
+    l.split(r#""reason":""#).nth(1).and_then(|x| x.split('"').next()).unwrap_or_default().to_string()
+}
+
 // ------------------------------------------------- the worked example
 
 /// Score 400, reading 420: the lead is 408.80. A 3x long of 100 fills at
@@ -443,9 +450,8 @@ fn worked_example_long_3x_to_the_cent() {
     assert_eq!(t.crank(&carol(), &[id]), ["closed"]);
     let h = t.last_closed(&alice());
     assert_eq!((h.reason.as_str(), h.entry_e2.0, h.exit_e2.0), ("close", 40_880, 47_641));
-    assert_eq!(h.paid.0, 149_615_949);
-    assert_eq!(h.paid.0 / 10_000, 14_961, "149.61");
-    assert_eq!(h.pnl, "49615949");
+    assert_eq!(h.payout.0, 149_615_949);
+    assert_eq!(h.payout.0 / 10_000, 14_961, "149.61");
     assert_eq!(t.bal(&alice()), alice0 - 101 * USDG + 149_615_949);
     let v = t.vault();
     assert_eq!((v.assets.0, v.reserved.0, v.margin.0), (VAULT as u128 - 49_615_949, 0, 0));
@@ -471,7 +477,7 @@ fn round_trip(side: Side, leverage: u8, first: (u64, u64), second: (u64, u64), w
     t.reread(m);
     assert_eq!(t.crank(&keeper(), &[id]), ["closed"]);
     let h = t.last_closed(&alice());
-    (entry, h.exit_e2.0, h.paid.0 as u64, fees.0, fees.1)
+    (entry, h.exit_e2.0, h.payout.0 as u64, fees.0, fees.1)
 }
 
 #[test]
@@ -555,7 +561,8 @@ fn a_quote_after_the_time_to_live_refunds_the_order() {
     t.push(m, 50_100, 50_100);
     assert_eq!(t.crank(&bob(), &[id]), ["refunded"]);
     assert_eq!(t.bal(&alice()), before + 101 * USDG);
-    assert_eq!(t.last_closed(&alice()).detail, "expired");
+    assert_eq!(refunded(id), "expired");
+    assert!(t.c.history_of(alice()).is_empty(), "a refunded order is not history");
 }
 
 /// A quote that has left the ring before anyone cranked the order refunds it.
@@ -574,7 +581,7 @@ fn an_order_whose_quote_left_the_ring_is_refunded() {
         t.next(m, 50_000, 50_000);
     }
     assert_eq!(t.crank(&bob(), &[id2]), ["refunded"]);
-    assert_eq!(t.last_closed(&alice()).detail, "rolled_out");
+    assert_eq!(refunded(id2), "rolled_out");
 }
 
 // ------------------------------------------------------------ refunds
@@ -597,8 +604,8 @@ fn a_limit_that_cannot_be_met_refunds_in_full_and_reserves_nothing() {
     let logs = logs_with("order_refunded");
     assert_eq!(logs.len(), 2);
     assert!(logs[0].contains(r#""amount":"252500000","reason":"limit""#), "{}", logs[0]);
-    let h = t.c.history_of(alice());
-    assert_eq!((h[0].reason.as_str(), h[0].detail.as_str(), h[0].pnl.as_str()), ("refunded", "limit", "0"));
+    assert_eq!((refunded(long), refunded(short)), ("limit".to_string(), "limit".to_string()));
+    assert!(t.c.history_of(alice()).is_empty());
     assert!(t.c.positions_of(alice()).is_empty());
 }
 
@@ -623,7 +630,7 @@ fn market_full_is_a_refund_at_the_fill() {
     t.now += 10;
     t.reread(m);
     assert_eq!(t.crank(&carol(), &[a, b, c, s]), ["filled", "filled", "refunded", "filled"]);
-    assert_eq!(t.last_closed(&bob()).detail, "market_full");
+    assert_eq!(refunded(c), "market_full");
     let mk = t.c.get_market(m).unwrap();
     assert_eq!(
         (mk.long.reserved.0, mk.side_cap.0, mk.long.count, mk.short.count),
@@ -641,7 +648,7 @@ fn market_full_is_a_refund_at_the_fill() {
     t.now += 10;
     t.reread(m);
     assert_eq!(t.crank(&carol(), &[d]), ["refunded"], "1,800 + 300 + 200 is above 900");
-    assert_eq!(t.last_closed(&alice()).detail, "market_full");
+    assert_eq!(refunded(d), "market_full");
 }
 
 /// Two prices more than 10 % apart: `open` refuses the order; an order
@@ -656,7 +663,7 @@ fn the_open_guard_applies_at_the_order_and_at_the_fill() {
     assert_eq!((q.buy_e2.0, q.spread_bps.0), (58_600, 1_720));
     let before = t.bal(&alice());
     assert_eq!(t.crank(&bob(), &[id]), ["refunded"]);
-    assert_eq!(t.last_closed(&alice()).detail, "spread");
+    assert_eq!(refunded(id), "spread");
     assert_eq!(t.bal(&alice()), before + 101 * USDG);
     t.fails(&alice(), "the two prices are too far apart", |c| {
         c.open(m, Side::Short, 3, u(STAKE), U64(ANY_SHORT));
@@ -689,7 +696,7 @@ fn a_close_settles_inside_its_limit_or_goes_back_to_open() {
     t.next(m, 48_000, 47_000);
     assert_eq!(t.crank(&bob(), &[id]), ["close_missed"]);
     let missed = logs_with("close_missed");
-    assert!(missed[0].contains(r#""price_e2":"47641","limit_e2":"49000""#), "{}", missed[0]);
+    assert!(missed[0].contains(r#""price_e2":"47641","limit_e2":"49000","reason":"limit""#), "{}", missed[0]);
     let p = t.pos(id).unwrap();
     assert_eq!((p.state, p.close_limit_e2, p.close_requested_at), (PositionState::Open, None, None));
     // The trader asks again with a limit the next print meets.
@@ -723,7 +730,7 @@ fn a_close_cannot_be_withdrawn_and_an_order_waits_for_its_ttl() {
     let before = t.bal(&alice());
     t.call(&alice(), |c| c.cancel(U64(o)));
     assert_eq!(t.bal(&alice()) - before, 101 * USDG);
-    assert_eq!(t.last_closed(&alice()).detail, "cancelled");
+    assert_eq!(refunded(o), "cancelled");
 
     // An order with a quote to fill at can't be cancelled; crank decides it.
     t.next(m, 50_000, 50_000);
@@ -734,7 +741,7 @@ fn a_close_cannot_be_withdrawn_and_an_order_waits_for_its_ttl() {
     t.now = placed + 1_000;
     t.fails(&alice(), "order has a quote to fill at", |c| c.cancel(U64(o)));
     assert_eq!(t.crank(&alice(), &[o]), ["refunded"]);
-    assert_eq!(t.last_closed(&alice()).detail, "limit");
+    assert_eq!(refunded(o), "limit");
 }
 
 // -------------------------------------------------------- liquidation
@@ -765,7 +772,8 @@ fn a_long_is_liquidated_only_when_both_prices_reach_the_level() {
     assert_eq!(v.assets.0 - v0.assets.0, 99 * USDG as u128, "the rest of the stake to the vault");
     assert_eq!(v0.reserved.0 - v.reserved.0, 900 * USDG as u128, "the reserve is released");
     let h = t.last_closed(&alice());
-    assert_eq!((h.reason.as_str(), h.paid.0, h.pnl.as_str()), ("liquidation", 0, "-100000000"));
+    // Recorded at the close-side price of that quote: the sell price 396.30.
+    assert_eq!((h.reason.as_str(), h.payout.0, h.exit_e2.0), ("liquidation", 0, 39_630));
     let logs = logs_with("position_closed");
     assert!(logs[0].contains(r#""reason":"liquidation","print_id":""#), "{}", logs[0]);
     assert!(logs[0].contains(r#""reward":"1000000","caller":"carol.near""#), "{}", logs[0]);
@@ -1075,10 +1083,10 @@ fn a_stale_market_settles_at_its_last_score_for_everyone() {
     assert_eq!(t.last_closed(&bob()).exit_e2.0, 55_000);
     // dave's close settled at its quote, the sell price 546.49: 100 + 200 × 46.49 / 500.
     let h = t.last_closed(&dave());
-    assert_eq!((h.reason.as_str(), h.exit_e2.0, h.paid.0), ("close", 54_649, 118_596_000));
+    assert_eq!((h.reason.as_str(), h.exit_e2.0, h.payout.0), ("close", 54_649, 118_596_000));
     assert_eq!(t.bal(&dave()) - d0, 118_596_000);
     assert_eq!(t.bal(&carol()) - c0, 101 * USDG);
-    assert_eq!(t.last_closed(&carol()).detail, "market_closed");
+    assert_eq!(refunded(o), "market_closed");
     assert_eq!(t.c.active_count(), 0);
 
     // A market with no quote at all settles a day after its listing, at 0.
@@ -1107,7 +1115,7 @@ fn a_close_only_market_refunds_orders_and_keeps_exits() {
     t.now += 10;
     t.reread(m);
     assert_eq!(t.crank(&carol(), &[o]), ["refunded"]);
-    assert_eq!(t.last_closed(&bob()).detail, "market_closed");
+    assert_eq!(refunded(o), "market_closed");
     t.close(&alice(), a, ANY_SHORT);
     t.next(m, 52_000, 52_000);
     assert_eq!(t.crank(&carol(), &[a]), ["closed"]);
@@ -1630,6 +1638,36 @@ fn views_speak_strings_and_nulls() {
     assert_eq!(t.c.list_markets(Some(1), None), vec![]);
     assert!(t.c.get_market_by_reference(REF_B.to_string()).is_none());
     assert_eq!(t.c.history_of(bob()), vec![]);
+    assert!(t.c.get_position(U64(77)).is_none());
+
+    // History: closed positions only, newest first, no signed numbers.
+    t.now += 10;
+    t.reread(m);
+    t.crank(&bob(), &[o]);
+    assert!(t.pos(o).is_none(), "an ended position is gone");
+    let h = serde_json::to_value(t.c.history_of(alice())).unwrap();
+    let mut keys: Vec<&str> = h[0].as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        ["closed_at", "entry_e2", "exit_e2", "id", "leverage", "market", "opened_at", "payout", "reason", "side", "stake"]
+    );
+    assert_eq!((h[0]["id"].as_str(), h[0]["payout"].as_str(), h[0]["reason"].as_str()), (Some("1"), Some("93542074"), Some("close")));
+
+    // quote_open never panics, whatever it is asked.
+    for (market, lev, stake) in [(9, 3, STAKE as u128), (m, 0, STAKE as u128), (m, 3, u128::MAX), (m, 3, 0), (m, 255, u64::MAX as u128)] {
+        for side in [Side::Long, Side::Short] {
+            let q = t.view().quote_open(market, side, lev, U128(stake), Some(dave()));
+            assert!(!q.allowed && q.reason.is_some());
+        }
+    }
+    let q = t.view().quote_open(m, Side::Long, 3, u(STAKE), None);
+    assert_eq!((q.lead_e2.0, q.buy_e2.0, q.sell_e2.0, q.entry_e2.0), (40_880, 40_880, 40_000, 40_880));
+    let v = serde_json::to_value(&q).unwrap();
+    for f in ["score_e2", "lead_e2", "buy_e2", "sell_e2", "entry_e2", "fee", "liquidation_e2", "cap_e2", "max_profit", "value_on_fill"] {
+        assert!(v[f].is_string(), "{f}");
+    }
+    assert!(v["allowed"].as_bool().unwrap() && v["reason"].is_null());
 }
 
 // ------------------------------------------------------------ migrate
@@ -1696,8 +1734,8 @@ fn zero_readings_and_zero_scores_never_fill_or_divide_by_zero() {
     let q = t.c.get_market(m).unwrap().quote.unwrap();
     assert_eq!((q.buy_e2.0, q.sell_e2.0, q.spread_bps.0), (10_173, 0, 10_000));
     assert_eq!(t.crank(&carol(), &[pl, ps, long, short]), ["refunded", "refunded", "close_missed", "waiting"]);
-    assert_eq!(t.c.history_of(bob())[0].detail, "zero_price");
-    assert_eq!(t.c.history_of(alice())[0].detail, "spread");
+    assert_eq!((refunded(pl), refunded(ps)), ("spread".to_string(), "zero_price".to_string()));
+    assert!(logs_with("close_missed")[0].contains(r#""reason":"zero_price""#));
     let p = t.pos(long).unwrap();
     assert_eq!((p.state, p.value, p.at_risk), (PositionState::Open, Some(u(0)), true));
     assert_eq!(t.pos(short).unwrap().value, Some(u(STAKE)));
@@ -1718,7 +1756,7 @@ fn zero_readings_and_zero_scores_never_fill_or_divide_by_zero() {
     t.next(m, 10_173, 10_173);
     assert_eq!(t.crank(&carol(), &[long]), ["closed"]);
     let h = t.last_closed(&alice());
-    assert_eq!((h.reason.as_str(), h.exit_e2.0, h.paid.0), ("expiry", 10_173, STAKE as u128));
+    assert_eq!((h.reason.as_str(), h.exit_e2.0, h.payout.0), ("expiry", 10_173, STAKE as u128));
 
     // A first print with a score of 0, and readings above a score of 0.
     let z = t.list(REF_B, None);
@@ -1733,7 +1771,7 @@ fn zero_readings_and_zero_scores_never_fill_or_divide_by_zero() {
     assert_eq!((q.score_e2.0, q.buy_e2.0, q.sell_e2.0, q.spread_bps.0), (0, 5_000, 0, u64::MAX));
     assert_eq!(t.view().quote_open(z, Side::Long, 3, u(STAKE), None).reason.as_deref(), Some("score is under the minimum to open"));
     t.next(z, 5_000, 5_000);
-    assert_eq!(t.score(z), 1, "the score leaves 0 by the minimum step");
+    assert_eq!(t.score(z), 5_000, "from a score of 0 the pushed score is taken as it is");
     let quote = t.view().quote_open(z, Side::Short, 2, u(STAKE), None);
     assert!(!quote.allowed);
 }
