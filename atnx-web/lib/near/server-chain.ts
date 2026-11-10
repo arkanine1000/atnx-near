@@ -5,6 +5,7 @@ import { Account, JsonRpcProvider, KeyPair, KeyPairSigner, PublicKey, actions, n
 import { USER_METHODS } from './config';
 import type { AccountKey } from './house-account';
 import { normalisePermission, rpcChainReader } from './relay';
+import { rpcProvider } from './rpc';
 import type { AccountChain, HouseAccountChain } from './routes';
 
 // The function-call key's allowance. The relayer pays all gas, so it never
@@ -74,13 +75,14 @@ export async function readAccessKeys(provider: KeyListProvider, accountId: strin
 // methods only. No custody key. With `houseId`, it also makes house
 // accounts (createHouseAccount) and lists an account's keys (accessKeys).
 export function parentAccountChain(opts: {
-  rpcUrl: string;
+  // One endpoint, or several tried in order (lib/near/rpc.ts).
+  rpcUrl: string | readonly string[];
   parentId: string;
   parentKey: string;
   roundsId: string;
   houseId?: string;
 }): AccountChain & HouseAccountChain & { spendable(): Promise<bigint> } {
-  const provider = new JsonRpcProvider({ url: opts.rpcUrl });
+  const provider = rpcProvider(opts.rpcUrl);
   const parent = new Account(opts.parentId, provider, new KeyPairSigner(KeyPair.fromString(opts.parentKey as KeyPairString)));
   const reader = rpcChainReader(provider);
   return {

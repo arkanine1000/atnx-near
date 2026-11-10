@@ -8,7 +8,8 @@
 // nonce. The server holds a lock too; this one keeps a page from tripping
 // over itself.
 import { Account, JsonRpcProvider, actions, base64Encode, buildDelegateAction, encodeSignedDelegate, type Signer } from 'near-api-js';
-import { DELEGATE_TTL_BLOCKS, METHOD_GAS, NEAR_ROUNDS, NEAR_RPC, type HouseMethod, type UserMethod } from './config';
+import { DELEGATE_TTL_BLOCKS, METHOD_GAS, NEAR_ROUNDS, type HouseMethod, type UserMethod } from './config';
+import { nearRpcProvider, rpcProvider } from './rpc';
 import type { RoundsEvent } from './relay';
 
 export interface SignedCall {
@@ -109,7 +110,7 @@ function oneAtATime<T>(key: string, fn: () => Promise<T>): Promise<T> {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export function createActor(cfg: ActorConfig): { act: Act } {
-  const provider = new JsonRpcProvider({ url: cfg.rpcUrl ?? NEAR_RPC });
+  const provider = cfg.rpcUrl ? rpcProvider(cfg.rpcUrl) : nearRpcProvider();
   const contractId = cfg.contractId ?? NEAR_ROUNDS;
   const endpoint = cfg.endpoint ?? '/api/near/relay';
   const doFetch: FetchLike = cfg.fetch ?? ((url, init) => fetch(url, { ...init, credentials: cfg.guest ? 'omit' : 'same-origin' }));

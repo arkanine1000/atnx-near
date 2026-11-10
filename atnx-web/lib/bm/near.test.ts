@@ -250,8 +250,8 @@ test('parseNearSecret: ed25519 keys only, and the secret never in the message', 
 });
 
 test('assertTestnet: anything else is refused', () => {
-  assert.doesNotThrow(() => assertTestnet({ network: 'testnet', rpcUrl: '', rounds: '', usdg: '' }));
-  assert.throws(() => assertTestnet({ network: 'mainnet', rpcUrl: '', rounds: '', usdg: '' }), /testnet only/);
+  assert.doesNotThrow(() => assertTestnet({ network: 'testnet', rpcUrls: [], rpcUrl: '', rounds: '', usdg: '' }));
+  assert.throws(() => assertTestnet({ network: 'mainnet', rpcUrls: [], rpcUrl: '', rounds: '', usdg: '' }), /testnet only/);
 });
 
 // ---------------------------------------------------------------- faucet

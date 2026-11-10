@@ -16,6 +16,8 @@
 // Testnet only: anything that signs refuses to run when
 // NEXT_PUBLIC_BM_NEAR_NETWORK is not "testnet".
 import { Account, JsonRpcProvider, KeyPair, KeyPairSigner, actions, type KeyPairString } from 'near-api-js';
+import { rpcProvider } from '../near/rpc';
+import { serverRpcUrls } from '../near/rpc-urls';
 
 export const NEAR_CHAIN_KEY = 'near:testnet' as const;
 export const USDG_DECIMALS = 6;
@@ -38,15 +40,21 @@ export const GAS_CROSS = 30n * TGAS;
 
 export interface NearEnv {
   network: string;
+  // The server's endpoints (BM_NEAR_RPC, else NEXT_PUBLIC_BM_NEAR_RPC),
+  // tried in order; rpcUrl is the first. They may carry keys: log hosts
+  // only (lib/near/rpc.ts rpcHosts).
+  rpcUrls: string[];
   rpcUrl: string;
   rounds: string;
   usdg: string;
 }
 
 export function nearEnv(): NearEnv {
+  const rpcUrls = serverRpcUrls();
   return {
     network: (process.env.NEXT_PUBLIC_BM_NEAR_NETWORK || 'testnet').trim(),
-    rpcUrl: process.env.NEXT_PUBLIC_BM_NEAR_RPC || 'https://test.rpc.fastnear.com',
+    rpcUrls,
+    rpcUrl: rpcUrls[0],
     rounds: process.env.NEXT_PUBLIC_BM_NEAR_ROUNDS || 'rounds.atnx.testnet',
     usdg: process.env.NEXT_PUBLIC_BM_NEAR_USDG || 'usdg.atnx.testnet',
   };
@@ -84,11 +92,13 @@ export function parseNearSecret(raw: string | undefined, name: string): KeyPair 
 let provider: JsonRpcProvider | null = null;
 let providerUrl = '';
 
+// One provider over the server's endpoints, with failover (lib/near/rpc.ts).
 export function nearProvider(): JsonRpcProvider {
-  const url = nearEnv().rpcUrl;
-  if (!provider || providerUrl !== url) {
-    provider = new JsonRpcProvider({ url });
-    providerUrl = url;
+  const urls = nearEnv().rpcUrls;
+  const key = urls.join(',');
+  if (!provider || providerUrl !== key) {
+    provider = rpcProvider(urls);
+    providerUrl = key;
   }
   return provider;
 }

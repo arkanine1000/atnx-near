@@ -73,6 +73,7 @@ import {
   type NearSideLower,
 } from '../lib/bm/near';
 import { refForSeries, refToHex } from '../lib/bm/series-ref';
+import { rpcHosts } from '../lib/near/rpc';
 
 const USDG = 1_000_000n;
 const ROUND_SECS = 60;
@@ -99,7 +100,7 @@ async function nearTotal(a: Account): Promise<bigint> {
 async function status() {
   const env = nearEnv();
   const cfg = await getConfig();
-  console.log(`rounds ${env.rounds}, usdg ${env.usdg}, rpc ${env.rpcUrl}`);
+  console.log(`rounds ${env.rounds}, usdg ${env.usdg}, rpc ${rpcHosts(env.rpcUrls)}`);
   console.log('config', cfg);
   const keeperId = nearKeeperAccountId();
   const k = keeperRounds();
@@ -118,7 +119,7 @@ async function e2e() {
   const K = keeperRounds();
   const parentId = process.env.NEXT_PUBLIC_BM_NEAR_PARENT || 'atnx.testnet';
   const parent = nearAccount(parentId, parseNearSecret(process.env.BM_NEAR_PARENT_SECRET, 'BM_NEAR_PARENT_SECRET'));
-  console.log(`rounds ${env.rounds}, usdg ${env.usdg}, keeper ${keeperId}, parent ${parentId}, rpc ${env.rpcUrl}`);
+  console.log(`rounds ${env.rounds}, usdg ${env.usdg}, keeper ${keeperId}, parent ${parentId}, rpc ${rpcHosts(env.rpcUrls)}`);
 
   const cfg = await getConfig();
   assert.equal(cfg.keeper, keeperId, `config keeper is ${cfg.keeper}`);

@@ -5,11 +5,12 @@
 // BM_NEAR_RELAYER_SECRET).
 import { createHash } from 'node:crypto';
 import { createClient } from '@/lib/supabase/server';
-import { HOUSE_USER_METHODS, NEAR_HOUSE, NEAR_PARENT, NEAR_ROUNDS, NEAR_RPC, USER_METHODS, isHouseProduct } from './config';
+import { HOUSE_USER_METHODS, NEAR_HOUSE, NEAR_PARENT, NEAR_ROUNDS, USER_METHODS, isHouseProduct } from './config';
 import { hashIp } from './guest';
 import { houseViewer } from './house';
 import { houseAppCheck } from './house-check';
 import { createRelayer, houseRelayPolicy, roundsRelayPolicy, type RelayPolicy, type Relayer } from './relay';
+import { serverRpcUrls } from './rpc-urls';
 import { parentAccountChain } from './server-chain';
 import { roundsAppCheck } from './rounds-check';
 import { roundsViewer } from './rounds';
@@ -53,7 +54,7 @@ export function nearRelayer(): Relayer {
     relayer = createRelayer({
       relayerId: env('BM_NEAR_RELAYER_ACCOUNT'),
       relayerKey: env('BM_NEAR_RELAYER_SECRET'),
-      rpcUrl: NEAR_RPC,
+      rpcUrl: serverRpcUrls(),
       policy: policies.length === 1 ? policies[0] : policies,
     });
   }
@@ -77,7 +78,7 @@ function parentAccount(): ReturnType<typeof parentAccountChain> {
   if (!NEAR_ROUNDS || !NEAR_PARENT) throw new NearNotConfigured('NEXT_PUBLIC_BM_NEAR_ROUNDS / NEXT_PUBLIC_BM_NEAR_PARENT');
   if (!parentChain) {
     parentChain = parentAccountChain({
-      rpcUrl: NEAR_RPC,
+      rpcUrl: serverRpcUrls(),
       parentId: NEAR_PARENT,
       parentKey: env('BM_NEAR_PARENT_SECRET'),
       roundsId: NEAR_ROUNDS,

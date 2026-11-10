@@ -9,6 +9,8 @@
 // by a function-call key and relayed as a NEP-366 meta-transaction, so a
 // user's account never holds NEAR.
 
+import { DEFAULT_NEAR_RPC, parseRpcUrls } from './rpc-urls';
+
 export type RoundsChain = 'near' | 'solana';
 
 // Which chain the rounds UI trades on. Anything but "near" keeps the
@@ -21,7 +23,13 @@ export const NEAR_NETWORK: string = process.env.NEXT_PUBLIC_BM_NEAR_NETWORK || '
 // 'solana:devnet'.
 export const NEAR_CHAIN_KEY = `near:${NEAR_NETWORK}`;
 
-export const NEAR_RPC: string = process.env.NEXT_PUBLIC_BM_NEAR_RPC || 'https://test.rpc.fastnear.com';
+// The browser's endpoints: NEXT_PUBLIC_BM_NEAR_RPC, one URL or a
+// comma-separated list tried in order (lib/near/rpc.ts). NEAR_RPC is the
+// first, for what takes a single URL. The server has its own list
+// (BM_NEAR_RPC, lib/near/rpc-urls.ts serverRpcUrls).
+const BROWSER_RPC_URLS = parseRpcUrls(process.env.NEXT_PUBLIC_BM_NEAR_RPC);
+export const NEAR_RPC_URLS: readonly string[] = BROWSER_RPC_URLS.length > 0 ? BROWSER_RPC_URLS : [DEFAULT_NEAR_RPC];
+export const NEAR_RPC: string = NEAR_RPC_URLS[0];
 export const NEAR_ROUNDS: string = process.env.NEXT_PUBLIC_BM_NEAR_ROUNDS || '';
 export const NEAR_USDG: string = process.env.NEXT_PUBLIC_BM_NEAR_USDG || '';
 // User accounts are created as <handle>.<parent>.

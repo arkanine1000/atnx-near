@@ -5,7 +5,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { JsonRpcProvider } from "near-api-js";
 import { useAuth } from "@/context/AuthContext";
 import { NearActError, createActor, type ActResult, type NearMethod } from "@/lib/near/client";
-import { HOUSE_METHOD_GAS, NEAR_HOUSE, NEAR_PARENT, NEAR_RPC, isHouseProduct, isNearHouseDeployed, isNearRoundsDeployed } from "@/lib/near/config";
+import { HOUSE_METHOD_GAS, NEAR_HOUSE, NEAR_PARENT, isHouseProduct, isNearHouseDeployed, isNearRoundsDeployed } from "@/lib/near/config";
+import { nearRpcProvider } from "@/lib/near/rpc";
 import { hasHouseKey } from "@/lib/near/house";
 import { houseAccountId } from "@/lib/near/house-account";
 import { notifyGuestChanged, onGuestChanged } from "@/lib/near/guest-local";
@@ -70,7 +71,7 @@ const HOUSE = isHouseProduct();
 
 let rpc: JsonRpcProvider | null = null;
 function provider(): JsonRpcProvider {
-  if (!rpc) rpc = new JsonRpcProvider({ url: NEAR_RPC });
+  if (!rpc) rpc = nearRpcProvider();
   return rpc;
 }
 
