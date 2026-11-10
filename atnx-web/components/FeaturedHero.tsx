@@ -14,6 +14,7 @@ import { LogoImage } from "@/components/LogoImage";
 import { tileImage } from "@/components/MarketCard";
 import { Card, Chip, DeltaChip } from "@/components/ui";
 import { HowItWorksModal } from "@/components/HowItWorksModal";
+import { isHouseProduct } from "@/lib/near/config";
 import { viChange24h } from "@/lib/capture-view";
 import type { Capture } from "@/lib/store";
 
@@ -92,12 +93,13 @@ const STEPS = [
   },
   {
     n: "2",
-    title: "UP or DOWN, round by round",
+    // The house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) has no rounds.
+    title: isHouseProduct() ? "UP or DOWN, 2× or 3×" : "UP or DOWN, round by round",
     cls: "bg-atnx-magenta/10 text-atnx-magenta light:text-atnx-magenta-light border-atnx-magenta/25",
   },
   {
     n: "3",
-    title: "Right? Stake back, plus a share.",
+    title: isHouseProduct() ? "Right? Close and get paid." : "Right? Stake back, plus a share.",
     cls: "bg-atnx-yellow/10 text-atnx-yellow light:text-atnx-yellow-light border-atnx-yellow/25",
   },
 ];

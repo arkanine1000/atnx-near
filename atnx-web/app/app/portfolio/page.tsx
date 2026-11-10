@@ -2,7 +2,10 @@ import { loadMarketMeta } from "@/lib/bm/market-meta";
 import { OnchainPortfolio } from "@/components/bm/OnchainPortfolio";
 import { RoundsPortfolio, type PortfolioSeries } from "@/components/rounds/RoundsPortfolio";
 import { NearRoundsPortfolio, type NearPortfolioSeries } from "@/components/rounds/NearRoundsPortfolio";
-import { isNearChain, isNearRoundsDeployed } from "@/lib/near/config";
+import { HousePortfolio, type HousePortfolioMarket } from "@/components/house/HousePortfolio";
+import { referenceToUuid } from "@/lib/bm/house-types";
+import { isHouseProduct, isNearChain, isNearHouseDeployed, isNearRoundsDeployed } from "@/lib/near/config";
+import { houseContractMissing, houseViewer } from "@/lib/near/house";
 import { listNearSeries } from "@/lib/near/registry";
 import { listSeriesWithPubkey } from "@/lib/bm/rounds-registry";
 import { listAll } from "@/lib/bm/registry";
@@ -81,7 +84,35 @@ async function loadNearSeries(): Promise<NearPortfolioSeries[]> {
   }
 }
 
+// The house's markets with their atnx.app names and pictures, so a position
+// read from the chain can name its market (NEXT_PUBLIC_BM_NEAR_PRODUCT=
+// house). Read from the contract's list_markets, 100 at a time; empty when
+// the contract is not there yet.
+async function loadHouseMarkets(): Promise<HousePortfolioMarket[]> {
+  if (!isNearHouseDeployed()) return [];
+  try {
+    const v = houseViewer();
+    const all = [];
+    for (let from = 0; from < 10_000; from += 100) {
+      const page = await v.listMarkets(from, 100);
+      all.push(...page);
+      if (page.length < 100) break;
+    }
+    const uuid = new Map(all.map((m) => [m.id, referenceToUuid(m.reference)]));
+    const names = await loadMarketMeta(Array.from(new Set(uuid.values())));
+    return all.map((m) => {
+      const id = uuid.get(m.id)!;
+      const meta = names.get(id);
+      return { id: m.id, atnxMarketId: id, name: meta?.name ?? "Unknown market", thumb: meta?.thumb ?? null };
+    });
+  } catch (err) {
+    if (!houseContractMissing(err)) console.error("[portfolio] house markets failed", err);
+    return [];
+  }
+}
+
 export default async function PortfolioPage() {
+  if (isHouseProduct()) return <HousePortfolioPage />;
   if (isNearChain()) return <NearPortfolioPage />;
   const [markets, series] = await Promise.all([loadListing(), loadSeries()]);
   return (
@@ -131,6 +162,20 @@ async function NearPortfolioPage() {
         </h3>
       )}
       <OnchainPortfolio markets={markets} />
+    </section>
+  );
+}
+
+// NEXT_PUBLIC_BM_NEAR_PRODUCT=house: the house positions on NEAR testnet,
+// alone, so the build shows one product.
+async function HousePortfolioPage() {
+  const markets = await loadHouseMarkets();
+  return (
+    <section>
+      <div className="mb-5">
+        <h2 className="font-display text-xl sm:text-2xl font-bold text-primary tracking-tight">Portfolio</h2>
+      </div>
+      <HousePortfolio markets={markets} />
     </section>
   );
 }
