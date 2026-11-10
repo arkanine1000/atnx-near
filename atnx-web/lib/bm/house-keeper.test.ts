@@ -764,6 +764,76 @@ test('quoteOnDemand: never throws, whatever fails', async () => {
   assert.deepEqual([r6.ok, r6.reason], [false, 'bad_id']);
 });
 
+// An error as near-api-js throws it when the RPC rate-limits (HTTP 429).
+const rateLimited = () => Object.assign(new Error('{"jsonrpc":"2.0","error":{"code":-429,"message":"Rate limits exceeded"}}'), { cause: 429 });
+
+test('quoteOnDemand: a rate-limited read is tried again after a short pause', async () => {
+  const { clock, chain, d } = onDemandScene();
+  const position = chain.position;
+  let fails = 1;
+  chain.position = async (id) => {
+    if (fails-- > 0) throw rateLimited();
+    return position(id);
+  };
+  const res = await quoteOnDemand('7', { deps: d });
+  assert.deepEqual([res.ok, res.sent, res.retries, res.error], [true, true, 1, null]);
+  assert.equal(clock.sleeps[0], 500);
+  assert.equal(chain.sent('push_and_crank').length, 1);
+});
+
+test('quoteOnDemand: a failed read of the print is tried again', async () => {
+  const { db, chain, d } = onDemandScene();
+  const read = db.newestPrint.bind(db);
+  let fails = 2;
+  db.newestPrint = async (uuid: string) => {
+    if (fails-- > 0) throw new Error('canceling statement due to statement timeout');
+    return read(uuid);
+  };
+  const res = await quoteOnDemand('7', { deps: d });
+  assert.deepEqual([res.ok, res.sent, res.retries], [true, true, 2]);
+  assert.equal(chain.sent('push_and_crank').length, 1);
+});
+
+test('quoteOnDemand: after a rate-limited send the position is read again, and one that filled is left alone', async () => {
+  const { chain, d } = onDemandScene();
+  chain.failures.push_and_crank = [rateLimited()];
+  // The send went through after all: the position is open on the next read.
+  const send = chain.pushAndCrank;
+  chain.pushAndCrank = async (...a) => {
+    try {
+      return await send(...a);
+    } catch (err) {
+      chain.positions = chain.positions.map((p) => ({ ...p, state: 'Open' as const }));
+      throw err;
+    }
+  };
+  const res = await quoteOnDemand('7', { deps: d });
+  assert.deepEqual([res.ok, res.sent, res.reason, res.retries], [true, false, 'not_waiting', 1]);
+  assert.equal(chain.sent('push_and_crank').length, 1);
+});
+
+test('quoteOnDemand: a rate-limited send of an order still waiting is sent again', async () => {
+  const { chain, d } = onDemandScene();
+  chain.failures.push_and_crank = [rateLimited()];
+  const res = await quoteOnDemand('7', { deps: d });
+  assert.deepEqual([res.ok, res.sent, res.retries], [true, true, 1]);
+  assert.equal(chain.sent('push_and_crank').length, 2);
+});
+
+test('quoteOnDemand: tries stop inside the 30-second budget', async () => {
+  const { clock, chain, d } = onDemandScene();
+  chain.config = async () => {
+    throw rateLimited();
+  };
+  const t0 = clock.ms;
+  const res = await quoteOnDemand('7', { deps: d });
+  assert.deepEqual([res.ok, res.reason], [false, 'error']);
+  assert.match(res.error!, /Rate limits exceeded/);
+  assert.ok(clock.ms - t0 <= 30_000, `took ${clock.ms - t0} ms`);
+  assert.ok(res.retries >= 4);
+  assert.deepEqual(chain.calls, []);
+});
+
 test('quoteOnDemand: nothing to do for a position that is not waiting, or one that is gone', async () => {
   const a = onDemandScene({ state: 'Open' });
   const r1 = await quoteOnDemand('7', { deps: a.d });

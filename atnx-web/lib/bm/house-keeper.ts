@@ -35,6 +35,7 @@ import {
 } from './house-rules';
 import { referenceToUuid, type HouseConfig, type HouseMarket, type HousePosition, type HouseVault, type PushQuotesResult, type QuoteIn } from './house-types';
 import { nearKeeperAccountId } from './near';
+import { isRetryableRpcError } from '../near/rpc';
 import { buildQuoteBatch, quoteCommitment, quoteFromRow, sortQuotesLike, type PrintRow } from './quote-commitment';
 import * as registry from './registry';
 
@@ -86,6 +87,18 @@ export const HOUSE_BUDGET_MS = 45_000;
 // fill delay to pass, polling the latest block.
 export const ON_DEMAND_MAX_WAIT_MS = 30_000;
 const ON_DEMAND_POLL_MS = 500;
+// After a failed read or send, the first pause before trying again, and
+// the longest; the whole stays within ON_DEMAND_MAX_WAIT_MS.
+export const ON_DEMAND_RETRY_MS = 500;
+export const ON_DEMAND_RETRY_MAX_MS = 4_000;
+
+// A failed read of the newest print (the database), worth another try.
+class PrintReadError extends Error {
+  constructor(cause: unknown) {
+    super(msg(cause), { cause });
+    this.name = 'PrintReadError';
+  }
+}
 const LOG_CHAIN = 'near:testnet';
 
 export function faucetWarnUnits(env: Record<string, string | undefined> = process.env): bigint {
@@ -957,6 +970,9 @@ export interface OnDemandResult {
   pushSkipped: boolean;
   txHash: string | null;
   attempts: number;
+  // Tries again after a read or send that failed for the RPC's (or the
+  // database's) own reasons.
+  retries: number;
   // Time slept waiting for the chain's clock to pass the fill delay.
   waitedMs: number;
   // The chain time used as read_at.
@@ -978,8 +994,12 @@ function parseId(v: unknown): bigint | null {
 // since the order (or the close request), polling the latest block, reads
 // that market's newest print, and sends one transaction with the quote and
 // a crank for the position, signed with the keeper's second key. One retry
-// on a nonce clash. Never throws: a failure comes back in the result, and
-// the every-minute run picks the position up.
+// on a nonce clash. A read or a send that failed for the RPC's own reasons
+// (rate limited, a 5xx, unreachable), or a failed read of the print, is
+// tried again after a short pause while ON_DEMAND_MAX_WAIT_MS lasts; each
+// try starts by reading the position again, so a send that went through
+// after all is not repeated. Never throws: a failure comes back in the
+// result, and the every-minute run picks the position up.
 export async function quoteOnDemand(positionId: string | number | bigint, opts: { deps?: Partial<HouseDeps> } = {}): Promise<OnDemandResult> {
   const res: OnDemandResult = {
     ok: false,
@@ -989,6 +1009,7 @@ export async function quoteOnDemand(positionId: string | number | bigint, opts: 
     pushSkipped: false,
     txHash: null,
     attempts: 0,
+    retries: 0,
     waitedMs: 0,
     readAt: null,
     reason: null,
@@ -1016,6 +1037,18 @@ export async function quoteOnDemand(positionId: string | number | bigint, opts: 
       // The log is best effort here; the result is what the caller needs.
     }
   };
+  const started = deps.now();
+  let pause = ON_DEMAND_RETRY_MS;
+  // Waits before another try after a failure that may pass; false when the
+  // budget would run out first.
+  const again = async (err: unknown): Promise<boolean> => {
+    if (deps.now() - started + pause > ON_DEMAND_MAX_WAIT_MS) return false;
+    res.retries++;
+    res.error = msg(err);
+    await deps.sleep(pause);
+    pause = Math.min(pause * 2, ON_DEMAND_RETRY_MAX_MS);
+    return true;
+  };
   try {
     const id = parseId(positionId);
     if (id === null) {
@@ -1023,64 +1056,76 @@ export async function quoteOnDemand(positionId: string | number | bigint, opts: 
       return res;
     }
     const { chain, db } = deps;
-    const cfg = await chain.config();
+    let cfg: HouseConfig | null = null;
     for (;;) {
       res.attempts++;
-      const p = await chain.position(id);
-      if (!p) {
-        res.reason = 'not_found';
-        return res;
-      }
-      if (p.state !== 'Pending' && p.state !== 'Closing') {
-        res.ok = true;
-        res.reason = 'not_waiting';
-        return res;
-      }
-      // Wait until the chain's clock is min_fill_delay_secs past the order,
-      // so a quote read now counts for it.
-      const since = waitingSince(p) + cfg.minFillDelaySecs;
-      let now = await chain.nowSecs();
-      if ((since - now) * 1000 > ON_DEMAND_MAX_WAIT_MS) {
-        res.reason = 'wait_too_long';
-        return res;
-      }
-      while (now < since) {
-        if (res.waitedMs >= ON_DEMAND_MAX_WAIT_MS) {
-          res.reason = 'wait_timeout';
-          return res;
-        }
-        const ms = Math.min(ON_DEMAND_POLL_MS * 2, Math.max(ON_DEMAND_POLL_MS / 2, (since - now) * 1000));
-        await deps.sleep(ms);
-        res.waitedMs += ms;
-        now = await chain.nowSecs();
-      }
-      const m = await chain.market(p.market);
-      if (!m) {
-        res.reason = 'no_market';
-        return res;
-      }
       let quotes: QuoteIn[] = [];
       let commitment: string | null = null;
-      if (m.status !== 'Settled') {
-        // `now` was read from the chain just before this query: the read_at.
-        res.readAt = now;
-        const row = await db.newestPrint(referenceToUuid(m.reference));
-        const read: PrintRead = { row, readAt: now };
-        const gate = healthGate(read, now);
-        if (gate.ok) {
-          const q = quoteFromRow(row!, m.id, now);
-          const plan = planQuote(q, newestQuote(m));
-          if (plan.action !== 'skip') {
-            quotes = [q];
-            commitment = quoteCommitment(buildQuoteBatch([row!])).hash;
-          } else if (!qualifyingQuote(m, since)) {
-            res.reason = plan.reason;
-            return res;
-          }
-        } else if (!qualifyingQuote(m, since)) {
-          res.reason = gate.reason;
+      try {
+        cfg ??= await chain.config();
+        const p = await chain.position(id);
+        if (!p) {
+          res.reason = 'not_found';
           return res;
         }
+        if (p.state !== 'Pending' && p.state !== 'Closing') {
+          res.ok = true;
+          res.reason = 'not_waiting';
+          res.error = null;
+          return res;
+        }
+        // Wait until the chain's clock is min_fill_delay_secs past the order,
+        // so a quote read now counts for it.
+        const since = waitingSince(p) + cfg.minFillDelaySecs;
+        let now = await chain.nowSecs();
+        if ((since - now) * 1000 > ON_DEMAND_MAX_WAIT_MS) {
+          res.reason = 'wait_too_long';
+          return res;
+        }
+        while (now < since) {
+          if (res.waitedMs >= ON_DEMAND_MAX_WAIT_MS) {
+            res.reason = 'wait_timeout';
+            return res;
+          }
+          const ms = Math.min(ON_DEMAND_POLL_MS * 2, Math.max(ON_DEMAND_POLL_MS / 2, (since - now) * 1000));
+          await deps.sleep(ms);
+          res.waitedMs += ms;
+          now = await chain.nowSecs();
+        }
+        const m = await chain.market(p.market);
+        if (!m) {
+          res.reason = 'no_market';
+          return res;
+        }
+        if (m.status !== 'Settled') {
+          // `now` was read from the chain just before this query: the read_at.
+          res.readAt = now;
+          let row: PrintRow | null;
+          try {
+            row = await db.newestPrint(referenceToUuid(m.reference));
+          } catch (err) {
+            throw new PrintReadError(err);
+          }
+          const read: PrintRead = { row, readAt: now };
+          const gate = healthGate(read, now);
+          if (gate.ok) {
+            const q = quoteFromRow(row!, m.id, now);
+            const plan = planQuote(q, newestQuote(m));
+            if (plan.action !== 'skip') {
+              quotes = [q];
+              commitment = quoteCommitment(buildQuoteBatch([row!])).hash;
+            } else if (!qualifyingQuote(m, since)) {
+              res.reason = plan.reason;
+              return res;
+            }
+          } else if (!qualifyingQuote(m, since)) {
+            res.reason = gate.reason;
+            return res;
+          }
+        }
+      } catch (err) {
+        if ((err instanceof PrintReadError || isRetryableRpcError(err)) && (await again(err))) continue;
+        throw err;
       }
       try {
         const pushed = await chain.pushAndCrank(quotes, commitment, [id], 'fast');
@@ -1097,6 +1142,8 @@ export async function quoteOnDemand(positionId: string | number | bigint, opts: 
           res.error = msg(err);
           continue;
         }
+        // The RPC's own trouble: the next try reads the position first.
+        if (!isNonceError(err) && isRetryableRpcError(err) && (await again(err))) continue;
         res.reason = isNonceError(err) ? 'nonce' : 'send_failed';
         res.error = msg(err);
         return res;
