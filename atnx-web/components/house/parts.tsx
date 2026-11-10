@@ -95,8 +95,21 @@ export function pctText(pct: number): string {
   return `${r > 0 ? "+" : r < 0 ? "−" : ""}${Math.abs(r).toFixed(1)} %`;
 }
 
+// A profit or loss in USDG with its sign. One that rounds to 0.00 is
+// written 0.00, with no sign.
 export function signedUsdg(units: bigint): string {
-  return `${units > 0n ? "+" : units < 0n ? "−" : ""}${fmtUsdg(units < 0n ? -units : units)}`;
+  const abs = fmtUsdg(units < 0n ? -units : units);
+  if (showsAsZero(units)) return abs;
+  return `${units > 0n ? "+" : "−"}${abs}`;
+}
+
+function showsAsZero(units: bigint): boolean {
+  return /^[0.,]+$/.test(fmtUsdg(units < 0n ? -units : units));
+}
+
+// The ink of a profit or loss: a gain, a loss, or plain when it rounds to 0.00.
+export function pnlTone(units: bigint): string {
+  return showsAsZero(units) ? "text-primary" : gainTone(units > 0n);
 }
 
 // ---------------------------------------------------------------- tracks
@@ -303,7 +316,7 @@ export function PositionLine({
                 ) : mark ? (
                   <>
                     <div className="text-base tabular-nums font-bold text-primary">{fmtUsdg(mark.value)} USDG</div>
-                    <div className={`text-base font-semibold tabular-nums ${gainTone(mark.pnl >= 0n)}`}>
+                    <div className={`text-base font-semibold tabular-nums ${pnlTone(mark.pnl)}`}>
                       {signedUsdg(mark.pnl)} ({pctText(mark.pnlPct)})
                     </div>
                     {mark.atRisk && (
@@ -386,7 +399,7 @@ export function ClosedLine({ c, name }: { c: HouseClosed; name?: string | null }
       </div>
       <div className="text-right shrink-0">
         <div className="text-base tabular-nums font-bold text-primary">{fmtUsdg(c.payout)} USDG</div>
-        <div className={`text-base font-semibold tabular-nums ${gainTone(pnl >= 0n)}`}>
+        <div className={`text-base font-semibold tabular-nums ${pnlTone(pnl)}`}>
           {signedUsdg(pnl)} ({pctText(pct)})
         </div>
       </div>

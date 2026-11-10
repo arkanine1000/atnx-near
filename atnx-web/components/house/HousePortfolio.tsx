@@ -11,7 +11,7 @@ import { fundingState, markPosition } from "@/lib/bm/house-ticket";
 import { faucetArgs, type HousePosition } from "@/lib/bm/house-types";
 import { HOUSE_FAUCET_UNITS, isNearHouseDeployed } from "@/lib/near/config";
 import { friendlyNearError } from "@/lib/near/errors";
-import { ClosedLine, Help, LastTxLink, PositionLine, TESTNET, TrackLines, sendClose, signedUsdg, useTracks } from "./parts";
+import { ClosedLine, Help, LastTxLink, PositionLine, TESTNET, TrackLines, sendClose, pnlTone, signedUsdg, useTracks } from "./parts";
 import { useHouseAccount, useHouseBasics, useHouseMarkets } from "./useNearHouse";
 
 // The house portfolio (NEXT_PUBLIC_BM_NEAR_PRODUCT=house), read from the
@@ -159,7 +159,7 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
         <Stat label={`Open positions\u00a0·\u00a0${open.length}`} value={`${fmtUsdg(openValue)} USDG`} />
         <Stat
           label="Open PnL"
-          value={<span className={openValue >= openStake ? "text-atnx-cyan light:text-atnx-cyan-light" : "text-atnx-magenta light:text-atnx-magenta-light"}>{signedUsdg(openValue - openStake)} USDG</span>}
+          value={<span className={pnlTone(openValue - openStake)}>{signedUsdg(openValue - openStake)} USDG</span>}
           help={{ label: "About Open PnL", note: "At the prices your positions would close at now." }}
         />
       </div>
