@@ -114,7 +114,7 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
   const account = house.account.data;
 
   const [side, setSide] = useState<HouseSide>(initialSide === "down" ? "Short" : "Long");
-  const [leverage, setLeverage] = useState<"1" | "2" | "3">("2");
+  const [leverage, setLeverage] = useState<"1" | "2" | "3">("1");
   const [amount, setAmount] = useState("100");
   // The worst price, as typed; null follows the price.
   const [limitText, setLimitText] = useState<string | null>(null);
