@@ -1,18 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { quoteOnDemand, tickHouse, tickHouseFast, minuteOfTick, type HouseChain, type HouseDb, type HouseDeps, type HouseLogEntry } from './house-keeper';
+import type { HousePushed } from './house-near';
 import type { AtnxMarketRow } from './house-rules';
 import { applyQuotes } from './house-rules';
-import type { HouseConfig, HouseMarket, HousePosition, HouseQuote, HouseVault, QuoteIn } from './house-types';
+import { CRANK_MAX_IDS, type HouseConfig, type HouseMarket, type HousePosition, type HouseQuote, type HouseVault, type QuoteIn } from './house-types';
 import { NearCallError } from './near';
 import { buildQuoteBatch, quoteCommitment, type PrintRow } from './quote-commitment';
 
-// The house keeper's runs against an in-memory contract (the push rules of
-// push_quotes: a newer print a gap after the stored one, the same print
-// with the same numbers, reads never going back), an in-memory database
-// and a clock that only moves when the keeper sleeps.
+// The house keeper's runs against an in-memory contract (push_quotes'
+// rules: a new print needs a later print time and its score is clipped by
+// the time between prints, the same print again needs the numbers as
+// pushed, read_at never goes back and is never past the chain's clock; a
+// quote that breaks one is skipped and counted), an in-memory database and
+// a clock that only moves when the keeper sleeps. The chain's clock runs
+// two seconds behind the wall clock, so every read_at shows which clock it
+// came from.
 
 const T = 1_794_265_500; // 2026-11-09 23:05:00 UTC, a five-minute boundary
+const LAG = 2; // the chain's clock behind the wall's, seconds
 const U = 1_000_000n;
 const uuid = (c: string) => `${c.repeat(8)}-${c.repeat(4)}-4${c.repeat(3)}-8${c.repeat(3)}-${c.repeat(12)}`;
 const ref = (c: string) => uuid(c).replace(/-/g, '');
@@ -39,7 +45,6 @@ const CFG: HouseConfig = {
   minFillDelaySecs: 3,
   orderTtlSecs: 900,
   maxQuoteAgeSecs: 900,
-  minQuoteGapSecs: 240,
   emergencySecs: 86400,
   maxPositionSecs: 14 * 86400,
   lpExitDelaySecs: 86400,
@@ -53,7 +58,8 @@ const CFG: HouseConfig = {
 };
 
 function q(score: number, reading: number, printId: number, printAt: number, readAt: number): HouseQuote {
-  return { scoreE2: BigInt(Math.round(score * 100)), readingE2: BigInt(Math.round(reading * 100)), printId: BigInt(printId), printAt, firstReadAt: readAt, lastReadAt: readAt };
+  const scoreE2 = BigInt(Math.round(score * 100));
+  return { scoreE2, pushedScoreE2: scoreE2, readingE2: BigInt(Math.round(reading * 100)), printId: BigInt(printId), printAt, firstReadAt: readAt, lastReadAt: readAt };
 }
 
 function mkt(id: number, c: string, quotes: HouseQuote[], status: HouseMarket['status'] = 'Open'): HouseMarket {
@@ -100,11 +106,16 @@ type Call = { method: string; args: Record<string, unknown> };
 class FakeChain implements HouseChain {
   calls: Call[] = [];
   views = 0;
+  clockReads: number[] = [];
   // Errors thrown by the next sends, by method, in order.
   failures: Record<string, unknown[]> = {};
   keeper: string | null = 'keeper.atnx.testnet';
   missing = false;
-  vaultState: HouseVault = { assets: 10_000_000n * U, reserved: 0n, free: 10_000_000n * U, sharePrice: '1', shares: 1n, margin: 0n, faucetPool: 50_000n * U };
+  // Called before each push is applied (to change the chain under the keeper).
+  beforePush: (() => void) | null = null;
+  // Seconds each send takes, on both clocks.
+  sendSecs = 0;
+  vaultState: HouseVault = { assets: 10_000_000n * U, reserved: 0n, free: 10_000_000n * U, margin: 0n, shares: 1n, sharePrice: '1000000', faucetPool: 50_000n * U };
   constructor(
     public clock: Clock,
     public markets: HouseMarket[],
@@ -123,6 +134,12 @@ class FakeChain implements HouseChain {
   }
   contractId = () => 'house.atnx.testnet';
   keeperId = () => this.keeper;
+  chainSecs = () => Math.floor(this.clock.ms / 1000) - LAG;
+  nowSecs = async () => {
+    const t = this.chainSecs();
+    this.clockReads.push(t);
+    return t;
+  };
   config = () => this.view(() => this.cfg);
   vault = () => this.view(() => this.vaultState);
   listMarkets = (from: number, limit: number) => this.view(() => this.markets.slice(from, from + limit));
@@ -130,39 +147,49 @@ class FakeChain implements HouseChain {
   listActive = (from: number, limit: number) => this.view(() => this.positions.slice(from, from + limit));
   position = (id: bigint) => this.view(() => this.positions.find((p) => p.id === id) ?? null);
 
-  // push_quotes as the contract checks it; any bad quote fails the batch.
-  private applyPush(quotes: QuoteIn[]) {
-    const nowSecs = Math.floor(this.clock.ms / 1000);
+  // push_quotes as the contract does it: each quote taken or skipped.
+  private applyPush(quotes: QuoteIn[], commitment: string): HousePushed['result'] {
+    this.beforePush?.();
+    const blockSecs = this.chainSecs();
+    const taken: QuoteIn[] = [];
     for (const x of quotes) {
       const m = this.markets.find((mm) => mm.id === x.market);
-      if (!m || m.status === 'Settled') throw new NearCallError('push_quotes', 'market is settled', null, 'push_quotes: market is settled');
-      if (x.readAt > nowSecs) throw new NearCallError('push_quotes', 'read_at is in the future', null, 'push_quotes: read_at is in the future');
-      const last = m.quotes[m.quotes.length - 1];
-      if (last && x.printId === last.printId) {
-        if (x.scoreE2 !== last.scoreE2 || x.readingE2 !== last.readingE2) throw new NearCallError('push_quotes', 'same print, other numbers', null, 'push_quotes: same print, other numbers');
-        if (x.readAt < last.lastReadAt) throw new NearCallError('push_quotes', 'read_at went back', null, 'push_quotes: read_at went back');
-      } else if (last && (x.printId < last.printId || x.printAt < last.printAt + this.cfg.minQuoteGapSecs || x.readAt < last.lastReadAt)) {
-        throw new NearCallError('push_quotes', 'print is not newer', null, 'push_quotes: print is not newer');
-      }
+      const last = m?.quotes[m.quotes.length - 1];
+      let ok = !!m && m.status !== 'Settled' && x.readAt <= blockSecs && x.printAt <= blockSecs && (!last || x.readAt >= last.lastReadAt);
+      if (ok && last && x.printId === last.printId) ok = x.scoreE2 === (last.pushedScoreE2 ?? last.scoreE2) && x.readingE2 === last.readingE2 && x.printAt === last.printAt;
+      else if (ok && last) ok = x.printId > last.printId && x.printAt > last.printAt;
+      if (ok) taken.push(x);
     }
-    this.markets = applyQuotes(this.markets, quotes, this.cfg);
+    this.markets = applyQuotes(this.markets, taken, this.cfg);
+    const ids = quotes.map((x) => x.printId);
+    return {
+      count: quotes.length,
+      accepted: taken.length,
+      skipped: quotes.length - taken.length,
+      firstPrintId: String(ids.reduce((a, b) => (b < a ? b : a))),
+      lastPrintId: String(ids.reduce((a, b) => (b > a ? b : a))),
+      commitment,
+    };
   }
   private send(method: string, args: Record<string, unknown>) {
     this.calls.push({ method, args: structuredClone(args) });
+    this.clock.ms += this.sendSecs * 1000;
     this.fail(method);
     return `tx${this.calls.length}`;
   }
 
-  pushQuotes = async (quotes: QuoteIn[], commitment: string) => {
+  pushQuotes = async (quotes: QuoteIn[], commitment: string): Promise<HousePushed> => {
     const tx = this.send('push_quotes', { quotes, commitment });
-    this.applyPush(quotes);
-    return tx;
+    return { txHash: tx, result: this.applyPush(quotes, commitment) };
   };
-  crank = async (ids: bigint[]) => this.send('crank', { ids });
-  pushAndCrank = async (quotes: QuoteIn[], commitment: string | null, ids: bigint[], key: 'main' | 'fast') => {
+  crank = async (ids: bigint[]) => {
+    if (ids.length > CRANK_MAX_IDS) throw new Error('more ids than crank takes');
+    return this.send('crank', { ids });
+  };
+  pushAndCrank = async (quotes: QuoteIn[], commitment: string | null, ids: bigint[], key: 'main' | 'fast'): Promise<HousePushed> => {
+    if (ids.length > CRANK_MAX_IDS) throw new Error('more ids than crank takes');
     const tx = this.send('push_and_crank', { quotes, commitment, ids, key });
-    if (quotes.length) this.applyPush(quotes);
-    return tx;
+    return { txHash: tx, result: quotes.length ? this.applyPush(quotes, commitment!) : null };
   };
   listMarket = async (a: { reference: string; finder: string | null; liveSince: number }) => {
     const tx = this.send('list_market', a);
@@ -228,7 +255,7 @@ function atnxRow(c: string, over: Partial<AtnxMarketRow> = {}): AtnxMarketRow {
   };
 }
 
-// The five-minute scene, at T + 105 s:
+// The five-minute scene, at T + 105 s on the wall (T + 103 on the chain):
 //   0 A  open, last print 100 a slot ago; print 101 at T+45 in the database
 //   1 B  open, print 201 for this slot lands only after the first read
 //   2 C  open, newest print 15 minutes old (left out)
@@ -251,7 +278,7 @@ function scene() {
   ];
   const positions: HousePosition[] = [];
   for (let i = 1; i <= 25; i++) positions.push(pos(i, { state: 'Pending', placedAt: T + 30, entryE2: null, openedAt: null, limitE2: 45000n }));
-  positions.push(pos(26, { state: 'Pending', placedAt: T + 104, entryE2: null, openedAt: null }));
+  positions.push(pos(26, { state: 'Pending', placedAt: T + 101, entryE2: null, openedAt: null }));
   positions.push(pos(27, { market: 0, entryE2: 40000n }));
   positions.push(pos(28, { market: 1, entryE2: 60000n }));
   const chain = new FakeChain(clock, markets, positions);
@@ -290,6 +317,9 @@ test('tickHouse: read, gate, push, crank in batches of 20, list, close-only, set
   assert.deepEqual(db.reads.slice(5), [uuid('b'), uuid('c'), uuid('e'), uuid('f')]);
   assert.deepEqual(clock.sleeps, [5000]);
   assert.equal(rep.reread, 4);
+  // The chain's clock before each batch of reads (then for the crank rules
+  // and the stale markets).
+  assert.deepEqual(chain.clockReads.slice(0, 2), [T + 103, T + 108]);
 
   // 2.-3. C, E and F are too old; A and B pushed in one call, in the
   // batch's order, with the commitment to their rows.
@@ -302,17 +332,18 @@ test('tickHouse: read, gate, push, crank in batches of 20, list, close-only, set
       [1, 201n, 39500n, 39500n],
     ]
   );
-  // read_at: when each query started (A at T+105, B re-read at T+110).
+  // read_at: the chain's clock before each batch (A first read, B re-read).
   assert.deepEqual(
     quotes.map((x) => [x.printAt, x.readAt]),
     [
-      [T + 45, T + 105],
-      [T + 95, T + 110],
+      [T + 45, T + 103],
+      [T + 95, T + 108],
     ]
   );
   const expected = quoteCommitment(buildQuoteBatch([row(101, 'a', 410.5, 420, T + 45), row(201, 'b', 395, 395, T + 95)])).hash;
   assert.equal(push.args.commitment, expected);
   assert.equal(rep.pushed, 2);
+  assert.equal(rep.pushSkipped, 0);
   assert.equal(rep.gated, 3);
 
   // 4. 25 orders filled by the new quote and B's long liquidated: 20 + 6.
@@ -349,6 +380,7 @@ test('tickHouse: read, gate, push, crank in batches of 20, list, close-only, set
   assert.deepEqual(actions, ['house-tick', 'house-push', 'house-crank', 'house-crank', 'house-list', 'house-close-only', 'house-settle-stale', 'house-faucet-low', 'house-done']);
   assert.ok(logs.every((l) => l.runId === rep.runId && l.detail?.chain === 'near:testnet' && l.detail?.step === 'house'));
   assert.equal(logs[1].txHash, 'tx1');
+  assert.deepEqual([logs[1].detail?.accepted, logs[1].detail?.contractSkipped, logs[1].detail?.readAt], [2, 0, T + 103]);
   assert.match(logs.find((l) => l.action === 'house-faucet-low')!.error!, /faucet pool/);
 });
 
@@ -372,34 +404,60 @@ test('tickHouse: an unchanged print is pushed again with the same numbers and a 
   const logs: HouseLogEntry[] = [];
   await tickHouse({ deps: deps(clock, chain, db, logs) });
   const [push] = chain.sent('push_quotes');
-  assert.deepEqual(push.args.quotes, [{ market: 0, scoreE2: 41050n, readingE2: 42000n, printId: 101n, printAt: T + 45, readAt: T + 105 }]);
+  assert.deepEqual(push.args.quotes, [{ market: 0, scoreE2: 41050n, readingE2: 42000n, printId: 101n, printAt: T + 45, readAt: T + 103 }]);
   assert.equal(chain.markets[0].quotes.length, 1);
-  assert.equal(chain.markets[0].quotes[0].lastReadAt, T + 105);
+  assert.equal(chain.markets[0].quotes[0].lastReadAt, T + 103);
   assert.equal(chain.markets[0].quotes[0].firstReadAt, T + 50);
 });
 
-test('tickHouse: a batch the contract refuses is planned again against its markets and sent once more', async () => {
-  const { chain, d } = scene();
-  // Between the keeper's view and its push, a quote on demand moved A on.
-  const pushQuotes = chain.pushQuotes;
-  let first = true;
-  chain.pushQuotes = async (quotes, commitment) => {
-    if (first) {
-      first = false;
-      chain.markets[0] = { ...chain.markets[0], quotes: [...chain.markets[0].quotes, q(410.5, 420, 101, T + 45, T + 106)] };
-    }
-    return pushQuotes(quotes, commitment);
+test('tickHouse: the same print, clipped on chain, is pushed again with the score as pushed', async () => {
+  const clock = new Clock((T + 105) * 1000);
+  // Print 101 moved 410 → 480 in a minute: stored clipped, pushed as 480.
+  const clipped = { ...q(480, 480, 101, T + 45, T + 50), scoreE2: 41041n, pushedScoreE2: 48000n };
+  const chain = new FakeChain(clock, [mkt(0, 'a', [q(410, 410, 100, T - 15, T - 10), clipped])], []);
+  const db = new FakeDb();
+  db.rows.set(uuid('a'), [row(101, 'a', 480, 480, T + 45)]);
+  db.atnx = [atnxRow('a')];
+  const rep = await tickHouse({ deps: deps(clock, chain, db, []) });
+  const [push] = chain.sent('push_quotes');
+  assert.equal((push.args.quotes as QuoteIn[])[0].scoreE2, 48000n);
+  assert.equal(rep.pushSkipped, 0);
+  assert.equal(chain.markets[0].quotes[1].lastReadAt, T + 103);
+  assert.equal(chain.markets[0].quotes[1].scoreE2, 41041n);
+});
+
+test('tickHouse: the hourly pass\'s second print, two minutes after the stored one, is pushed at once', async () => {
+  const clock = new Clock((T + 105) * 1000);
+  const chain = new FakeChain(clock, [mkt(0, 'a', [q(400, 400, 100, T - 75, T - 60)])], []);
+  const db = new FakeDb();
+  db.rows.set(uuid('a'), [row(101, 'a', 480, 480, T + 45)]);
+  db.atnx = [atnxRow('a')];
+  await tickHouse({ deps: deps(clock, chain, db, []) });
+  assert.deepEqual(
+    (chain.sent('push_quotes')[0].args.quotes as QuoteIn[]).map((x) => x.printId),
+    [101n]
+  );
+  // Clipped by the 120 s between the prints: +6 %.
+  assert.equal(chain.markets[0].quotes[1].scoreE2, 42400n);
+  assert.equal(chain.markets[0].quotes[1].pushedScoreE2, 48000n);
+});
+
+test('tickHouse: a quote the contract skips is logged as a warning, not an error', async () => {
+  const { chain, logs, d } = scene();
+  // Between the keeper's view and its push, a quote on demand read A later.
+  chain.beforePush = () => {
+    chain.beforePush = null;
+    chain.markets[0] = { ...chain.markets[0], quotes: [...chain.markets[0].quotes, q(410.5, 420, 101, T + 45, T + 106)] };
   };
   const rep = await tickHouse({ deps: d });
-  const pushes = chain.sent('push_quotes');
-  assert.equal(pushes.length, 2);
-  // The second batch leaves A out (the chain read it later than this run did).
-  assert.deepEqual(
-    (pushes[1].args.quotes as QuoteIn[]).map((x) => x.market),
-    [1]
-  );
-  assert.equal(rep.pushTx, 'tx2');
-  assert.equal(rep.errors, 1);
+  assert.equal(chain.sent('push_quotes').length, 1);
+  assert.equal(rep.pushSkipped, 1);
+  assert.equal(rep.errors, 0);
+  const warn = logs.find((l) => l.action === 'house-push-skipped')!;
+  assert.match(warn.error!, /skipped 1 of 2 quotes/);
+  assert.deepEqual(warn.detail?.accepted, 1);
+  // The orders still fill at A's quote read after them, and the run goes on.
+  assert.equal(chain.sent('crank').length, 2);
 });
 
 test('tickHouse: no contract on chain stops cleanly at the first view with a clear message', async () => {
@@ -412,6 +470,18 @@ test('tickHouse: no contract on chain stops cleanly at the first view with a cle
     logs.map((l) => l.action),
     ['house-tick', 'house-chain', 'house-done']
   );
+});
+
+test('tickHouse: without the chain\'s clock nothing is pushed, the rest still runs', async () => {
+  const { chain, db, d } = scene();
+  chain.nowSecs = async () => {
+    throw new Error('RPC down');
+  };
+  const rep = await tickHouse({ deps: d });
+  assert.equal(chain.sent('push_quotes').length, 0);
+  assert.deepEqual(db.reads, []);
+  assert.equal(chain.sent('list_market').length, 1);
+  assert.ok(rep.errors >= 1);
 });
 
 test('tickHouse: a live run refuses to send when the contract has another keeper', async () => {
@@ -464,15 +534,16 @@ test('tickHouseFast: sends nothing when nothing waits', async () => {
   assert.deepEqual(chain.calls, []);
   assert.deepEqual(db.reads, []);
   assert.deepEqual(logs, []);
+  assert.deepEqual(chain.clockReads, []);
   assert.equal(rep.active, 1);
 });
 
-test('tickHouseFast: an order inside its fill delay is left to the quote on demand', async () => {
+test('tickHouseFast: an order inside its fill delay on the chain\'s clock is left to the quote on demand', async () => {
   const clock = new Clock(FAST_AT);
-  const chain = new FakeChain(clock, [mkt(0, 'a', [q(400, 400, 100, T - 255, T - 195)])], [pos(1, { state: 'Pending', placedAt: T + 179, entryE2: null, openedAt: null })]);
+  // Placed at T+176 on the chain; the chain reads T+178, the delay ends at T+179.
+  const chain = new FakeChain(clock, [mkt(0, 'a', [q(400, 400, 100, T - 255, T - 195)])], [pos(1, { state: 'Pending', placedAt: T + 176, entryE2: null, openedAt: null })]);
   const db = new FakeDb();
-  const logs: HouseLogEntry[] = [];
-  await tickHouseFast({ deps: deps(clock, chain, db, logs) });
+  await tickHouseFast({ deps: deps(clock, chain, db, []) });
   assert.deepEqual(chain.calls, []);
   assert.deepEqual(db.reads, []);
 });
@@ -497,9 +568,10 @@ test('tickHouseFast: waiting orders get their markets\' quotes and the crank in 
   const [call] = chain.calls;
   assert.equal(call.method, 'push_and_crank');
   assert.equal(call.args.key, 'main');
+  // read_at is the chain's clock fetched before the read.
   assert.deepEqual(
     (call.args.quotes as QuoteIn[]).map((x) => [x.market, x.printId, x.readAt]),
-    [[0, 101n, T + 180]]
+    [[0, 101n, T + 178]]
   );
   assert.equal(call.args.commitment, quoteCommitment(buildQuoteBatch([row(101, 'a', 410.5, 420, T + 45)])).hash);
   assert.deepEqual(call.args.ids, [1n, 2n]);
@@ -522,7 +594,8 @@ test('tickHouseFast: the five-minute run\'s minute is left to it', async () => {
 // --------------------------------------------------------- quoteOnDemand
 
 function onDemandScene(over: { quotes?: HouseQuote[]; placedAt?: number; state?: HousePosition['state'] } = {}) {
-  // The relay call lands 400 ms into the second the order was placed in.
+  // Placed at T+200 on the chain's clock; the relay calls at T+200.4 on the
+  // wall, when the chain reads T+198.
   const placedAt = over.placedAt ?? T + 200;
   const clock = new Clock(placedAt * 1000 + 400);
   const p = pos(7, { state: over.state ?? 'Pending', placedAt, entryE2: null, openedAt: null });
@@ -534,16 +607,18 @@ function onDemandScene(over: { quotes?: HouseQuote[]; placedAt?: number; state?:
   return { clock, chain, db, logs, d: deps(clock, chain, db, logs) };
 }
 
-test('quoteOnDemand: waits out the fill delay, then one push and crank with the fast key', async () => {
+test('quoteOnDemand: waits on the chain\'s clock past the fill delay, then one push and crank with the fast key', async () => {
   const { clock, chain, db, logs, d } = onDemandScene();
   const res = await quoteOnDemand('7', { deps: d });
   assert.equal(res.ok, true);
   assert.equal(res.sent, true);
   assert.equal(res.pushed, true);
   assert.equal(res.attempts, 1);
-  // Placed at T+200 with a 3 s delay: from T+200.4 until T+203.
-  assert.deepEqual(clock.sleeps, [2600]);
-  assert.equal(res.waitedMs, 2600);
+  // The delay ends at T+203 on the chain, T+205 on the wall: five polls.
+  assert.deepEqual(clock.sleeps, [1000, 1000, 1000, 1000, 1000]);
+  assert.equal(res.waitedMs, 5000);
+  assert.deepEqual(chain.clockReads, [T + 198, T + 199, T + 200, T + 201, T + 202, T + 203]);
+  assert.equal(res.readAt, T + 203);
   assert.deepEqual(db.reads, [uuid('a')]);
   const [call] = chain.calls;
   assert.equal(call.method, 'push_and_crank');
@@ -551,6 +626,7 @@ test('quoteOnDemand: waits out the fill delay, then one push and crank with the 
   assert.deepEqual(call.args.ids, [7n]);
   assert.deepEqual(call.args.quotes, [{ market: 0, scoreE2: 41050n, readingE2: 42000n, printId: 101n, printAt: T + 45, readAt: T + 203 }]);
   assert.equal(res.txHash, 'tx1');
+  assert.equal(res.pushSkipped, false);
   assert.deepEqual(
     logs.map((l) => l.action),
     ['house-on-demand']
@@ -561,8 +637,18 @@ test('quoteOnDemand: a close waits from its request', async () => {
   const { clock, chain, d } = onDemandScene({ state: 'Closing' });
   const res = await quoteOnDemand(7n, { deps: d });
   assert.equal(res.ok, true);
-  assert.deepEqual(clock.sleeps, [2600]);
+  assert.equal(clock.sleeps.length, 5);
   assert.equal(chain.calls.length, 1);
+});
+
+test('quoteOnDemand: a stalled chain clock is waited for 30 seconds at most', async () => {
+  const { clock, chain, d } = onDemandScene();
+  chain.nowSecs = async () => T + 198;
+  const res = await quoteOnDemand('7', { deps: d });
+  assert.deepEqual([res.ok, res.sent, res.reason], [false, false, 'wait_timeout']);
+  assert.equal(res.waitedMs, 30_000);
+  assert.equal(clock.sleeps.length, 30);
+  assert.deepEqual(chain.calls, []);
 });
 
 test('quoteOnDemand: one retry on a nonce clash', async () => {
@@ -600,7 +686,7 @@ test('quoteOnDemand: never throws, whatever fails', async () => {
   assert.deepEqual(b.chain.calls, []);
 
   const c = onDemandScene();
-  c.chain.failures.push_and_crank = [new NearCallError('push_quotes+crank', 'print is not newer', 'tx9', 'push_quotes+crank: print is not newer')];
+  c.chain.failures.push_and_crank = [new NearCallError('push_quotes+crank', 'opens are paused', 'tx9', 'push_quotes+crank: opens are paused')];
   const r3 = await quoteOnDemand('7', { deps: c.d });
   assert.deepEqual([r3.ok, r3.reason, r3.attempts], [false, 'send_failed', 1]);
 
@@ -611,8 +697,15 @@ test('quoteOnDemand: never throws, whatever fails', async () => {
   const r4 = await quoteOnDemand('7', { deps: e.d });
   assert.equal(r4.ok, true);
 
-  const r5 = await quoteOnDemand('not a number', { deps: onDemandScene().d });
-  assert.deepEqual([r5.ok, r5.reason], [false, 'bad_id']);
+  const f = onDemandScene();
+  f.chain.nowSecs = async () => {
+    throw new Error('no block');
+  };
+  const r5 = await quoteOnDemand('7', { deps: f.d });
+  assert.deepEqual([r5.ok, r5.reason, r5.error], [false, 'error', 'no block']);
+
+  const r6 = await quoteOnDemand('not a number', { deps: onDemandScene().d });
+  assert.deepEqual([r6.ok, r6.reason], [false, 'bad_id']);
 });
 
 test('quoteOnDemand: nothing to do for a position that is not waiting, or one that is gone', async () => {
@@ -633,17 +726,21 @@ test('quoteOnDemand: a quote already read after the order needs only the crank',
   assert.deepEqual(chain.calls[0].args, { quotes: [], commitment: null, ids: [7n], key: 'fast' });
 });
 
-test('quoteOnDemand: a print too soon after the stored one is not pushed, and the old one is not read again', async () => {
+test('quoteOnDemand: the hourly pass\'s second print, two minutes after the stored one, is pushed at once', async () => {
   // The chain holds print 101 (T+45) read before the order; the database's
   // newest is the hourly pass's 102, two minutes later.
   const { chain, db, d } = onDemandScene({ quotes: [q(410.5, 420, 101, T + 45, T + 100)] });
   db.rows.set(uuid('a'), [row(101, 'a', 410.5, 420, T + 45), row(102, 'a', 411, 421, T + 165)]);
   const res = await quoteOnDemand('7', { deps: d });
-  assert.deepEqual([res.ok, res.sent, res.reason], [false, false, 'too_soon']);
-  assert.deepEqual(chain.calls, []);
+  assert.deepEqual([res.ok, res.sent, res.pushed], [true, true, true]);
+  assert.deepEqual(
+    (chain.calls[0].args.quotes as QuoteIn[]).map((x) => [x.printId, x.readAt]),
+    [[102n, T + 203]]
+  );
+  assert.equal(chain.markets[0].quotes[1].printId, 102n);
 });
 
-test('quoteOnDemand: an order whose delay is far off is not waited for', async () => {
+test('quoteOnDemand: an order whose delay is far off on the chain\'s clock is not waited for', async () => {
   const { clock, d } = onDemandScene({ placedAt: T + 400 });
   clock.ms = (T + 200) * 1000;
   const res = await quoteOnDemand('7', { deps: d });

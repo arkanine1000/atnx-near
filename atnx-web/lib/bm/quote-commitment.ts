@@ -24,8 +24,9 @@ import { toE2 } from './settle';
 //
 // Each pushed quote then carries score_e2 = toE2(vi), reading_e2 =
 // toE2(raw_vi), print_id = id, print_at = the row's time in whole unix
-// seconds, and read_at, when the keeper read the row (not committed: it is
-// the keeper's clock, not a database fact).
+// seconds, and read_at, the chain's clock just before the keeper read the
+// row (not committed: it is a chain fact, not a database one, and the two
+// clocks differ by seconds, so read_at may be earlier than print_at).
 
 export const QUOTE_BATCH_VERSION = 2;
 export const QUOTE_BATCH_KIND = 'quotes';
@@ -98,12 +99,12 @@ export function quoteCommitment(batch: QuoteBatch): { json: string; hash: string
   return { json, hash: sha256Hex(json) };
 }
 
-// The quote push_quotes takes for a row, read at `readAt` (unix seconds).
+// The quote push_quotes takes for a row, read at `readAt` (chain time,
+// unix seconds).
 export function quoteFromRow(row: PrintRow, market: number, readAt: number): QuoteIn {
   const p = quotePrintOf(row);
-  const printAt = printAtSecs(row.recorded_at);
-  if (!Number.isSafeInteger(readAt) || readAt < printAt) throw new Error(`read_at ${readAt} is before the print at ${printAt}`);
-  return { market, scoreE2: toE2(p.vi), readingE2: toE2(p.raw_vi), printId: BigInt(p.id), printAt, readAt };
+  if (!Number.isSafeInteger(readAt) || readAt < 0) throw new Error(`read_at ${readAt} is not a unix time`);
+  return { market, scoreE2: toE2(p.vi), readingE2: toE2(p.raw_vi), printId: BigInt(p.id), printAt: printAtSecs(row.recorded_at), readAt };
 }
 
 // Quotes in the batch's order (market uuid, then print id), so arguments
@@ -172,7 +173,6 @@ export function verifyQuotePush(args: {
     if (q.readingE2 !== toE2(p.raw_vi)) problems.push(`print ${pid}: reading_e2 ${q.readingE2} is not toE2(raw_vi ${p.raw_vi}) = ${toE2(p.raw_vi)}`);
     const at = printAtSecs(row.recorded_at);
     if (q.printAt !== at) problems.push(`print ${pid}: print_at ${q.printAt} is not the row's time ${at}`);
-    if (q.readAt < q.printAt) problems.push(`print ${pid}: read_at ${q.readAt} is before print_at ${q.printAt}`);
     const ref = args.references?.get(q.market);
     if (args.references && ref === undefined) problems.push(`market ${q.market} has no reference on chain`);
     if (ref !== undefined && ref !== uuidToReference(p.market)) problems.push(`print ${pid} belongs to market ${p.market}, but on-chain market ${q.market} is ${ref}`);

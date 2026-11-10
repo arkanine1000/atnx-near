@@ -7,8 +7,8 @@
 // Conventions:
 //   - amounts (USDG, 6 decimals) are U128 decimal strings;
 //   - u64 values (position ids, print ids, scores in hundredths, times in
-//     unix seconds) are sent as U64 decimal strings (encU64); views may
-//     return a u64 as a string or a number and both are read;
+//     unix seconds of the chain's clock) are U64 decimal strings both ways
+//     (encU64); the decoders also read a JSON number;
 //   - market ids are u32 JSON numbers, positions' leverage a u8 number,
 //     basis points u16/u32 numbers;
 //   - scores and readings are VI × 100 (`_e2`), as toE2 in ./settle writes
@@ -46,6 +46,9 @@ export const HOUSE_CALLS = {
 // NEP-297 standard name of the contract's events.
 export const HOUSE_EVENT_STANDARD = 'atnx_house';
 
+// crank acts on at most this many ids per call and ignores the rest.
+export const CRANK_MAX_IDS = 20;
+
 // ---------------------------------------------------------------- types
 
 export type HouseSide = 'Long' | 'Short';
@@ -76,11 +79,11 @@ export interface HouseConfig {
   minFillDelaySecs: number;
   orderTtlSecs: number;
   maxQuoteAgeSecs: number | null;
-  minQuoteGapSecs: number;
   emergencySecs: number;
   maxPositionSecs: number;
   lpExitDelaySecs: number | null;
   lpExitWindowSecs: number | null;
+  // The most a score may move per 300 seconds of print time.
   maxStepBps: number | null;
   liqRewardBps: number | null;
   faucetPerAccount: bigint | null;
@@ -92,18 +95,20 @@ export interface HouseConfig {
 export interface HouseVault {
   assets: bigint;
   reserved: bigint;
-  free: bigint | null;
+  free: bigint;
+  margin: bigint;
+  shares: bigint;
   // As the contract writes it (its fixed-point form is not assumed).
-  sharePrice: string | number | null;
-  shares: bigint | null;
-  margin: bigint | null;
-  // Assumed to be part of get_vault; null when the view leaves it out.
-  faucetPool: bigint | null;
+  sharePrice: string;
+  faucetPool: bigint;
 }
 
 // One entry of a market's ring of recent quotes.
 export interface HouseQuote {
+  // The effective score: the pushed one, clipped to the step allowance.
   scoreE2: bigint;
+  // The score as pushed; null when the view leaves it out.
+  pushedScoreE2: bigint | null;
   readingE2: bigint;
   printId: bigint;
   printAt: number;
@@ -159,12 +164,19 @@ export interface QuoteIn {
   readAt: number;
 }
 
-export interface QuotesPushedEvent {
-  count: number | null;
+// What push_quotes returns and its quotes_pushed event carries: the quotes
+// sent, taken and skipped (a quote the contract cannot take is skipped,
+// never failing the call).
+export interface PushQuotesResult {
+  count: number;
+  accepted: number;
+  skipped: number;
   firstPrintId: string | null;
   lastPrintId: string | null;
   commitment: string | null;
 }
+
+export type QuotesPushedEvent = { [K in keyof PushQuotesResult]: PushQuotesResult[K] | null };
 
 // ------------------------------------------------------------- encoding
 
@@ -210,6 +222,7 @@ export function pushQuotesArgs(quotes: QuoteIn[], commitment: string): Record<st
 }
 
 export function crankArgs(ids: bigint[]): Record<string, unknown> {
+  if (ids.length > CRANK_MAX_IDS) throw new Error(`crank: at most ${CRANK_MAX_IDS} ids per call, got ${ids.length}`);
   return { position_ids: ids.map(encU64) };
 }
 
@@ -319,7 +332,6 @@ export function decodeConfig(v: unknown): HouseConfig {
     minFillDelaySecs: u64n(o, 'min_fill_delay_secs', w),
     orderTtlSecs: u64n(o, 'order_ttl_secs', w),
     maxQuoteAgeSecs: optU64n(o, 'max_quote_age_secs', w),
-    minQuoteGapSecs: u64n(o, 'min_quote_gap_secs', w),
     emergencySecs: u64n(o, 'emergency_secs', w),
     maxPositionSecs: u64n(o, 'max_position_secs', w),
     lpExitDelaySecs: optU64n(o, 'lp_exit_delay_secs', w),
@@ -337,14 +349,15 @@ export function decodeVault(v: unknown): HouseVault {
   const w = 'vault';
   const o = obj(v, w);
   const sp = o.share_price;
+  if (typeof sp !== 'string' && typeof sp !== 'number') throw new Error('vault.share_price: expected a string');
   return {
     assets: u64(o, 'assets', w),
     reserved: u64(o, 'reserved', w),
-    free: optU64(o, 'free', w),
-    sharePrice: typeof sp === 'string' || typeof sp === 'number' ? sp : null,
-    shares: optU64(o, 'shares', w),
-    margin: optU64(o, 'margin', w),
-    faucetPool: optU64(o, 'faucet_pool', w),
+    free: u64(o, 'free', w),
+    margin: u64(o, 'margin', w),
+    shares: u64(o, 'shares', w),
+    sharePrice: String(sp),
+    faucetPool: u64(o, 'faucet_pool', w),
   };
 }
 
@@ -352,6 +365,7 @@ export function decodeQuote(v: unknown, what = 'quote'): HouseQuote {
   const o = obj(v, what);
   return {
     scoreE2: u64(o, 'score_e2', what),
+    pushedScoreE2: optU64(o, 'pushed_score_e2', what),
     readingE2: u64(o, 'reading_e2', what),
     printId: u64(o, 'print_id', what),
     printAt: u64n(o, 'print_at', what),
@@ -475,18 +489,32 @@ export function houseEventsOf(logs: string[]): HouseEvent[] {
   return out;
 }
 
-// quotes_pushed: { count, first_print_id, last_print_id, commitment }, every
-// value a string.
-export function decodeQuotesPushed(e: HouseEvent): QuotesPushedEvent {
-  const d = e.data[0] ?? {};
+// quotes_pushed and push_quotes' return: { count, accepted, skipped,
+// first_print_id, last_print_id, commitment }, every value a string.
+function pushedFields(d: Json): QuotesPushedEvent {
   const s = (k: string) => (typeof d[k] === 'string' ? (d[k] as string) : typeof d[k] === 'number' ? String(d[k]) : null);
-  const count = s('count');
-  return {
-    count: count !== null && /^\d+$/.test(count) ? Number(count) : null,
-    firstPrintId: s('first_print_id'),
-    lastPrintId: s('last_print_id'),
-    commitment: s('commitment'),
+  const n = (k: string) => {
+    const v = s(k);
+    return v !== null && /^\d+$/.test(v) ? Number(v) : null;
   };
+  return { count: n('count'), accepted: n('accepted'), skipped: n('skipped'), firstPrintId: s('first_print_id'), lastPrintId: s('last_print_id'), commitment: s('commitment') };
+}
+
+export function decodeQuotesPushed(e: HouseEvent): QuotesPushedEvent {
+  return pushedFields(e.data[0] ?? {});
+}
+
+// A complete result (from the return value or the event), or null when the
+// counts are missing.
+export function pushResultOf(v: QuotesPushedEvent): PushQuotesResult | null {
+  if (v.count === null || v.accepted === null || v.skipped === null) return null;
+  return { ...v, count: v.count, accepted: v.accepted, skipped: v.skipped };
+}
+
+export function decodePushResult(v: unknown): PushQuotesResult {
+  const r = pushResultOf(pushedFields(obj(v, 'push_quotes result')));
+  if (!r) throw new Error('push_quotes result: expected count, accepted and skipped');
+  return r;
 }
 
 // ------------------------------------------------------------ references

@@ -4,6 +4,7 @@ import {
   CRANK_BATCH,
   applyQuotes,
   capDue,
+  clipScore,
   chainByReference,
   chunk,
   closeOnlyPlan,
@@ -15,8 +16,8 @@ import {
   missingSlot,
   planQuote,
   quotePrices,
-  readAtOf,
   stalePlan,
+  stepAllowanceBps,
   type AtnxMarketRow,
 } from './house-rules';
 import type { HouseConfig, HouseMarket, HousePosition, HouseQuote, QuoteIn } from './house-types';
@@ -46,7 +47,6 @@ const CFG: HouseConfig = {
   minFillDelaySecs: 3,
   orderTtlSecs: 900,
   maxQuoteAgeSecs: 900,
-  minQuoteGapSecs: 240,
   emergencySecs: 86400,
   maxPositionSecs: 14 * 86400,
   lpExitDelaySecs: 86400,
@@ -60,7 +60,7 @@ const CFG: HouseConfig = {
 };
 
 function quote(score: number, reading: number, printId: number, readAt: number, firstReadAt = readAt): HouseQuote {
-  return { scoreE2: BigInt(Math.round(score * 100)), readingE2: BigInt(Math.round(reading * 100)), printId: BigInt(printId), printAt: readAt - 60, firstReadAt, lastReadAt: readAt };
+  return { scoreE2: BigInt(Math.round(score * 100)), pushedScoreE2: null, readingE2: BigInt(Math.round(reading * 100)), printId: BigInt(printId), printAt: readAt - 60, firstReadAt, lastReadAt: readAt };
 }
 
 function market(quotes: HouseQuote[], over: Partial<HouseMarket> = {}): HouseMarket {
@@ -228,44 +228,92 @@ test('missingSlot: the print for the current five-minute slot', () => {
   assert.equal(missingSlot({ row: null, readAt: T }, T + 105), true);
 });
 
-test('readAtOf: the second the query started, never before the print', () => {
-  assert.equal(readAtOf((T + 100) * 1000 + 999, row()), T + 100);
-  // A row written while the query ran.
-  assert.equal(readAtOf((T + 44) * 1000, row()), T + 45);
-  assert.equal(readAtOf((T + 44) * 1000, null), T + 44);
-});
-
 // ------------------------------------------------------- planning quotes
 
 const fresh = (over: Partial<QuoteIn> = {}): QuoteIn => ({ market: 1, scoreE2: 45551n, readingE2: 51300n, printId: 905n, printAt: T + 45, readAt: T + 105, ...over });
-const stored = (over: Partial<HouseQuote> = {}): HouseQuote => ({ scoreE2: 45000n, readingE2: 50000n, printId: 900n, printAt: T - 255, firstReadAt: T - 195, lastReadAt: T - 195, ...over });
-
-test('planQuote: a new print, the same print again, and what is left out', () => {
-  assert.deepEqual(planQuote(fresh(), null, CFG), { action: 'push' });
-  assert.deepEqual(planQuote(fresh(), stored(), CFG), { action: 'push' });
-  // The hourly pass's second print, two minutes after the stored one.
-  assert.deepEqual(planQuote(fresh({ printAt: T - 255 + 120 }), stored(), CFG), { action: 'skip', reason: 'too_soon' });
-  // Unchanged print, read again later: moves the last read.
-  const same = stored({ scoreE2: 45551n, readingE2: 51300n, printId: 905n, printAt: T + 45, lastReadAt: T + 50 });
-  assert.deepEqual(planQuote(fresh(), same, CFG), { action: 'repush' });
-  assert.deepEqual(planQuote(fresh({ readAt: T + 50 }), same, CFG), { action: 'skip', reason: 'already_read' });
-  assert.deepEqual(planQuote(fresh({ scoreE2: 1n }), same, CFG), { action: 'skip', reason: 'numbers_differ' });
-  assert.deepEqual(planQuote(fresh({ printId: 899n }), stored(), CFG), { action: 'skip', reason: 'older_than_chain' });
-  assert.deepEqual(planQuote(fresh({ readAt: T - 200 }), stored({ lastReadAt: T - 100 }), CFG), { action: 'skip', reason: 'read_earlier' });
+const stored = (over: Partial<HouseQuote> = {}): HouseQuote => ({
+  scoreE2: 45000n,
+  pushedScoreE2: 45000n,
+  readingE2: 50000n,
+  printId: 900n,
+  printAt: T - 255,
+  firstReadAt: T - 195,
+  lastReadAt: T - 195,
+  ...over,
 });
 
-test('applyQuotes: re-reads move last_read_at; new prints append, clipped, eight kept', () => {
+test('planQuote: a new print needs only a later print time', () => {
+  assert.deepEqual(planQuote(fresh(), null), { action: 'push' });
+  assert.deepEqual(planQuote(fresh(), stored()), { action: 'push' });
+  // The hourly pass's second print, two minutes after the stored one, goes at once.
+  assert.deepEqual(planQuote(fresh({ printAt: T - 255 + 120 }), stored()), { action: 'push' });
+  assert.deepEqual(planQuote(fresh({ printAt: T - 255 + 1 }), stored()), { action: 'push' });
+  // A newer id with a print time that is not later is left out.
+  assert.deepEqual(planQuote(fresh({ printAt: T - 255 }), stored()), { action: 'skip', reason: 'not_later' });
+  assert.deepEqual(planQuote(fresh({ printId: 899n }), stored()), { action: 'skip', reason: 'older_than_chain' });
+  // read_at never goes back; equal is fine for a new print.
+  assert.deepEqual(planQuote(fresh({ readAt: T - 200 }), stored({ lastReadAt: T - 100 })), { action: 'skip', reason: 'read_earlier' });
+  assert.deepEqual(planQuote(fresh({ readAt: T - 100 }), stored({ lastReadAt: T - 100 })), { action: 'push' });
+});
+
+test('planQuote: the same print again, with the numbers as pushed and a later read', () => {
+  const same = stored({ scoreE2: 45551n, pushedScoreE2: 45551n, readingE2: 51300n, printId: 905n, printAt: T + 45, lastReadAt: T + 50 });
+  assert.deepEqual(planQuote(fresh(), same), { action: 'repush' });
+  assert.deepEqual(planQuote(fresh({ readAt: T + 50 }), same), { action: 'skip', reason: 'already_read' });
+  assert.deepEqual(planQuote(fresh({ scoreE2: 1n }), same), { action: 'skip', reason: 'numbers_differ' });
+  assert.deepEqual(planQuote(fresh({ readingE2: 1n }), same), { action: 'skip', reason: 'numbers_differ' });
+  // A clipped print: the effective score differs, the pushed one matches.
+  const clipped = { ...same, scoreE2: 40040n, pushedScoreE2: 45551n };
+  assert.deepEqual(planQuote(fresh(), clipped), { action: 'repush' });
+  assert.deepEqual(planQuote(fresh({ scoreE2: 40040n }), clipped), { action: 'skip', reason: 'numbers_differ' });
+  // A view without pushed_score_e2: the effective score is compared.
+  assert.deepEqual(planQuote(fresh(), { ...same, pushedScoreE2: null }), { action: 'repush' });
+  assert.deepEqual(planQuote(fresh(), { ...clipped, pushedScoreE2: null }), { action: 'skip', reason: 'numbers_differ' });
+});
+
+test('stepAllowanceBps: max_step_bps per 300 s of print time, at least 10 bps', () => {
+  assert.equal(stepAllowanceBps(1500, T + 300, T), 1500n);
+  assert.equal(stepAllowanceBps(1500, T + 120, T), 600n);
+  assert.equal(stepAllowanceBps(1500, T + 600, T), 3000n);
+  assert.equal(stepAllowanceBps(1500, T + 1, T), 10n);
+  assert.equal(stepAllowanceBps(1500, T, T), 10n);
+});
+
+test('clipScore: around the stored effective score', () => {
+  const s0 = { scoreE2: 40000n, printAt: T };
+  assert.equal(clipScore(80000n, s0, T + 300, 1500), 46000n);
+  assert.equal(clipScore(10000n, s0, T + 300, 1500), 34000n);
+  assert.equal(clipScore(80000n, s0, T + 120, 1500), 42400n);
+  assert.equal(clipScore(80000n, s0, T + 1, 1500), 40040n);
+  assert.equal(clipScore(41000n, s0, T + 300, 1500), 41000n);
+  // A day later the allowance is past 100 %: down to zero, up to many times.
+  assert.equal(clipScore(0n, s0, T + 86400, 1500), 0n);
+  assert.equal(clipScore(80000n, s0, T + 86400, 1500), 80000n);
+  // No clipping without a step setting, or from a zero score.
+  assert.equal(clipScore(80000n, s0, T + 1, null), 80000n);
+  assert.equal(clipScore(80000n, { scoreE2: 0n, printAt: T }, T + 1, 1500), 80000n);
+});
+
+test('applyQuotes: re-reads move last_read_at; new prints append, clipped by time, eight kept', () => {
   const ring = Array.from({ length: 8 }, (_, i) => quote(400, 400, 100 + i, T - 3000 + i * 300));
+  const last = ring[7];
   const m = market(ring);
-  const again = applyQuotes([m], [fresh({ printId: 107n, scoreE2: 40000n, readingE2: 40000n, readAt: T + 999 })], CFG)[0];
+  const again = applyQuotes([m], [fresh({ printId: 107n, scoreE2: 40000n, readingE2: 40000n, printAt: last.printAt, readAt: T + 999 })], CFG)[0];
   assert.equal(again.quotes.length, 8);
   assert.equal(again.quotes[7].lastReadAt, T + 999);
-  const next = applyQuotes([m], [fresh({ printId: 200n, scoreE2: 80000n, readingE2: 80000n })], CFG)[0];
+  // Five minutes later: 400 → 800 clipped to +15 %, the pushed score kept.
+  const next = applyQuotes([m], [fresh({ printId: 200n, scoreE2: 80000n, readingE2: 80000n, printAt: last.printAt + 300 })], CFG)[0];
   assert.equal(next.quotes.length, 8);
   assert.equal(next.quotes[0].printId, 101n);
-  // 400 → 800 is clipped to +15 %.
   assert.equal(next.quotes[7].scoreE2, 46000n);
+  assert.equal(next.quotes[7].pushedScoreE2, 80000n);
   assert.equal(next.quotes[7].firstReadAt, T + 105);
+  // The hourly pass's print two minutes later: +6 %.
+  const soon = applyQuotes([m], [fresh({ printId: 200n, scoreE2: 80000n, readingE2: 80000n, printAt: last.printAt + 120 })], CFG)[0];
+  assert.equal(soon.quotes[7].scoreE2, 42400n);
+  // A newer id without a later print time is not taken.
+  const same = applyQuotes([m], [fresh({ printId: 200n, printAt: last.printAt })], CFG)[0];
+  assert.deepEqual(same.quotes, m.quotes);
   // Other markets untouched.
   const other = market([], { id: 2 });
   assert.equal(applyQuotes([other], [fresh()], CFG)[0], other);

@@ -1,6 +1,6 @@
 import { houseAccountId } from '../near/house-account';
 import type { HouseConfig, HouseMarket, HousePosition, HouseQuote, QuoteIn } from './house-types';
-import { referenceToUuid, uuidToReference } from './house-types';
+import { CRANK_MAX_IDS, referenceToUuid, uuidToReference } from './house-types';
 import { printAtSecs, type PrintRow } from './quote-commitment';
 import { toE2 } from './settle';
 
@@ -23,8 +23,12 @@ export const MAX_PRINT_AGE_SECS = 600;
 export const SLOT_SECS = 300;
 // The contract keeps this many recent quotes per market.
 export const RING_SIZE = 8;
-// crank ids per transaction (the call's log limit).
-export const CRANK_BATCH = 20;
+// crank ids per transaction (the most one call acts on).
+export const CRANK_BATCH = CRANK_MAX_IDS;
+// The score's step allowance: max_step_bps per this many seconds of print
+// time, and never less than MIN_STEP_BPS.
+export const STEP_SECS = 300;
+export const MIN_STEP_BPS = 10n;
 // settle_stale is called this long after the contract would allow it, so
 // the keeper's clock never runs ahead of the chain's.
 export const STALE_MARGIN_SECS = 60;
@@ -75,10 +79,29 @@ export function waitingSince(p: HousePosition): number {
   return p.state === 'Closing' ? (p.closeRequestedAt ?? p.placedAt) : p.placedAt;
 }
 
+// How far a new print's score may move from the stored effective score, in
+// bps: max_step_bps per 300 seconds between the two prints' times, at
+// least 10 bps.
+export function stepAllowanceBps(maxStepBps: number, printAt: number, storedPrintAt: number): bigint {
+  const dt = BigInt(Math.max(0, printAt - storedPrintAt));
+  const allow = (BigInt(maxStepBps) * dt) / BigInt(STEP_SECS);
+  return allow > MIN_STEP_BPS ? allow : MIN_STEP_BPS;
+}
+
+// The effective score of a new print: the pushed one, clipped to the step
+// allowance around the stored effective score.
+export function clipScore(pushedE2: bigint, stored: Pick<HouseQuote, 'scoreE2' | 'printAt'>, printAt: number, maxStepBps: number | null): bigint {
+  if (!maxStepBps || stored.scoreE2 <= 0n) return pushedE2;
+  const allow = stepAllowanceBps(maxStepBps, printAt, stored.printAt);
+  const lo = allow >= BPS ? 0n : (stored.scoreE2 * (BPS - allow)) / BPS;
+  const hi = (stored.scoreE2 * (BPS + allow)) / BPS;
+  return pushedE2 < lo ? lo : pushedE2 > hi ? hi : pushedE2;
+}
+
 // The ring as it would be after these quotes, for decisions before a push
 // has landed (dry runs, the one-transaction push and crank). The same
 // print again only moves its last read; a newer print is appended, its
-// score clipped to max_step_bps of the last one.
+// score clipped by clipScore.
 export function applyQuotes(markets: HouseMarket[], quotes: QuoteIn[], cfg: Pick<HouseConfig, 'maxStepBps'>, ringSize = RING_SIZE): HouseMarket[] {
   const byMarket = new Map(quotes.map((q) => [q.market, q]));
   return markets.map((m) => {
@@ -88,15 +111,9 @@ export function applyQuotes(markets: HouseMarket[], quotes: QuoteIn[], cfg: Pick
     const last = ring[ring.length - 1];
     if (last && last.printId === q.printId) {
       last.lastReadAt = Math.max(last.lastReadAt, q.readAt);
-    } else if (!last || q.printId > last.printId) {
-      let score = q.scoreE2;
-      if (last && cfg.maxStepBps && last.scoreE2 > 0n) {
-        const step = BigInt(cfg.maxStepBps);
-        const lo = (last.scoreE2 * (BPS - step)) / BPS;
-        const hi = (last.scoreE2 * (BPS + step)) / BPS;
-        score = score < lo ? lo : score > hi ? hi : score;
-      }
-      ring.push({ scoreE2: score, readingE2: q.readingE2, printId: q.printId, printAt: q.printAt, firstReadAt: q.readAt, lastReadAt: q.readAt });
+    } else if (!last || (q.printId > last.printId && q.printAt > last.printAt)) {
+      const score = last ? clipScore(q.scoreE2, last, q.printAt, cfg.maxStepBps) : q.scoreE2;
+      ring.push({ scoreE2: score, pushedScoreE2: q.scoreE2, readingE2: q.readingE2, printId: q.printId, printAt: q.printAt, firstReadAt: q.readAt, lastReadAt: q.readAt });
       while (ring.length > ringSize) ring.shift();
     }
     return { ...m, quotes: ring };
@@ -174,9 +191,8 @@ export function chunk<T>(xs: T[], n: number): T[][] {
 
 export interface PrintRead {
   row: PrintRow | null;
-  // When the keeper read it, unix seconds: the later of the second the
-  // query started and the print's own second (a row cannot be read before
-  // it was written).
+  // When the keeper read it: the chain's clock (the latest block's
+  // timestamp, whole seconds) fetched just before the query.
   readAt: number;
 }
 
@@ -202,31 +218,25 @@ export function missingSlot(read: PrintRead | null, nowSecs: number): boolean {
   return printAtSecs(read.row.recorded_at) < slotStart(nowSecs);
 }
 
-export function readAtOf(queryStartedMs: number, row: PrintRow | null): number {
-  const started = Math.floor(queryStartedMs / 1000);
-  return row ? Math.max(started, printAtSecs(row.recorded_at)) : started;
-}
-
 export type QuotePlan =
   | { action: 'push' } // a print the chain does not have yet
   | { action: 'repush' } // the chain's newest print, read again: moves its last read
-  | { action: 'skip'; reason: 'too_soon' | 'read_earlier' | 'numbers_differ' | 'already_read' | 'older_than_chain' };
+  | { action: 'skip'; reason: 'not_later' | 'read_earlier' | 'numbers_differ' | 'already_read' | 'older_than_chain' };
 
 // Whether a fresh quote can go to the chain, against the market's newest
-// quote there. A newer print must come at least min_quote_gap_secs after
-// the stored one; until then the market is left out rather than the older
-// print being read again, so no order fills at a print older than one
-// already public. The same print again must carry the same numbers and a
-// later read.
-export function planQuote(fresh: QuoteIn, chainNewest: HouseQuote | null, cfg: Pick<HouseConfig, 'minQuoteGapSecs'>): QuotePlan {
+// quote there. A newer print needs a later print time; the same print
+// again must carry the numbers it was pushed with (the score as pushed,
+// before any clipping) and a later read. read_at never goes back.
+export function planQuote(fresh: QuoteIn, chainNewest: HouseQuote | null): QuotePlan {
   if (!chainNewest) return { action: 'push' };
   if (fresh.printId > chainNewest.printId) {
-    if (fresh.printAt < chainNewest.printAt + cfg.minQuoteGapSecs) return { action: 'skip', reason: 'too_soon' };
+    if (fresh.printAt <= chainNewest.printAt) return { action: 'skip', reason: 'not_later' };
     if (fresh.readAt < chainNewest.lastReadAt) return { action: 'skip', reason: 'read_earlier' };
     return { action: 'push' };
   }
   if (fresh.printId === chainNewest.printId) {
-    if (fresh.scoreE2 !== chainNewest.scoreE2 || fresh.readingE2 !== chainNewest.readingE2 || fresh.printAt !== chainNewest.printAt) {
+    const pushed = chainNewest.pushedScoreE2 ?? chainNewest.scoreE2;
+    if (fresh.scoreE2 !== pushed || fresh.readingE2 !== chainNewest.readingE2 || fresh.printAt !== chainNewest.printAt) {
       return { action: 'skip', reason: 'numbers_differ' };
     }
     if (fresh.readAt <= chainNewest.lastReadAt) return { action: 'skip', reason: 'already_read' };

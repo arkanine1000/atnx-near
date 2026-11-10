@@ -4,12 +4,14 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import {
   contractMissing,
   hasFastKey,
+  houseChainNowSecs,
   houseEnv,
   houseViews,
   isNonceError,
   keeperHouse,
   keeperHouseFast,
   HOUSE_PAGE,
+  type HousePushed,
 } from './house-near';
 import {
   CRANK_BATCH,
@@ -25,15 +27,14 @@ import {
   newestQuote,
   planQuote,
   qualifyingQuote,
-  readAtOf,
   stalePlan,
   waitingSince,
   type AtnxMarketRow,
   type DueAction,
   type PrintRead,
 } from './house-rules';
-import { referenceToUuid, type HouseConfig, type HouseMarket, type HousePosition, type HouseVault, type QuoteIn } from './house-types';
-import { nearKeeperAccountId, NearCallError } from './near';
+import { referenceToUuid, type HouseConfig, type HouseMarket, type HousePosition, type HouseVault, type PushQuotesResult, type QuoteIn } from './house-types';
+import { nearKeeperAccountId } from './near';
 import { buildQuoteBatch, quoteCommitment, quoteFromRow, sortQuotesLike, type PrintRow } from './quote-commitment';
 import * as registry from './registry';
 
@@ -64,6 +65,10 @@ import * as registry from './registry';
 //                   close: that market's quote and the crank, in one
 //                   transaction signed with the keeper's second key.
 //
+// Every time the contract compares is on the chain's clock, so read_at is
+// the latest block's timestamp fetched just before each batch of database
+// reads, and the decisions about what is due use the chain's clock too.
+//
 // Each run is off unless BM_NEAR_HOUSE_ENABLED=1 (checked by the routes and
 // the script). Dry mode reads everything, sends nothing and writes nothing;
 // the report's notes say what would happen. Live entries land in
@@ -74,8 +79,10 @@ export const READ_CONCURRENCY = 6;
 export const REREAD_DELAY_MS = 5_000;
 // No new send starts this long after a run began (the route allows 60 s).
 export const HOUSE_BUDGET_MS = 45_000;
-// quoteOnDemand waits at most this long for the fill delay to pass.
+// quoteOnDemand waits at most this long, on the chain's clock, for the
+// fill delay to pass, polling the latest block.
 export const ON_DEMAND_MAX_WAIT_MS = 30_000;
+const ON_DEMAND_POLL_MS = 500;
 const LOG_CHAIN = 'near:testnet';
 
 export function faucetWarnUnits(env: Record<string, string | undefined> = process.env): bigint {
@@ -92,17 +99,19 @@ export interface HouseChain {
   // The account the keeper signs as, or null when it is not configured
   // (dry runs need none).
   keeperId(): string | null;
+  // The chain's clock: the latest block's timestamp, whole unix seconds.
+  nowSecs(): Promise<number>;
   config(): Promise<HouseConfig>;
   vault(): Promise<HouseVault>;
   listMarkets(from: number, limit: number): Promise<HouseMarket[]>;
   market(id: number): Promise<HouseMarket | null>;
   listActive(from: number, limit: number): Promise<HousePosition[]>;
   position(id: bigint): Promise<HousePosition | null>;
-  pushQuotes(quotes: QuoteIn[], commitment: string): Promise<string>;
+  pushQuotes(quotes: QuoteIn[], commitment: string): Promise<HousePushed>;
   crank(ids: bigint[]): Promise<string>;
   // One transaction: the push (when there are quotes), then the crank. The
   // fast key is the keeper's second key.
-  pushAndCrank(quotes: QuoteIn[], commitment: string | null, ids: bigint[], key: 'main' | 'fast'): Promise<string>;
+  pushAndCrank(quotes: QuoteIn[], commitment: string | null, ids: bigint[], key: 'main' | 'fast'): Promise<HousePushed>;
   listMarket(a: { reference: string; finder: string | null; liveSince: number }): Promise<{ txHash: string; market: number }>;
   setMarket(a: { market: number; status: 'CloseOnly' }): Promise<string>;
   settleStale(market: number): Promise<string>;
@@ -145,6 +154,7 @@ export function liveHouseChain(): HouseChain {
         return null;
       }
     },
+    nowSecs: () => houseChainNowSecs(),
     config: () => houseViews.config(contract),
     vault: () => houseViews.vault(contract),
     listMarkets: (from, limit) => houseViews.listMarkets(from, limit, contract),
@@ -235,17 +245,19 @@ function withDefaults(deps?: Partial<HouseDeps>): HouseDeps {
 
 export interface HouseReport {
   runId: string;
-  run: 'tick' | 'fast';
+  run: 'tick' | 'fast' | 'list';
   dry: boolean;
   contract: string;
   // Markets on chain, prints read, read again for the current slot, left
-  // out by the health gate, left out against the chain's own quote, pushed.
+  // out by the health gate, left out against the chain's own quote, pushed,
+  // and of those pushed, skipped by the contract.
   markets: number;
   read: number;
   reread: number;
   gated: number;
   skipped: number;
   pushed: number;
+  pushSkipped: number;
   pushTx: string | null;
   // Positions in list_active, due, sent to crank.
   active: number;
@@ -261,7 +273,7 @@ export interface HouseReport {
   notes: string[];
 }
 
-function emptyReport(run: 'tick' | 'fast', dry: boolean, contract: string): HouseReport {
+function emptyReport(run: HouseReport['run'], dry: boolean, contract: string): HouseReport {
   return {
     runId: randomUUID(),
     run,
@@ -273,6 +285,7 @@ function emptyReport(run: 'tick' | 'fast', dry: boolean, contract: string): Hous
     gated: 0,
     skipped: 0,
     pushed: 0,
+    pushSkipped: 0,
     pushTx: null,
     active: 0,
     due: 0,
@@ -314,6 +327,25 @@ function summary(rep: HouseReport): Record<string, unknown> {
   const { notes: _notes, ...rest } = rep;
   void _notes;
   return rest;
+}
+
+// The counts of a push for the log, and a warning when the contract
+// skipped some of the quotes (a warning, not an error: the rest landed).
+async function logPushResult(log: Log, rep: HouseReport, pushed: HousePushed, sent: number): Promise<void> {
+  const r: PushQuotesResult | null = pushed.result;
+  if (!r) {
+    rep.notes.push('push landed; its counts could not be read');
+    return;
+  }
+  rep.pushSkipped += r.skipped;
+  if (r.skipped > 0) {
+    await log({
+      action: 'house-push-skipped',
+      txHash: pushed.txHash,
+      error: `the contract skipped ${r.skipped} of ${r.count} quotes`,
+      detail: { count: r.count, accepted: r.accepted, skipped: r.skipped, sent },
+    });
+  }
 }
 
 // ---------------------------------------------------------------- reads
@@ -363,29 +395,32 @@ interface MarketRead extends PrintRead {
   error: string | null;
 }
 
-async function readOne(m: HouseMarket, deps: HouseDeps): Promise<MarketRead> {
+async function readOne(m: HouseMarket, deps: HouseDeps, readAt: number): Promise<MarketRead> {
   let uuid = '';
   try {
     uuid = referenceToUuid(m.reference);
-    const started = deps.now();
-    const row = await deps.db.newestPrint(uuid);
-    return { market: m, uuid, row, readAt: readAtOf(started, row), error: null };
+    return { market: m, uuid, row: await deps.db.newestPrint(uuid), readAt, error: null };
   } catch (err) {
-    return { market: m, uuid, row: null, readAt: Math.floor(deps.now() / 1000), error: msg(err) };
+    return { market: m, uuid, row: null, readAt, error: msg(err) };
   }
 }
 
-// Step 1: the newest print of each market, then once more for any whose
-// print for the current slot is missing.
+// Step 1: the chain's clock, then the newest print of each market; then,
+// for any market whose print for the current slot is missing, the clock
+// and the print once more. Throws when the chain's clock cannot be read.
 async function readPrints(markets: HouseMarket[], deps: HouseDeps, rep: HouseReport, opts: { reread: boolean; deadline: number }): Promise<MarketRead[]> {
-  const reads = await mapLimit(markets, READ_CONCURRENCY, (m) => readOne(m, deps));
+  if (markets.length === 0) return [];
+  const readAt = await deps.chain.nowSecs();
+  const reads = await mapLimit(markets, READ_CONCURRENCY, (m) => readOne(m, deps, readAt));
   rep.read += reads.filter((r) => r.row).length;
   if (!opts.reread) return reads;
-  const nowSecs = Math.floor(deps.now() / 1000);
-  const missing = reads.map((r, i) => ({ r, i })).filter(({ r }) => !r.error && missingSlot(r, nowSecs));
+  // The VI cron's slots are on the database's clock, close to the wall's.
+  const wallSecs = Math.floor(deps.now() / 1000);
+  const missing = reads.map((r, i) => ({ r, i })).filter(({ r }) => !r.error && missingSlot(r, wallSecs));
   if (missing.length === 0 || deps.now() + REREAD_DELAY_MS > opts.deadline) return reads;
   await deps.sleep(REREAD_DELAY_MS);
-  const again = await mapLimit(missing, READ_CONCURRENCY, ({ r }) => readOne(r.market, deps));
+  const againAt = await deps.chain.nowSecs();
+  const again = await mapLimit(missing, READ_CONCURRENCY, ({ r }) => readOne(r.market, deps, againAt));
   missing.forEach(({ i }, k) => {
     const fresh = again[k];
     if (!fresh.error && fresh.row) reads[i] = fresh;
@@ -402,17 +437,20 @@ interface PushPlan {
   failed: number;
 }
 
-// Steps 2 and 3a: the health gate, then each fresh quote against the
-// chain's newest quote for its market.
-function planPush(reads: MarketRead[], marketsById: Map<number, HouseMarket>, cfg: HouseConfig, nowSecs: number): PushPlan {
-  const plan: PushPlan = { quotes: [], rows: [], gated: {}, skipped: {}, failed: 0 };
+const emptyPlan = (): PushPlan => ({ quotes: [], rows: [], gated: {}, skipped: {}, failed: 0 });
+
+// Steps 2 and 3a: the health gate (a print's age at its read, on the
+// chain's clock), then each fresh quote against the chain's newest quote
+// for its market.
+function planPush(reads: MarketRead[], marketsById: Map<number, HouseMarket>): PushPlan {
+  const plan = emptyPlan();
   const bump = (o: Record<string, number>, k: string) => (o[k] = (o[k] ?? 0) + 1);
   for (const r of reads) {
     if (r.error) {
       plan.failed++;
       continue;
     }
-    const gate = healthGate(r, nowSecs);
+    const gate = healthGate(r, r.readAt);
     if (!gate.ok) {
       bump(plan.gated, gate.reason);
       continue;
@@ -425,7 +463,7 @@ function planPush(reads: MarketRead[], marketsById: Map<number, HouseMarket>, cf
       continue;
     }
     const onChain = marketsById.get(r.market.id) ?? r.market;
-    const p = planQuote(q, newestQuote(onChain), cfg);
+    const p = planQuote(q, newestQuote(onChain));
     if (p.action === 'skip') {
       bump(plan.skipped, p.reason);
       continue;
@@ -456,6 +494,60 @@ function tally(xs: Array<{ action: DueAction }>): Record<string, number> {
   return o;
 }
 
+// -------------------------------------------------------------- listing
+
+// Step 5's listing: atnx.app markets that qualify and are not on chain,
+// each with its creator's house account as the finder. `deadline` null
+// lists them all; otherwise no listing starts after it.
+async function listEligible(args: {
+  atnx: AtnxMarketRow[];
+  onChain: HouseMarket[];
+  cfg: HouseConfig;
+  deps: HouseDeps;
+  rep: HouseReport;
+  log: Log;
+  fail: (action: string, err: unknown, detail?: Record<string, unknown>) => Promise<void>;
+  dry: boolean;
+  deadline: number | null;
+}): Promise<void> {
+  const { deps, rep, log, fail, dry } = args;
+  const listing = listingPlan({ atnx: args.atnx, chainByRef: chainByReference(args.onChain), cfg: args.cfg, nowSecs: Math.floor(deps.now() / 1000) });
+  rep.notes.push(`listing: ${listing.list.length} to list, skipped ${JSON.stringify(listing.skipped)}`);
+  if (listing.list.length === 0) return;
+  let accounts: Map<string, string>;
+  const creators = [...new Set(listing.list.map((c) => c.creator).filter((c): c is string => !!c))];
+  try {
+    accounts = await deps.db.nearAccounts(creators);
+  } catch (err) {
+    // Without the creators' accounts the finders would be wrong; list on
+    // the next run.
+    await fail('house-near-accounts', err);
+    return;
+  }
+  let done = 0;
+  for (const c of listing.list) {
+    const finder = finderFor(c.creator, accounts);
+    const detail = { uuid: c.uuid, finder, liveSince: c.liveSince, relist: c.relist };
+    if (dry) {
+      rep.listed++;
+      await log({ action: 'house-would-list', detail });
+      continue;
+    }
+    if (args.deadline !== null && deps.now() > args.deadline) {
+      await log({ action: 'house-budget', detail: { step: 'list', left: listing.list.length - done } });
+      break;
+    }
+    done++;
+    try {
+      const res = await deps.chain.listMarket({ reference: c.reference, finder, liveSince: c.liveSince });
+      rep.listed++;
+      await log({ action: 'house-list', txHash: res.txHash, detail: { ...detail, market: res.market } });
+    } catch (err) {
+      await fail('house-list', err, detail);
+    }
+  }
+}
+
 // ------------------------------------------------------------- the tick
 
 // The five-minute run.
@@ -468,10 +560,19 @@ export async function tickHouse(opts: { dry?: boolean; deps?: Partial<HouseDeps>
   const rep = emptyReport('tick', dry, chain.contractId());
   const log = makeLog(rep, deps, dry);
   const late = () => deps.now() > deadline;
-  const nowSecs = () => Math.floor(deps.now() / 1000);
   const fail = async (action: string, err: unknown, detail?: Record<string, unknown>) => {
     rep.errors++;
     await log({ action, error: msg(err), detail: detail ?? null });
+  };
+  // The chain's clock for the crank rules and stale markets; the wall
+  // clock if the block cannot be read (the contract decides either way).
+  const chainNow = async () => {
+    try {
+      return await chain.nowSecs();
+    } catch (err) {
+      await fail('house-chain-time', err);
+      return Math.floor(deps.now() / 1000);
+    }
   };
   const finish = async () => {
     await log({ action: 'house-done', detail: summary(rep) });
@@ -509,71 +610,62 @@ export async function tickHouse(opts: { dry?: boolean; deps?: Partial<HouseDeps>
 
   // 1. read, 2. health gate
   const quoted = markets.filter((m) => m.status !== 'Settled');
-  const reads = await readPrints(quoted, deps, rep, { reread: true, deadline });
+  let reads: MarketRead[] = [];
+  try {
+    reads = await readPrints(quoted, deps, rep, { reread: true, deadline });
+  } catch (err) {
+    // No chain clock, no read_at: nothing is pushed this run.
+    await fail('house-chain-time', err);
+  }
   for (const r of reads) if (r.error) await fail('house-read', r.error, { market: r.market.id, uuid: r.uuid });
-  let plan = planPush(reads, new Map(markets.map((m) => [m.id, m])), cfg, nowSecs());
+  const plan = planPush(reads, new Map(markets.map((m) => [m.id, m])));
+  rep.gated = countOf(plan.gated);
+  rep.skipped = countOf(plan.skipped);
 
   // 3. commit and push
   let after: HouseMarket[] = markets;
-  const pushDetail = (p: PushPlan, commitment: string | null) => ({
-    count: p.quotes.length,
+  const printIds = plan.quotes.map((q) => q.printId);
+  const pushDetail = (commitment: string | null) => ({
+    count: plan.quotes.length,
     commitment,
-    firstPrintId: p.quotes.length ? p.quotes.reduce((a, q) => (q.printId < a ? q.printId : a), p.quotes[0].printId).toString() : null,
-    lastPrintId: p.quotes.length ? p.quotes.reduce((a, q) => (q.printId > a ? q.printId : a), p.quotes[0].printId).toString() : null,
-    gated: p.gated,
-    skipped: p.skipped,
+    firstPrintId: printIds.length ? printIds.reduce((a, b) => (b < a ? b : a)).toString() : null,
+    lastPrintId: printIds.length ? printIds.reduce((a, b) => (b > a ? b : a)).toString() : null,
+    readAt: reads[0]?.readAt ?? null,
+    gated: plan.gated,
+    skipped: plan.skipped,
     reread: rep.reread,
   });
-  const commitTo = (p: PushPlan) => quoteCommitment(buildQuoteBatch(p.rows)).hash;
   if (plan.quotes.length === 0) {
-    rep.gated = countOf(plan.gated);
-    rep.skipped = countOf(plan.skipped);
-    await log({ action: 'house-push-none', detail: pushDetail(plan, null) });
-  } else if (dry) {
-    rep.gated = countOf(plan.gated);
-    rep.skipped = countOf(plan.skipped);
-    rep.pushed = plan.quotes.length;
-    await log({ action: 'house-would-push', detail: pushDetail(plan, commitTo(plan)) });
-    after = applyQuotes(markets, plan.quotes, cfg);
+    await log({ action: 'house-push-none', detail: pushDetail(null) });
   } else {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      rep.gated = countOf(plan.gated);
-      rep.skipped = countOf(plan.skipped);
-      if (plan.quotes.length === 0) {
-        await log({ action: 'house-push-none', detail: pushDetail(plan, null) });
-        break;
-      }
-      const commitment = commitTo(plan);
-      try {
-        rep.pushTx = await chain.pushQuotes(plan.quotes, commitment);
-        rep.pushed = plan.quotes.length;
-        await log({ action: 'house-push', txHash: rep.pushTx, detail: pushDetail(plan, commitment) });
-        break;
-      } catch (err) {
-        await fail('house-push', err, { ...pushDetail(plan, commitment), attempt });
-        // The contract refused the batch (one quote it would not take
-        // fails them all): read its markets again, plan again, send once
-        // more. Anything else (RPC trouble) waits for the next run.
-        const refused = err instanceof NearCallError && err.code !== null;
-        if (!refused || attempt === 2 || late()) break;
-        try {
-          markets = await listAllMarkets(chain);
-        } catch (err2) {
-          await fail('house-chain', err2);
-          break;
-        }
-        plan = planPush(reads, new Map(markets.map((m) => [m.id, m])), cfg, nowSecs());
-      }
-    }
-    if (rep.pushTx) {
-      try {
-        after = await listAllMarkets(chain);
-      } catch (err) {
-        await fail('house-chain', err);
-        after = applyQuotes(markets, plan.quotes, cfg);
-      }
+    const commitment = quoteCommitment(buildQuoteBatch(plan.rows)).hash;
+    if (dry) {
+      rep.pushed = plan.quotes.length;
+      await log({ action: 'house-would-push', detail: pushDetail(commitment) });
+      after = applyQuotes(markets, plan.quotes, cfg);
     } else {
-      after = markets;
+      try {
+        const pushed = await chain.pushQuotes(plan.quotes, commitment);
+        rep.pushTx = pushed.txHash;
+        rep.pushed = plan.quotes.length;
+        const r = pushed.result;
+        await log({
+          action: 'house-push',
+          txHash: pushed.txHash,
+          detail: { ...pushDetail(commitment), accepted: r?.accepted ?? null, contractSkipped: r?.skipped ?? null },
+        });
+        await logPushResult(log, rep, pushed, plan.quotes.length);
+      } catch (err) {
+        await fail('house-push', err, pushDetail(commitment));
+      }
+      if (rep.pushTx) {
+        try {
+          after = await listAllMarkets(chain);
+        } catch (err) {
+          await fail('house-chain', err);
+          after = applyQuotes(markets, plan.quotes, cfg);
+        }
+      }
     }
   }
 
@@ -581,7 +673,7 @@ export async function tickHouse(opts: { dry?: boolean; deps?: Partial<HouseDeps>
   try {
     const positions = await pageActive(chain, 2);
     rep.active = positions.length;
-    const due = dueList(positions, after, cfg, nowSecs());
+    const due = dueList(positions, after, cfg, await chainNow());
     rep.due = due.length;
     if (due.length > 0) rep.notes.push(`due: ${JSON.stringify(tally(due))}`);
     for (const batch of chunk(due, CRANK_BATCH)) {
@@ -613,40 +705,7 @@ export async function tickHouse(opts: { dry?: boolean; deps?: Partial<HouseDeps>
   if (!atnx || atnx.length === 0) {
     rep.notes.push('markets step skipped: atnx.app markets were not read');
   } else {
-    const now = nowSecs();
-    const listing = listingPlan({ atnx, chainByRef: chainByReference(after), cfg, nowSecs: now });
-    if (listing.list.length > 0) {
-      let accounts: Map<string, string> | null = null;
-      const creators = [...new Set(listing.list.map((c) => c.creator).filter((c): c is string => !!c))];
-      try {
-        accounts = await db.nearAccounts(creators);
-      } catch (err) {
-        // Without the creators' accounts the finders would be wrong; list
-        // on the next run.
-        await fail('house-near-accounts', err);
-      }
-      for (const c of accounts ? listing.list : []) {
-        const finder = finderFor(c.creator, accounts!);
-        const detail = { uuid: c.uuid, finder, liveSince: c.liveSince, relist: c.relist };
-        if (dry) {
-          rep.listed++;
-          await log({ action: 'house-would-list', detail });
-          continue;
-        }
-        if (late()) {
-          await log({ action: 'house-budget', detail: { step: 'list', left: listing.list.length - rep.listed } });
-          break;
-        }
-        try {
-          const res = await chain.listMarket({ reference: c.reference, finder, liveSince: c.liveSince });
-          rep.listed++;
-          await log({ action: 'house-list', txHash: res.txHash, detail: { ...detail, market: res.market } });
-        } catch (err) {
-          await fail('house-list', err, detail);
-        }
-      }
-    }
-    rep.notes.push(`listing: ${listing.list.length} to list, skipped ${JSON.stringify(listing.skipped)}`);
+    await listEligible({ atnx, onChain: after, cfg, deps, rep, log, fail, dry, deadline });
 
     const atnxById = new Map(atnx.map((r) => [r.id.toLowerCase(), r]));
     for (const m of closeOnlyPlan(after, atnxById)) {
@@ -667,7 +726,7 @@ export async function tickHouse(opts: { dry?: boolean; deps?: Partial<HouseDeps>
     }
   }
 
-  for (const m of stalePlan(after, cfg, nowSecs())) {
+  for (const m of stalePlan(after, cfg, await chainNow())) {
     const detail = { market: m.id, uuid: referenceToUuid(m.reference), lastReadAt: Math.max(...m.quotes.map((q) => q.lastReadAt)) };
     if (dry) {
       rep.settledStale++;
@@ -687,8 +746,7 @@ export async function tickHouse(opts: { dry?: boolean; deps?: Partial<HouseDeps>
   // 6. housekeeping
   try {
     const vault = await chain.vault();
-    if (vault.faucetPool === null) rep.notes.push('get_vault has no faucet_pool; the low-pool check is skipped');
-    else if (vault.faucetPool < deps.faucetWarnUnits) {
+    if (vault.faucetPool < deps.faucetWarnUnits) {
       await log({
         action: 'house-faucet-low',
         error: `the faucet pool holds ${vault.faucetPool} units, under the ${deps.faucetWarnUnits} warning level`,
@@ -721,7 +779,6 @@ export async function tickHouseFast(opts: { dry?: boolean; force?: boolean; deps
   const deadline = startedMs + HOUSE_BUDGET_MS;
   const rep = emptyReport('fast', dry, chain.contractId());
   const log = makeLog(rep, deps, dry);
-  const nowSecs = () => Math.floor(deps.now() / 1000);
   const fail = async (action: string, err: unknown, detail?: Record<string, unknown>) => {
     rep.errors++;
     await log({ action, error: msg(err), detail: detail ?? null });
@@ -747,8 +804,12 @@ export async function tickHouseFast(opts: { dry?: boolean; force?: boolean; deps
   if (waiting.length === 0) return rep;
 
   let markets: HouseMarket[];
+  let now: number;
   try {
     markets = await listAllMarkets(chain);
+    // The chain's clock, before the reads: it decides which fill delays
+    // have passed and is the read_at of the rows read next.
+    now = await chain.nowSecs();
   } catch (err) {
     await fail('house-fast', describeChainFailure(err, rep.contract));
     return rep;
@@ -759,7 +820,6 @@ export async function tickHouseFast(opts: { dry?: boolean; force?: boolean; deps
   // Markets with a waiting position whose fill delay has passed and that
   // have no quote read since.
   const need = new Map<number, HouseMarket>();
-  const now = nowSecs();
   for (const p of waiting) {
     const m = byId.get(p.market);
     if (!m || m.status === 'Settled') continue;
@@ -768,16 +828,17 @@ export async function tickHouseFast(opts: { dry?: boolean; force?: boolean; deps
     if (!qualifyingQuote(m, since)) need.set(m.id, m);
   }
 
-  let plan: PushPlan = { quotes: [], rows: [], gated: {}, skipped: {}, failed: 0 };
+  let plan = emptyPlan();
   if (need.size > 0) {
-    const reads = await readPrints([...need.values()], deps, rep, { reread: false, deadline });
+    const reads = await mapLimit([...need.values()], READ_CONCURRENCY, (m) => readOne(m, deps, now));
+    rep.read += reads.filter((r) => r.row).length;
     for (const r of reads) if (r.error) await fail('house-read', r.error, { market: r.market.id, uuid: r.uuid });
-    plan = planPush(reads, byId, cfg, nowSecs());
+    plan = planPush(reads, byId);
     rep.gated = countOf(plan.gated);
     rep.skipped = countOf(plan.skipped);
   }
   const after = applyQuotes(markets, plan.quotes, cfg);
-  const due = dueList(waiting, after, cfg, nowSecs());
+  const due = dueList(waiting, after, cfg, now);
   rep.due = due.length;
   if (plan.quotes.length === 0 && due.length === 0) {
     rep.notes.push(`${waiting.length} waiting, nothing to send yet`);
@@ -787,7 +848,7 @@ export async function tickHouseFast(opts: { dry?: boolean; force?: boolean; deps
   const commitment = plan.quotes.length ? quoteCommitment(buildQuoteBatch(plan.rows)).hash : null;
   const batches = chunk(due, CRANK_BATCH);
   const first = batches.shift() ?? [];
-  const detail = { quotes: plan.quotes.length, commitment, ids: first.map((d) => d.p.id.toString()), actions: tally(first), waiting: waiting.length };
+  const detail = { quotes: plan.quotes.length, commitment, readAt: now, ids: first.map((d) => d.p.id.toString()), actions: tally(first), waiting: waiting.length };
   if (dry) {
     rep.pushed = plan.quotes.length;
     rep.cranked = due.length;
@@ -796,17 +857,19 @@ export async function tickHouseFast(opts: { dry?: boolean; force?: boolean; deps
     return rep;
   }
   try {
-    const tx = await chain.pushAndCrank(
+    const pushed = await chain.pushAndCrank(
       plan.quotes,
       commitment,
       first.map((d) => d.p.id),
       'main'
     );
-    if (plan.quotes.length) rep.pushTx = tx;
+    if (plan.quotes.length) rep.pushTx = pushed.txHash;
     rep.pushed = plan.quotes.length;
     rep.cranked += first.length;
-    if (first.length) rep.crankTxs.push(tx);
-    await log({ action: 'house-fast', txHash: tx, detail });
+    if (first.length) rep.crankTxs.push(pushed.txHash);
+    const r = pushed.result;
+    await log({ action: 'house-fast', txHash: pushed.txHash, detail: { ...detail, accepted: r?.accepted ?? null, contractSkipped: r?.skipped ?? null } });
+    if (plan.quotes.length) await logPushResult(log, rep, pushed, plan.quotes.length);
   } catch (err) {
     await fail('house-fast', err, detail);
     return rep;
@@ -836,9 +899,14 @@ export interface OnDemandResult {
   sent: boolean;
   // The transaction carried a quote (else it was the crank alone).
   pushed: boolean;
+  // The contract skipped the quote it carried (the crank still ran).
+  pushSkipped: boolean;
   txHash: string | null;
   attempts: number;
+  // Time slept waiting for the chain's clock to pass the fill delay.
   waitedMs: number;
+  // The chain time used as read_at.
+  readAt: number | null;
   // Why nothing was sent, or what stopped it.
   reason: string | null;
   error: string | null;
@@ -852,14 +920,26 @@ function parseId(v: unknown): bigint | null {
 }
 
 // For the relay route, right after it relayed a user's open or close on
-// the house contract: waits until the fill delay has passed since the
-// order (or the close request), reads that market's newest print, and
-// sends one transaction with the quote and a crank for the position,
-// signed with the keeper's second key. One retry on a nonce clash. Never
-// throws: a failure comes back in the result, and the every-minute run
-// picks the position up.
+// the house contract: waits until the chain's clock is past the fill delay
+// since the order (or the close request), polling the latest block, reads
+// that market's newest print, and sends one transaction with the quote and
+// a crank for the position, signed with the keeper's second key. One retry
+// on a nonce clash. Never throws: a failure comes back in the result, and
+// the every-minute run picks the position up.
 export async function quoteOnDemand(positionId: string | number | bigint, opts: { deps?: Partial<HouseDeps> } = {}): Promise<OnDemandResult> {
-  const res: OnDemandResult = { ok: false, positionId: String(positionId), sent: false, pushed: false, txHash: null, attempts: 0, waitedMs: 0, reason: null, error: null };
+  const res: OnDemandResult = {
+    ok: false,
+    positionId: String(positionId),
+    sent: false,
+    pushed: false,
+    pushSkipped: false,
+    txHash: null,
+    attempts: 0,
+    waitedMs: 0,
+    readAt: null,
+    reason: null,
+    error: null,
+  };
   let deps: HouseDeps;
   try {
     deps = withDefaults(opts.deps);
@@ -902,18 +982,23 @@ export async function quoteOnDemand(positionId: string | number | bigint, opts: 
         res.reason = 'not_waiting';
         return res;
       }
-      // Wait until the wall clock is min_fill_delay_secs past the order, so
-      // the quote read now counts for it.
+      // Wait until the chain's clock is min_fill_delay_secs past the order,
+      // so a quote read now counts for it.
       const since = waitingSince(p) + cfg.minFillDelaySecs;
-      const readyMs = since * 1000;
-      if (readyMs - deps.now() > ON_DEMAND_MAX_WAIT_MS) {
+      let now = await chain.nowSecs();
+      if ((since - now) * 1000 > ON_DEMAND_MAX_WAIT_MS) {
         res.reason = 'wait_too_long';
         return res;
       }
-      while (deps.now() < readyMs) {
-        const ms = readyMs - deps.now();
+      while (now < since) {
+        if (res.waitedMs >= ON_DEMAND_MAX_WAIT_MS) {
+          res.reason = 'wait_timeout';
+          return res;
+        }
+        const ms = Math.min(ON_DEMAND_POLL_MS * 2, Math.max(ON_DEMAND_POLL_MS / 2, (since - now) * 1000));
         await deps.sleep(ms);
         res.waitedMs += ms;
+        now = await chain.nowSecs();
       }
       const m = await chain.market(p.market);
       if (!m) {
@@ -923,14 +1008,14 @@ export async function quoteOnDemand(positionId: string | number | bigint, opts: 
       let quotes: QuoteIn[] = [];
       let commitment: string | null = null;
       if (m.status !== 'Settled') {
-        const uuid = referenceToUuid(m.reference);
-        const started = deps.now();
-        const row = await db.newestPrint(uuid);
-        const read: PrintRead = { row, readAt: readAtOf(started, row) };
-        const gate = healthGate(read, Math.floor(deps.now() / 1000));
+        // `now` was read from the chain just before this query: the read_at.
+        res.readAt = now;
+        const row = await db.newestPrint(referenceToUuid(m.reference));
+        const read: PrintRead = { row, readAt: now };
+        const gate = healthGate(read, now);
         if (gate.ok) {
-          const q = quoteFromRow(row!, m.id, read.readAt);
-          const plan = planQuote(q, newestQuote(m), cfg);
+          const q = quoteFromRow(row!, m.id, now);
+          const plan = planQuote(q, newestQuote(m));
           if (plan.action !== 'skip') {
             quotes = [q];
             commitment = quoteCommitment(buildQuoteBatch([row!])).hash;
@@ -944,9 +1029,11 @@ export async function quoteOnDemand(positionId: string | number | bigint, opts: 
         }
       }
       try {
-        res.txHash = await chain.pushAndCrank(quotes, commitment, [id], 'fast');
+        const pushed = await chain.pushAndCrank(quotes, commitment, [id], 'fast');
+        res.txHash = pushed.txHash;
         res.sent = true;
         res.pushed = quotes.length > 0;
+        res.pushSkipped = (pushed.result?.skipped ?? 0) > 0;
         res.ok = true;
         res.reason = null;
         res.error = null;

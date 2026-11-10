@@ -22,6 +22,8 @@ import {
   nearEnv,
   nearKeeperAccount,
   nearKeeperAccountId,
+  nearProvider,
+  nearReadFloor,
   nearView,
   noteWrite,
   parseNearSecret,
@@ -41,14 +43,18 @@ import {
   decodeMarketId,
   decodeOptional,
   decodePosition,
+  decodePushResult,
+  decodeQuotesPushed,
   decodeU128,
   decodeVault,
+  houseEventsOf,
   listArgs,
   listMarketArgs,
   marketArgs,
   marketByReferenceArgs,
   positionArgs,
   pushQuotesArgs,
+  pushResultOf,
   setMarketArgs,
   setPausedArgs,
   settleStaleArgs,
@@ -57,6 +63,7 @@ import {
   type HouseMarketStatus,
   type HousePosition,
   type HouseVault,
+  type PushQuotesResult,
   type QuoteIn,
 } from './house-types';
 
@@ -92,8 +99,8 @@ export function pushGas(quotes: number): bigint {
   return capGas(15n * TGAS + BigInt(Math.max(0, quotes)) * TGAS);
 }
 
-// crank does at most one thing per id: a fill, refund, close or
-// liquidation, each a handful of reads and writes and one event.
+// crank does at most one thing per id (at most 20 ids): a fill, refund,
+// close or liquidation, each a handful of reads and writes and one event.
 export function crankGas(ids: number): bigint {
   return capGas(15n * TGAS + BigInt(Math.max(0, ids)) * 6n * TGAS);
 }
@@ -106,6 +113,23 @@ export async function houseView(method: string, args: Record<string, unknown> = 
 
 // Pages of list_markets and list_active hold at most this many entries.
 export const HOUSE_PAGE = 100;
+
+// The chain's clock: the latest block's timestamp in whole unix seconds,
+// as the contract reads it (block_timestamp_ms / 1000). Every time the
+// contract compares (read_at, placed_at, quote age) is on this clock, so
+// the keeper's read_at is taken from it, never from its own. The block is
+// at least as new as this process's last write, so read_at never goes
+// back past a read the keeper itself pushed.
+export async function houseChainNowSecs(): Promise<number> {
+  const started = Date.now();
+  for (;;) {
+    const block = await nearProvider().viewBlock({ finality: 'optimistic' });
+    if (Number(block.header.height) >= nearReadFloor() || Date.now() - started > 8_000) {
+      return Math.floor(Number(BigInt(block.header.timestamp_nanosec) / 1_000_000n) / 1000);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
 
 export const houseViews = {
   config: async (contractId?: string): Promise<HouseConfig> => decodeConfig(await houseView(HOUSE_VIEWS.config, {}, contractId)),
@@ -138,6 +162,37 @@ export interface HouseSent {
   txHash: string;
   value: unknown;
   gasBurnt: bigint;
+  // Every receipt's logs, in order.
+  logs: string[];
+}
+
+export interface HousePushed {
+  txHash: string;
+  // The contract's counts, or null when neither the return value nor the
+  // event could be read (the push landed either way).
+  result: PushQuotesResult | null;
+}
+
+function logsOf(res: unknown): string[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const r = res as any;
+  const out: string[] = [];
+  for (const o of r?.receipts_outcome ?? []) for (const l of o?.outcome?.logs ?? []) if (typeof l === 'string') out.push(l);
+  return out;
+}
+
+// push_quotes' counts: from its quotes_pushed event, which a combined push
+// and crank also carries, else from the return value of a push alone.
+export function pushResultFrom(sent: Pick<HouseSent, 'logs' | 'value'>, returnIsPush: boolean): PushQuotesResult | null {
+  const ev = houseEventsOf(sent.logs).find((e) => e.event === 'quotes_pushed');
+  const fromEvent = ev ? pushResultOf(decodeQuotesPushed(ev)) : null;
+  if (fromEvent) return fromEvent;
+  if (!returnIsPush) return null;
+  try {
+    return decodePushResult(sent.value);
+  } catch {
+    return null;
+  }
 }
 
 // The house contract as one signer sees it.
@@ -182,16 +237,18 @@ export class HouseClient {
     }
     this.burnt += tokensBurnt(res);
     await noteWrite(res);
-    return { txHash: txHashOf(res), value: successValue(res), gasBurnt: gasBurnt(res) };
+    return { txHash: txHashOf(res), value: successValue(res), gasBurnt: gasBurnt(res), logs: logsOf(res) };
   }
 
-  // Keeper only. One event for the whole batch.
-  async pushQuotes(quotes: QuoteIn[], commitment: string): Promise<string> {
+  // Keeper only. One event for the whole batch; a quote the contract cannot
+  // take is skipped and counted.
+  async pushQuotes(quotes: QuoteIn[], commitment: string): Promise<HousePushed> {
     if (quotes.length === 0) throw new Error('push_quotes: no quotes');
-    return (await this.send([pushCall(quotes, commitment)])).txHash;
+    const sent = await this.send([pushCall(quotes, commitment)]);
+    return { txHash: sent.txHash, result: pushResultFrom(sent, true) };
   }
 
-  // Anyone. Ids the contract cannot act on are skipped there.
+  // Anyone, at most 20 ids. Ids the contract cannot act on are skipped there.
   async crank(ids: bigint[]): Promise<string> {
     if (ids.length === 0) throw new Error('crank: no ids');
     return (await this.send([crankCall(ids)])).txHash;
@@ -199,14 +256,15 @@ export class HouseClient {
 
   // One transaction: the quotes first (when there are any), then the crank
   // (when there are ids), so the crank sees the quotes.
-  async pushAndCrank(quotes: QuoteIn[], commitment: string | null, ids: bigint[]): Promise<string> {
+  async pushAndCrank(quotes: QuoteIn[], commitment: string | null, ids: bigint[]): Promise<HousePushed> {
     const calls: HouseCall[] = [];
     if (quotes.length > 0) {
       if (!commitment) throw new Error('push_quotes: a push needs its commitment');
       calls.push(pushCall(quotes, commitment));
     }
     if (ids.length > 0) calls.push(crankCall(ids));
-    return (await this.send(calls)).txHash;
+    const sent = await this.send(calls);
+    return { txHash: sent.txHash, result: quotes.length > 0 ? pushResultFrom(sent, ids.length === 0) : null };
   }
 
   // Keeper only. Returns the new market's id.

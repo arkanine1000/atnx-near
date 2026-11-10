@@ -77,10 +77,12 @@ test('quoteFromRow: toE2 of the score and the reading, print_at in whole seconds
   assert.equal(printAtSecs('2026-11-09T23:05:41.999999+00:00'), Date.UTC(2026, 10, 9, 23, 5, 41) / 1000);
 });
 
-test('quoteFromRow: read_at cannot be before the print', () => {
+test('quoteFromRow: read_at is chain time and may be a little before the print\'s database time', () => {
   const at = printAtSecs(ROWS[0].recorded_at);
-  assert.throws(() => quoteFromRow(ROWS[0], 7, at - 1), /before the print/);
-  assert.equal(quoteFromRow(ROWS[0], 7, at).readAt, at);
+  assert.equal(quoteFromRow(ROWS[0], 7, at - 2).readAt, at - 2);
+  assert.equal(quoteFromRow(ROWS[0], 7, at - 2).printAt, at);
+  assert.throws(() => quoteFromRow(ROWS[0], 7, -1), /not a unix time/);
+  assert.throws(() => quoteFromRow(ROWS[0], 7, 1.5), /not a unix time/);
 });
 
 function pushOf(rows: PrintRow[], markets: Record<string, number>, readAt = 1_794_265_600): { quotes: QuoteIn[]; commitment: string } {
@@ -126,8 +128,8 @@ test('verifyQuotePush: a tampered score, reading, time, commitment or market is 
   const time = tamper((q) => ({ ...q, printAt: q.printAt + 300 }));
   assert.match(time.problems.join('\n'), /print_at .* is not the row's time/);
 
-  const readEarly = tamper((q) => ({ ...q, readAt: q.printAt - 1 }));
-  assert.match(readEarly.problems.join('\n'), /read_at .* is before print_at/);
+  // read_at is the chain's clock, not committed: any value verifies.
+  assert.equal(tamper((q) => ({ ...q, readAt: q.printAt - 1 })).ok, true);
 
   const wrongMarket = verifyQuotePush({ ...push, rows: ROWS, references: new Map([[3, REF_B], [1, REF_A]]) });
   assert.match(wrongMarket.problems.join('\n'), /belongs to market/);
