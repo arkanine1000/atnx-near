@@ -116,14 +116,35 @@ fn expect_err(msg: &str, f: impl FnOnce()) {
     assert!(text.contains(msg), "expected {msg:?}, got {text:?}");
 }
 
+/// `make()` built once per thread. The mocked VM's runtime config is slow
+/// to build and the same for every call.
+fn cached<C: Clone + 'static>(make: fn() -> C) -> C {
+    thread_local! {
+        static SLOT: std::cell::RefCell<Vec<Box<dyn std::any::Any>>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    SLOT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(c) = slot.iter().find_map(|b| b.downcast_ref::<C>()) {
+            return c.clone();
+        }
+        let c = make();
+        slot.push(Box::new(c.clone()));
+        c
+    })
+}
+
 fn ctx(who: &AccountId, now: u64, balance: NearToken) {
-    testing_env!(VMContextBuilder::new()
-        .current_account_id(house())
-        .predecessor_account_id(who.clone())
-        .signer_account_id(who.clone())
-        .block_timestamp(now * 1_000_000_000)
-        .account_balance(balance)
-        .build());
+    testing_env!(
+        VMContextBuilder::new()
+            .current_account_id(house())
+            .predecessor_account_id(who.clone())
+            .signer_account_id(who.clone())
+            .block_timestamp(now * 1_000_000_000)
+            .account_balance(balance)
+            .build(),
+        cached(near_sdk::test_vm_config),
+        cached(near_sdk::RuntimeFeesConfig::test)
+    );
 }
 
 struct T {
@@ -1715,4 +1736,326 @@ fn zero_readings_and_zero_scores_never_fill_or_divide_by_zero() {
     assert_eq!(t.score(z), 1, "the score leaves 0 by the minimum step");
     let quote = t.view().quote_open(z, Side::Short, 2, u(STAKE), None);
     assert!(!quote.allowed);
+}
+
+// -------------------------------------------------- a random sequence
+
+/// A small deterministic generator, so the sequence is the same every run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        self.0 >> 33
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        if n == 0 {
+            0
+        } else {
+            self.next() % n
+        }
+    }
+    fn pick<'a, X>(&mut self, v: &'a [X]) -> &'a X {
+        &v[self.below(v.len() as u64) as usize]
+    }
+}
+
+impl T {
+    /// A call that may fail; the invariants are checked either way.
+    fn try_call<R>(&mut self, who: &AccountId, f: impl FnOnce(&mut Contract) -> R) -> Option<R> {
+        self.known.insert(who.clone());
+        self.ctx(who);
+        let c = &mut self.c;
+        let r = attempt(move || f(c)).ok();
+        self.check();
+        r
+    }
+
+    fn active_ids(&self) -> Vec<u64> {
+        let n = self.c.active_count();
+        (0..n).step_by(100).flat_map(|from| self.c.list_active(Some(from), Some(100))).map(|p| p.id.0).collect()
+    }
+}
+
+/// The keeper's own idea of a market: its latest score and reading.
+struct Feed {
+    id: u32,
+    score: u64,
+    reading: u64,
+    live: bool,
+}
+
+/// Thousands of random opens, quotes, re-reads, cranks, closes, cancels,
+/// withdrawals, faucet claims, vault moves, pauses, retirements and time
+/// jumps. After every step both invariants hold and every unit is accounted
+/// for; at the end every market settles, every position ends, and the
+/// margin and the reserve are back at zero.
+fn random_run(seed: u64, coverage: bool) {
+    let mut rng = Rng(seed);
+    let mut t = T::new();
+    t.seed(150_000 * USDG, 2_000_000 * USDG);
+    // A lower profit cap and a one-day life, so caps and ends happen too.
+    t.call(&owner(), |c| {
+        c.set_config(ConfigPatch {
+            max_profit_bps: Some(20_000),
+            max_position_secs: Some(U64(DAY)),
+            lp_open: Some(true),
+            ..Default::default()
+        })
+    });
+    let traders: Vec<AccountId> = (0..24).map(|i| acc(&format!("trader{i}.near"))).collect();
+    for who in &traders {
+        t.faucet(who, 5_000 * USDG);
+    }
+    let callers: Vec<AccountId> = vec![keeper(), carol(), traders[0].clone(), traders[5].clone()];
+    let mut refs = 0u32;
+    let mut feeds: Vec<Feed> = Vec::new();
+    let mut list = |t: &mut T, feeds: &mut Vec<Feed>, rng: &mut Rng| {
+        refs += 1;
+        let finder = if refs % 3 == 0 { None } else { Some(finder()) };
+        let id = t.list(&format!("{refs:032x}"), finder);
+        let score = 20_000 + rng.below(80_000);
+        t.push(id, score, score);
+        feeds.push(Feed { id, score, reading: score, live: true });
+    };
+    for _ in 0..3 {
+        list(&mut t, &mut feeds, &mut rng);
+    }
+    let mut lp_exits = 0u32;
+    let mut actions: std::collections::BTreeMap<String, u32> = Default::default();
+    let mut reasons: std::collections::BTreeMap<String, u32> = Default::default();
+    let mut tally = |out: &[String], actions: &mut std::collections::BTreeMap<String, u32>| {
+        for a in out {
+            *actions.entry(a.clone()).or_default() += 1;
+        }
+        for l in logs_with("position_closed").iter().chain(logs_with("order_refunded").iter()) {
+            let r = l.split(r#""reason":""#).nth(1).and_then(|x| x.split('"').next()).unwrap_or("?");
+            *reasons.entry(r.to_string()).or_default() += 1;
+        }
+    };
+
+    for _ in 0..6_000 {
+        match rng.below(100) {
+            0..=24 => {
+                let who = rng.pick(&traders).clone();
+                let live: Vec<&Feed> = feeds.iter().filter(|f| f.live || rng.below(10) == 0).collect();
+                let f = *rng.pick(&live);
+                let (m, side) = (f.id, if rng.below(2) == 0 { Side::Long } else { Side::Short });
+                let leverage = match rng.below(40) {
+                    0 => 1,
+                    1 => 4,
+                    x => 2 + (x % 2) as u8,
+                };
+                let stake = match rng.below(20) {
+                    0 => rng.below(10 * USDG),
+                    1 => 250 * USDG + 1 + rng.below(USDG),
+                    _ => 10 * USDG + rng.below(240 * USDG),
+                };
+                let q = t.c.get_market(m).unwrap().quote;
+                let at = q.map(|q| if side == Side::Long { q.buy_e2.0 } else { q.sell_e2.0 }).unwrap_or(1);
+                let limit = match rng.below(12) {
+                    0 => 0,
+                    1 => at,
+                    2 if side == Side::Long => at.saturating_sub(at / 50).max(1),
+                    2 => at + at / 50,
+                    3 if side == Side::Long => at + at / 100,
+                    3 => at.saturating_sub(at / 100).max(1),
+                    _ if side == Side::Long => ANY_LONG,
+                    _ => ANY_SHORT,
+                };
+                t.try_call(&who, |c| c.open(m, side, leverage, u(stake), U64(limit)));
+            }
+            25..=44 => {
+                t.now += 240 + rng.below(121);
+                let now = t.now;
+                let mut batch = Vec::new();
+                for f in feeds.iter_mut().filter(|f| f.live) {
+                    let pct = match rng.below(100) {
+                        0 => -50,
+                        1 => 100,
+                        _ => rng.below(17) as i64 - 8,
+                    };
+                    f.score = ((f.score as i64 * (100 + pct)) / 100).clamp(2_000, 2_000_000) as u64;
+                    let spread = match rng.below(100) {
+                        0 => 100,
+                        1..=10 => 40,
+                        11..=30 => 12,
+                        _ => 4,
+                    };
+                    f.reading = if spread == 100 {
+                        0
+                    } else {
+                        (f.score as i64 * (100 - spread + rng.below(2 * spread as u64 + 1) as i64) / 100) as u64
+                    };
+                    let id = t.next_print;
+                    t.next_print += 1;
+                    batch.push(qin(f.id, f.score, f.reading, id, now - rng.below(60), now));
+                }
+                if !batch.is_empty() {
+                    let r = t.try_call(&keeper(), |c| c.push_quotes(batch, commitment())).expect("a push never fails");
+                    assert_eq!(r.skipped, 0, "every entry is valid");
+                }
+            }
+            45..=49 => {
+                t.now += 1 + rng.below(30);
+                let f = rng.pick(&feeds);
+                if f.live {
+                    let id = f.id;
+                    t.reread(id);
+                }
+            }
+            50..=67 => {
+                let all = t.active_ids();
+                let k = rng.below(MAX_CRANK_IDS as u64 + 4);
+                let mut ids: Vec<U64> = (0..k).filter(|_| !all.is_empty()).map(|_| U64(*rng.pick(&all))).collect();
+                if rng.below(10) == 0 {
+                    ids.push(U64(9_999_999));
+                }
+                let who = rng.pick(&callers).clone();
+                let out = t.try_call(&who, |c| c.crank(ids)).expect("crank never fails");
+                tally(&out, &mut actions);
+            }
+            68..=79 => {
+                let who = rng.pick(&traders).clone();
+                let open: Vec<PositionView> =
+                    t.c.positions_of(who.clone()).into_iter().filter(|p| p.state == PositionState::Open).collect();
+                if open.is_empty() {
+                    continue;
+                }
+                let p = rng.pick(&open);
+                let (id, side, market) = (p.id, p.side, p.market);
+                let q = t.c.get_market(market).unwrap().quote.unwrap();
+                let at = if side == Side::Long { q.sell_e2.0 } else { q.buy_e2.0 };
+                let limit = match (rng.below(3), side) {
+                    (0, Side::Long) => (at - at / 100).max(1),
+                    (0, Side::Short) => at + at / 100,
+                    (_, Side::Long) => ANY_SHORT,
+                    (_, Side::Short) => ANY_LONG,
+                };
+                t.try_call(&who, |c| c.close(id, U64(limit)));
+            }
+            80..=81 => {
+                let who = rng.pick(&traders).clone();
+                if let Some(p) = t.c.positions_of(who.clone()).into_iter().find(|p| p.state == PositionState::Pending) {
+                    t.try_call(&who, |c| c.cancel(p.id));
+                }
+            }
+            82..=84 => {
+                let who = rng.pick(&traders).clone();
+                let b = t.bal(&who);
+                if b > 0 {
+                    let amount = 1 + rng.below(b);
+                    let ok = rng.below(4) != 0;
+                    t.withdraw(&who, amount, ok);
+                }
+            }
+            85..=88 => {
+                let who = if rng.below(2) == 0 { treasury() } else { rng.pick(&traders).clone() };
+                match rng.below(4) {
+                    0 => {
+                        if who == treasury() {
+                            t.transfer_call(&token(), &treasury(), 20_000 * USDG, "");
+                        }
+                        let amount = 1 + rng.below(t.bal(&who).max(1));
+                        t.try_call(&who, |c| c.lp_deposit(u(amount)));
+                    }
+                    1 => {
+                        let held = t.c.lp_of(who.clone()).shares.0;
+                        let s = 1 + (rng.next() as u128 * rng.next() as u128) % held.max(1);
+                        t.try_call(&who, |c| c.lp_request_withdraw(U128(s)));
+                    }
+                    _ => {
+                        if t.try_call(&who, |c| c.lp_withdraw()).is_some_and(|v| v.0 > 0) {
+                            lp_exits += 1;
+                        }
+                    }
+                }
+            }
+            89 => t.now += 3_600 * (1 + rng.below(6)),
+            90 => {
+                let live: Vec<u32> = feeds.iter().filter(|f| f.live).map(|f| f.id).collect();
+                if live.len() > 1 && rng.below(3) == 0 {
+                    let id = *rng.pick(&live);
+                    if let Some(f) = feeds.iter_mut().find(|f| f.id == id) {
+                        f.live = false;
+                    }
+                    if rng.below(2) == 0 {
+                        t.try_call(&keeper(), |c| c.set_market(id, Some(MarketStatus::CloseOnly), None));
+                    }
+                    list(&mut t, &mut feeds, &mut rng);
+                }
+            }
+            91 => {
+                for id in 0..t.c.list_markets(None, Some(100)).len() as u32 {
+                    t.try_call(&carol(), |c| c.settle_stale(id));
+                }
+            }
+            92 => {
+                let paused = rng.below(10) == 0;
+                t.try_call(&keeper(), |c| c.set_paused(paused));
+            }
+            93..=96 => {
+                let who = rng.pick(&traders).clone();
+                let amount = 1 + rng.below(3_000 * USDG);
+                t.try_call(&who, |c| c.faucet(u(amount)));
+            }
+            _ => t.now += rng.below(60),
+        }
+    }
+
+    // Wind down: two days with no reads, then every market settles and
+    // every position ends.
+    t.call(&keeper(), |c| c.set_paused(false));
+    t.now += 2 * DAY;
+    let markets = t.c.list_markets(None, Some(100));
+    for m in &markets {
+        if m.status != MarketStatus::Settled {
+            t.call(&carol(), |c| c.settle_stale(m.id));
+        }
+    }
+    for _ in 0..100 {
+        let ids: Vec<u64> = t.active_ids().into_iter().take(MAX_CRANK_IDS).collect();
+        if ids.is_empty() {
+            break;
+        }
+        let out = t.crank(&keeper(), &ids);
+        assert!(out.iter().all(|a| a == "closed" || a == "refunded"), "{out:?}");
+        tally(&out, &mut actions);
+    }
+    let v = t.vault();
+    assert_eq!((t.c.active_count(), v.margin.0, v.reserved.0), (0, 0, 0));
+    assert_eq!(t.token_held, v.ledger_total.0 + v.assets.0 + v.faucet_pool.0);
+
+    println!("markets: {}, vault exits: {lp_exits}, crank actions: {actions:?}, endings: {reasons:?}", markets.len());
+    if !coverage {
+        return;
+    }
+    assert!(lp_exits >= 3, "vault exits: {lp_exits}");
+    for (what, at_least) in [("filled", 300), ("refunded", 150), ("liquidated", 50), ("closed", 200), ("close_missed", 10)] {
+        assert!(actions.get(what).copied().unwrap_or(0) >= at_least, "{what}: {actions:?}");
+    }
+    for (what, at_least) in [
+        ("close", 100),
+        ("cap", 10),
+        ("liquidation", 50),
+        ("expiry", 10),
+        ("settled", 20),
+        ("limit", 50),
+        ("market_full", 10),
+        ("spread", 20),
+        ("rolled_out", 5),
+        ("expired", 10),
+    ] {
+        assert!(reasons.get(what).copied().unwrap_or(0) >= at_least, "{what}: {reasons:?}");
+    }
+}
+
+#[test]
+fn a_random_sequence_keeps_every_invariant() {
+    random_run(0x4855_5345_2026_1110, true);
+}
+
+#[test]
+fn a_second_random_sequence_keeps_every_invariant() {
+    random_run(0x0bad_5eed_0000_0002, false);
 }
