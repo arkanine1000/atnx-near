@@ -362,6 +362,8 @@ export function inferRefundReason(
 
 // How long a read may lag a call that went through.
 const LAG_GRACE_MS = 20_000;
+// How long a closed position may be missing from the history read.
+const CLOSE_HISTORY_GRACE_MS = 60_000;
 
 // One order or close the ticket is following after the tap.
 export interface Tracked {
@@ -387,7 +389,9 @@ export type TrackedOutcome =
 //          entry → closed; gone without one → refunded (why, when the ring
 //          says);
 //   close: Closing → waiting; back to Open after being seen Closing (or
-//          still Open 20 seconds on) → close_missed; gone → closed;
+//          still Open 20 seconds on) → close_missed; gone → closed (with
+//          what it paid, once the history has it: until then, for up to
+//          a minute, still waiting);
 //   cancel: gone → refunded as cancelled.
 export function trackOutcome(
   t: Tracked,
@@ -409,7 +413,9 @@ export function trackOutcome(
   }
   const closed = now.history.find((c) => c.id === t.id) ?? null;
   if (closed) return { phase: 'closed', closed };
-  if (t.kind === 'close') return { phase: 'closed', closed: null };
+  // A close whose position is gone before its history entry has been read:
+  // still closing for a while, so the line goes straight to what it paid.
+  if (t.kind === 'close') return nowMs - t.sentAtMs < CLOSE_HISTORY_GRACE_MS ? { phase: 'waiting', slow: false, cancellable: false } : { phase: 'closed', closed: null };
   if (t.kind === 'cancel') return { phase: 'refunded', reason: 'cancelled' };
   // The node read right after the tap can lag the order by a block or two:
   // an order never seen is still waiting for its first 20 seconds.

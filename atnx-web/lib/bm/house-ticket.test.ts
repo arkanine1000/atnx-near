@@ -356,6 +356,9 @@ test('trackOutcome: a close settles, or misses its limit and goes back to Open',
   assert.deepEqual(trackOutcome({ ...t, sawClosing: true }, { position: position(), history: [], market: market() }, CFG, (NOW + 8) * 1000), { phase: 'close_missed' });
   assert.deepEqual(trackOutcome(t, { position: position(), history: [], market: market() }, CFG, (NOW + 21) * 1000), { phase: 'close_missed' });
   assert.deepEqual(trackOutcome(t, { position: null, history: [closed(7n)], market: market() }, CFG, (NOW + 8) * 1000), { phase: 'closed', closed: closed(7n) });
+  // Gone, the history not read since: still closing for a minute, then closed.
+  assert.equal(trackOutcome(t, { position: null, history: [], market: market() }, CFG, (NOW + 8) * 1000).phase, 'waiting');
+  assert.deepEqual(trackOutcome(t, { position: null, history: [], market: market() }, CFG, (NOW + 61) * 1000), { phase: 'closed', closed: null });
 });
 
 test('inferRefundReason: from the quote the order was due to fill at', () => {
