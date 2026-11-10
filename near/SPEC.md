@@ -8,11 +8,12 @@ Testnet accounts: parent `atnx.testnet`. Contracts go on `usdg.atnx.testnet` and
 
 ```
 near/
-  Cargo.toml          workspace: members usdg, rounds, integration-tests; default-members usdg, rounds
+  Cargo.toml          workspace: members usdg, rounds, house, integration-tests; default-members usdg, rounds, house
   usdg/               NEP-141 test token
   rounds/             the rounds contract
     src/math.rs       verbatim copy of programs/vi_rounds/src/math.rs (header comment: copied from, keep in sync)
-  integration-tests/  near-workspaces tests against both wasm files
+  house/              the house contract (README.md, "house")
+  integration-tests/  near-workspaces tests against the wasm files
 ```
 
 Use near-sdk 5.30 and near-contract-standards of the same version. Rust 1.99 is installed. In the release profile set `codegen-units = 1`, `opt-level = "z"`, `lto = true`, `panic = "abort"` and `overflow-checks = true`.

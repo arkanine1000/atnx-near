@@ -191,7 +191,8 @@ pub struct Config {
     pub max_position_secs: U64,
     pub lp_exit_delay_secs: U64,
     pub lp_exit_window_secs: U64,
-    /// The most a new print's score may move from the stored score.
+    /// The most a new print's score may move from the stored score per 300 s
+    /// of print time.
     pub max_step_bps: u32,
     /// Paid to whoever liquidates a position, out of its stake.
     pub liq_reward_bps: u32,
@@ -280,8 +281,8 @@ pub struct ConfigPatch {
 #[near(serializers = [borsh])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Quote {
-    /// The score used for prices: the pushed score, clipped to `max_step_bps`
-    /// from the previous print's.
+    /// The score used for prices: the pushed score, clipped from the previous
+    /// print's by `max_step_bps` per 300 s of print time.
     pub score_e2: u64,
     /// The score as pushed, which a later push of the same print must repeat.
     pub pushed_score_e2: u64,
