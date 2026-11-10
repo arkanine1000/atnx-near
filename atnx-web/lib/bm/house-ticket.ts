@@ -244,10 +244,12 @@ export const CONTRACT_MESSAGE: Record<Exclude<OpenBlock, 'full'>, string> = {
 // A market page whose market is not on chain: why, from the page's own
 // numbers (the house lists a market once it is old enough and scores high
 // enough). 'cooloff' and 'low_score' read as "not tradable yet";
-// 'not_listed' as "not on chain yet".
+// 'not_listed' as "not on chain yet". The score comes first: a young market
+// under the minimum does not open when its cool-off ends, so the time left
+// would promise too much.
 export function notListedReason(a: { createdAtSecs: number | null; score: number; nowSecs: number; minScoreE2: bigint; cooloffSecs: number }): 'cooloff' | 'low_score' | 'not_listed' {
-  if (a.createdAtSecs !== null && a.nowSecs < a.createdAtSecs + a.cooloffSecs) return 'cooloff';
   if (!Number.isFinite(a.score) || Math.round(a.score * 100) < Number(a.minScoreE2)) return 'low_score';
+  if (a.createdAtSecs !== null && a.nowSecs < a.createdAtSecs + a.cooloffSecs) return 'cooloff';
   return 'not_listed';
 }
 

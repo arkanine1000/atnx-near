@@ -268,6 +268,8 @@ test('notListedReason: too young, too small, or not on chain yet', () => {
   assert.equal(notListedReason({ ...base, createdAtSecs: NOW - 5 * 86400, score: 99.4 }), 'low_score');
   assert.equal(notListedReason({ ...base, createdAtSecs: NOW - 5 * 86400, score: 100 }), 'not_listed');
   assert.equal(notListedReason({ ...base, createdAtSecs: null, score: 300 }), 'not_listed');
+  // Young and under the minimum: the score is what keeps it out.
+  assert.equal(notListedReason({ ...base, createdAtSecs: NOW - 3600, score: 2 }), 'low_score');
 });
 
 test('fundingState: enough, the faucet, or the faucet used up', () => {
