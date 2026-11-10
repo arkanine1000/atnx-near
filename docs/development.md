@@ -52,7 +52,8 @@ The NEAR build of the same rounds ([rounds.md](rounds.md#near-testnet)). The nam
 | --- | --- | --- |
 | `NEXT_PUBLIC_BM_CHAIN` | client + server | `near` makes the site read, show and trade the NEAR series (registry rows `near:testnet`) and sign in with Google or X; the NEAR "Start rounds" action refuses to run without it. Anything else, or nothing, keeps the Solana build as it was |
 | `NEXT_PUBLIC_BM_NEAR_NETWORK` | client + server | Default `testnet`. The keeper's NEAR client refuses to sign on any other |
-| `NEXT_PUBLIC_BM_NEAR_RPC` | client + server | Default `https://test.rpc.fastnear.com` |
+| `NEXT_PUBLIC_BM_NEAR_RPC` | client + server | One URL or a comma-separated list, tried in order (`lib/near/rpc.ts`): a read one endpoint refuses (rate limited, a 5xx, unreachable) goes to the next. Public, so no keyed URLs. Default `https://test.rpc.fastnear.com`. The public verify routes read the first one |
+| `BM_NEAR_RPC` | server only | The server's own list in the same form (the keeper, the relay, account creation, the house checks); may hold keyed URLs, and logs name hosts only. Unset, the server uses `NEXT_PUBLIC_BM_NEAR_RPC`, then the default |
 | `NEXT_PUBLIC_BM_NEAR_ROUNDS` | client + server | The rounds contract, `rounds.atnx.testnet`. The browser and the account and relay routes need it set (without it and the parent the ticket says rounds are not live and the routes answer `not_configured`); the keeper falls back to `rounds.atnx.testnet` |
 | `NEXT_PUBLIC_BM_NEAR_USDG` | client + server | The token, `usdg.atnx.testnet`; the keeper falls back to it |
 | `NEXT_PUBLIC_BM_NEAR_PARENT` | client + server | The parent of user accounts, `atnx.testnet`; accounts are `<handle>.<parent>` and the relayer only relays for direct sub-accounts of it. The e2e scripts default to `atnx.testnet` |
@@ -65,7 +66,30 @@ The NEAR build of the same rounds ([rounds.md](rounds.md#near-testnet)). The nam
 | `BM_NEAR_GUEST_IP_SALT` | server only | Optional. The salt of the guests' IP hashes in `bm.near_guests`; without it the salt is derived one way from `BM_NEAR_PARENT_SECRET`. Changing it resets the per-IP count |
 | `BM_BOUNDED_ENABLED` | server only | `0` skips the keeper tick's bounded-market steps (1–3) on this deployment, so a second deployment sharing the registry leaves the bounded markets to the one that runs them |
 
-`/api/near/guest` and the relay's guest branch need `supabase/bm/005_near_guests.sql` (`bm.near_guests`), which is written but not applied yet. `/api/near/account` writes `bm.near_accounts` and `/api/near/relay` takes its lock, so both need `supabase/bm/004_near_accounts.sql` applied (and the NEAR keeper needs `003_near.sql`); both files are idempotent and are applied by hand, like the other `supabase/bm` files. Both were applied to production on 2026-11-09, from the linked `atnx` checkout with `npx supabase db query --remote --yes -f <file>` (Supabase CLI v3 asks for `--yes` on a hosted write, or `--read-only` for a read).
+`/api/near/guest` and the relay's guest branch need `supabase/bm/005_near_guests.sql` (`bm.near_guests`), applied to production on 2026-11-10. `/api/near/account` writes `bm.near_accounts` and `/api/near/relay` takes its lock, so both need `supabase/bm/004_near_accounts.sql` applied (and the NEAR keeper needs `003_near.sql`); both files are idempotent and are applied by hand, like the other `supabase/bm` files. Both were applied to production on 2026-11-09, from the linked `atnx` checkout with `npx supabase db query --remote --yes -f <file>` (Supabase CLI v3 asks for `--yes` on a hosted write, or `--read-only` for a read).
+
+### The house market on NEAR testnet
+
+The house market ([house.md](house.md)) runs on the same NEAR build, accounts, relayer and keeper account as the rounds above, plus these:
+
+| Name | Where | Notes |
+| --- | --- | --- |
+| `NEXT_PUBLIC_BM_NEAR_PRODUCT` | client + server, build time | `house` on a NEAR build shows the house: the long/short ticket and the portfolio, a house account `<handle>-h.<parent>` beside each rounds account, and the relayer's house policy; the rounds leave the navigation and the market page. Anything else keeps the rounds as they are |
+| `NEXT_PUBLIC_BM_NEAR_HOUSE` | client + server | The house contract, `house.atnx.testnet`. The site shows the house only once it is set; the keeper, `house:seed` and the public routes `/api/near/house/pushes` and `/api/near/house/verify` default to `house.atnx.testnet` |
+| `BM_NEAR_HOUSE_ENABLED` | server only | `1` turns the house keeper's runs on: `/api/bm/house-keeper` (every five minutes, at minute 1), `/api/bm/house-keeper/fast` (every minute), `house:tick --live`, and the quote on demand after a relayed order or close. Anything else, and the routes answer that nothing ran |
+| `BM_NEAR_KEEPER_FAST_SECRET` | server only | A second `ed25519:` key on `BM_NEAR_KEEPER_ACCOUNT`, used only for quotes on demand, so they never take a nonce the cron runs are using. Unset, the main key |
+| `BM_NEAR_HOUSE_FAUCET_WARN_USDG` | server only | The tick logs `house-faucet-low` when the contract's faucet pool holds fewer USDG than this. Default 100000 |
+| `BM_NEAR_PARENT_ACCOUNT` | server only, scripts | The account `house:seed` seeds from, with `BM_NEAR_PARENT_SECRET`. Default `atnx.testnet` |
+| `NEAR_INTENTS_JWT` | server only | Optional. A 1Click partner JWT for the "Fund from any chain" quotes, sent as `X-API-Key`; without it the quotes still work, with 1Click's higher fee |
+
+The house keeper signs as `BM_NEAR_KEEPER_ACCOUNT` with `BM_NEAR_KEEPER_SECRET`, like the rounds step, and must be the contract's keeper. The public routes need no secret beyond the Supabase variables at the top: `/api/near/house/verify` reads the rows with the anon key, as anyone can.
+
+```bash
+npm run house:tick                         # one dry five-minute tick; -- --fast the every-minute run, -- --list every eligible market
+BM_NEAR_HOUSE_ENABLED=1 npm run house:tick -- --live   # a real one
+npm run house:seed -- --contract house.atnx.testnet --vault 10000000 --faucet 2000000   # the plan, in whole USDG; -- --live sends
+npm run house:verify:public -- <tx> --supabase-url <url> --anon-key <key>               # one push checked with no env file
+```
 
 ## Checking the pipeline
 
@@ -111,9 +135,11 @@ cd near
 export CARGO_TARGET_DIR=/tmp/atnx-near-target CARGO_BUILD_JOBS=2
 (cd usdg && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
 (cd rounds && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
+(cd house && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
 taskset -c 0,3-5 cargo test -p rounds --lib     # math.rs's own tests plus the contract's
 taskset -c 0,3-5 cargo test -p usdg
-taskset -c 0,3-5 cargo test -p integration-tests -- --test-threads=1   # near-sandbox, after both wasm builds
+taskset -c 0,3-5 cargo test -p house --lib
+taskset -c 0,3-5 cargo test -p integration-tests -- --test-threads=1   # near-sandbox, after the three wasm builds; --test house for the house alone
 ```
 
 If a build dies with SIGSEGV or "rustc interrupted", run it again; finished crates are kept. There is no Docker here, so local builds are non-reproducible: they embed `version` and `link` but no build metadata, and their bytes differ from CI's. The wasm files to deploy come from CI, which builds them with `cargo near build reproducible-wasm` (see Deployment).

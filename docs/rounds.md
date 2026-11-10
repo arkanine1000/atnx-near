@@ -1,5 +1,7 @@
 # Rolling VI rounds
 
+The [house market](house.md) is the current product on NEAR; the rounds below are the earlier design, still deployed at `rounds.atnx.testnet`.
+
 The second iteration of the hackathon build, first on Solana devnet and since 2026-11-08 on NEAR testnet as well. Each subject gets a series of back-to-back rounds on its Virality Index, and every round asks one question: will the VI, averaged over the round's last 30 minutes, end at or above where it stood when the round opened? While round N trades, round N+1 takes presale commits. The engine is Pennock's dynamic pari-mutuel market, so winners are paid out of the losing side's money. The platform's only stake is the keeper's opening ante, 10 USDG on a side nobody has backed, which wins or loses like anyone's money; beyond that it is never the other side of a trade. This replaces the [bounded markets](bounded-markets.md), which stay deployed. Program addresses are in the [README](../README.md); build and deploy steps for the program are in [programs/README.md](../programs/README.md).
 
 The site is moving to NEAR, and the Solana series wind down at the swap. The mechanics below are the same on both chains; [NEAR testnet](#near-testnet) covers what the NEAR contracts, the gasless accounts, the oracle commitment and the keeper's second chain change. The NEAR contracts' methods, build and tests are in [near/README.md](../near/README.md).
