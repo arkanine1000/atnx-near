@@ -31,7 +31,20 @@ export const HOUSE_VIEWS = {
   listActive: 'list_active',
   position: 'get_position',
   positionsOf: 'positions_of',
+  historyOf: 'history_of',
   balanceOf: 'balance_of',
+  faucetClaimed: 'faucet_claimed',
+  quoteOpen: 'quote_open',
+} as const;
+
+// The calls a trader's key makes (relayed, no deposit).
+export const HOUSE_USER_CALLS = {
+  faucet: 'faucet',
+  open: 'open',
+  close: 'close',
+  cancel: 'cancel',
+  crank: 'crank',
+  withdraw: 'withdraw',
 } as const;
 
 export const HOUSE_CALLS = {
@@ -134,6 +147,12 @@ export interface HouseMarket {
   finalE2: bigint | null;
   long: HouseBook | null;
   short: HouseBook | null;
+  // Read when the view has them, null (or absent) otherwise: the reserve
+  // each side may hold now, and whether open would take an order here now
+  // (stake and account aside) and why not, in the contract's words.
+  sideCap?: bigint | null;
+  opens?: boolean | null;
+  reason?: string | null;
 }
 
 export interface HousePosition {
@@ -152,6 +171,57 @@ export interface HousePosition {
   openedAt: number | null;
   closeRequestedAt: number | null;
   closeLimitE2: bigint | null;
+  // Read when the view has them, null (or absent) otherwise: when the
+  // position ends, its levels, what closing would pay at the newest quote,
+  // and whether it is worth nothing without being liquidated.
+  expiresAt?: number | null;
+  liquidationE2?: bigint | null;
+  capE2?: bigint | null;
+  value?: bigint | null;
+  atRisk?: boolean | null;
+}
+
+// Why a position ended (history_of's reason).
+export type HouseCloseReason = 'close' | 'cap' | 'liquidation' | 'expiry' | 'settled';
+export const HOUSE_CLOSE_REASONS: readonly HouseCloseReason[] = ['close', 'cap', 'liquidation', 'expiry', 'settled'];
+
+// One entry of history_of: a position that has ended, newest first.
+export interface HouseClosed {
+  id: bigint;
+  market: number;
+  side: HouseSide;
+  leverage: number;
+  stake: bigint;
+  entryE2: bigint;
+  exitE2: bigint;
+  // What the account was credited; the profit is payout − stake.
+  payout: bigint;
+  // One of HOUSE_CLOSE_REASONS; another string is kept as it came.
+  reason: string;
+  openedAt: number;
+  closedAt: number;
+}
+
+// quote_open's answer: what open would do with these terms now.
+export interface HouseOpenQuote {
+  allowed: boolean;
+  // The contract's own words when open would fail.
+  reason: string | null;
+  scoreE2: bigint;
+  leadE2: bigint;
+  buyE2: bigint;
+  sellE2: bigint;
+  entryE2: bigint;
+  fee: bigint;
+  liquidationE2: bigint;
+  capE2: bigint;
+  maxProfit: bigint;
+  valueOnFill: bigint;
+  // Read when the view has them, null otherwise.
+  readingE2: bigint | null;
+  spreadBps: bigint | null;
+  wouldFill: boolean | null;
+  fillReason: string | null;
 }
 
 // One quote as push_quotes takes it.
@@ -253,6 +323,92 @@ export const marketArgs = (market: number) => ({ market: encU32(market) });
 export const marketByReferenceArgs = (reference: string) => ({ reference });
 export const positionArgs = (id: bigint) => ({ id: encU64(id) });
 export const accountArgs = (account: string) => ({ account });
+
+export function encLeverage(v: number): number {
+  if (v !== 2 && v !== 3) throw new Error(`leverage must be 2 or 3, got ${String(v)}`);
+  return v;
+}
+
+export function encSide(v: HouseSide): HouseSide {
+  if (v !== 'Long' && v !== 'Short') throw new Error(`not a side: ${String(v)}`);
+  return v;
+}
+
+export function quoteOpenArgs(a: { market: number; side: HouseSide; leverage: number; stake: bigint }): Record<string, unknown> {
+  return { market: encU32(a.market), side: encSide(a.side), leverage: encLeverage(a.leverage), stake: encU128(a.stake) };
+}
+
+// --------------------------------------------------- the trader's calls
+
+export function faucetArgs(amount: bigint): Record<string, unknown> {
+  return { amount: encU128(amount) };
+}
+
+export function withdrawArgs(amount: bigint): Record<string, unknown> {
+  return { amount: encU128(amount) };
+}
+
+// open: the order and the worst price it accepts (a long's highest entry,
+// a short's lowest). The contract refuses a limit of zero.
+export function openArgs(a: { market: number; side: HouseSide; leverage: number; stake: bigint; limitE2: bigint }): Record<string, unknown> {
+  if (a.limitE2 <= 0n) throw new Error('open: a limit price is required');
+  return { market: encU32(a.market), side: encSide(a.side), leverage: encLeverage(a.leverage), stake: encU128(a.stake), limit_e2: encU64(a.limitE2) };
+}
+
+// close: the worst exit accepted (a long's lowest, a short's highest).
+export function closeArgs(positionId: bigint, limitE2: bigint): Record<string, unknown> {
+  if (limitE2 <= 0n) throw new Error('close: a limit price is required');
+  return { position_id: encU64(positionId), limit_e2: encU64(limitE2) };
+}
+
+export function cancelArgs(positionId: bigint): Record<string, unknown> {
+  return { position_id: encU64(positionId) };
+}
+
+// The trader's calls read back from a relayed delegate's JSON, strictly:
+// what the relay checks before paying (lib/near/house-check.ts). Each
+// throws with a short reason on anything the contract would not parse.
+const U64_TEXT = /^\d{1,20}$/;
+const U128_TEXT = /^\d{1,39}$/;
+
+function argU64(v: unknown, name: string): bigint {
+  if (typeof v !== 'string' || !U64_TEXT.test(v) || BigInt(v) > U64_MAX) throw new Error(`${name} must be a U64 string`);
+  return BigInt(v);
+}
+
+function argU128(v: unknown, name: string): bigint {
+  if (typeof v !== 'string' || !U128_TEXT.test(v)) throw new Error(`${name} must be a U128 string`);
+  return BigInt(v);
+}
+
+function argU32(v: unknown, name: string): number {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0 || v > 0xffff_ffff) throw new Error(`${name} must be a u32`);
+  return v;
+}
+
+export function readAmountArgs(a: Record<string, unknown>): { amount: bigint } {
+  return { amount: argU128(a.amount, 'amount') };
+}
+
+export function readOpenArgs(a: Record<string, unknown>): { market: number; side: HouseSide; leverage: number; stake: bigint; limitE2: bigint } {
+  const market = argU32(a.market, 'market');
+  if (a.side !== 'Long' && a.side !== 'Short') throw new Error('side must be "Long" or "Short"');
+  if (typeof a.leverage !== 'number' || !Number.isInteger(a.leverage) || a.leverage < 0 || a.leverage > 255) throw new Error('leverage must be a u8');
+  return { market, side: a.side, leverage: a.leverage, stake: argU128(a.stake, 'stake'), limitE2: argU64(a.limit_e2, 'limit_e2') };
+}
+
+export function readCloseArgs(a: Record<string, unknown>): { positionId: bigint; limitE2: bigint } {
+  return { positionId: argU64(a.position_id, 'position_id'), limitE2: argU64(a.limit_e2, 'limit_e2') };
+}
+
+export function readCancelArgs(a: Record<string, unknown>): { positionId: bigint } {
+  return { positionId: argU64(a.position_id, 'position_id') };
+}
+
+export function readCrankArgs(a: Record<string, unknown>): { ids: bigint[] } {
+  if (!Array.isArray(a.position_ids)) throw new Error('position_ids must be an array');
+  return { ids: a.position_ids.map((v, i) => argU64(v, `position_ids[${i}]`)) };
+}
 
 // ------------------------------------------------------------- decoding
 
@@ -402,6 +558,55 @@ export function decodeMarket(v: unknown): HouseMarket {
     finalE2: optU64(o, 'final_e2', w),
     long: decodeBook(o.long, 'market.long'),
     short: decodeBook(o.short, 'market.short'),
+    sideCap: optU64(o, 'side_cap', w),
+    opens: optBool(o, 'opens', w),
+    reason: optStr(o, 'reason', w),
+  };
+}
+
+export function decodeClosed(v: unknown, what = 'closed'): HouseClosed {
+  const o = obj(v, what);
+  return {
+    id: u64(o, 'id', what),
+    market: u64n(o, 'market', what),
+    side: oneOf(o, 'side', what, SIDES),
+    leverage: u64n(o, 'leverage', what),
+    stake: u64(o, 'stake', what),
+    entryE2: u64(o, 'entry_e2', what),
+    exitE2: u64(o, 'exit_e2', what),
+    payout: u64(o, 'payout', what),
+    reason: str(o, 'reason', what),
+    openedAt: u64n(o, 'opened_at', what),
+    closedAt: u64n(o, 'closed_at', what),
+  };
+}
+
+// history_of: newest first, as the contract keeps it (sorted again here by
+// close time, then id, so the order holds whatever the view did).
+export function decodeHistory(v: unknown): HouseClosed[] {
+  return decodeList(v, 'history_of', (x) => decodeClosed(x)).sort((a, b) => b.closedAt - a.closedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+}
+
+export function decodeOpenQuote(v: unknown): HouseOpenQuote {
+  const w = 'quote_open';
+  const o = obj(v, w);
+  return {
+    allowed: bool(o, 'allowed', w),
+    reason: optStr(o, 'reason', w),
+    scoreE2: u64(o, 'score_e2', w),
+    leadE2: u64(o, 'lead_e2', w),
+    buyE2: u64(o, 'buy_e2', w),
+    sellE2: u64(o, 'sell_e2', w),
+    entryE2: u64(o, 'entry_e2', w),
+    fee: u64(o, 'fee', w),
+    liquidationE2: u64(o, 'liquidation_e2', w),
+    capE2: u64(o, 'cap_e2', w),
+    maxProfit: u64(o, 'max_profit', w),
+    valueOnFill: u64(o, 'value_on_fill', w),
+    readingE2: optU64(o, 'reading_e2', w),
+    spreadBps: optU64(o, 'spread_bps', w),
+    wouldFill: optBool(o, 'would_fill', w),
+    fillReason: optStr(o, 'fill_reason', w),
   };
 }
 
@@ -409,6 +614,11 @@ export function decodePosition(v: unknown): HousePosition {
   const w = 'position';
   const o = obj(v, w);
   return {
+    expiresAt: optU64n(o, 'expires_at', w),
+    liquidationE2: optU64(o, 'liquidation_e2', w),
+    capE2: optU64(o, 'cap_e2', w),
+    value: optU64(o, 'value', w),
+    atRisk: optBool(o, 'at_risk', w),
     id: u64(o, 'id', w),
     account: str(o, 'account', w),
     market: u64n(o, 'market', w),

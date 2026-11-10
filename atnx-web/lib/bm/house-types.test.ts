@@ -1,8 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  cancelArgs,
+  closeArgs,
   crankArgs,
+  decodeClosed,
   decodeConfig,
+  decodeHistory,
+  decodeOpenQuote,
+  faucetArgs,
+  openArgs,
+  quoteOpenArgs,
+  readCancelArgs,
+  readCloseArgs,
+  readCrankArgs,
+  readOpenArgs,
+  withdrawArgs,
   decodeMarket,
   decodeMarketId,
   decodePosition,
@@ -225,4 +238,94 @@ test('decodePushResult: push_quotes returns the same fields as its event', () =>
   assert.deepEqual(decodePushResult(PUSHED), { count: 3, accepted: 2, skipped: 1, firstPrintId: '901', lastPrintId: '905', commitment: HASH });
   assert.throws(() => decodePushResult({ count: '3' }), /count, accepted and skipped/);
   assert.throws(() => decodePushResult(undefined), /expected an object/);
+});
+
+// -------------------------------------------- the trader's calls and views
+
+test('the trader calls: market a u32, leverage 2 or 3, amounts U128, ids and limits U64, sides by name', () => {
+  const open = openArgs({ market: 4, side: 'Long', leverage: 3, stake: 100_000_000n, limitE2: 41289n });
+  assert.deepEqual(open, { market: 4, side: 'Long', leverage: 3, stake: '100000000', limit_e2: '41289' });
+  assert.deepEqual(readOpenArgs(JSON.parse(JSON.stringify(open))), { market: 4, side: 'Long', leverage: 3, stake: 100_000_000n, limitE2: 41289n });
+  assert.throws(() => openArgs({ market: 4, side: 'Long', leverage: 4, stake: 1n, limitE2: 1n }), /leverage/);
+  assert.throws(() => openArgs({ market: 4, side: 'Long', leverage: 3, stake: 1n, limitE2: 0n }), /limit/);
+  assert.deepEqual(closeArgs(7n, 39600n), { position_id: '7', limit_e2: '39600' });
+  assert.deepEqual(readCloseArgs({ position_id: '7', limit_e2: '39600' }), { positionId: 7n, limitE2: 39600n });
+  assert.throws(() => closeArgs(7n, 0n), /limit/);
+  assert.deepEqual(cancelArgs(7n), { position_id: '7' });
+  assert.deepEqual(readCancelArgs({ position_id: '7' }), { positionId: 7n });
+  assert.deepEqual(faucetArgs(10_000_000_000n), { amount: '10000000000' });
+  assert.deepEqual(withdrawArgs(5n), { amount: '5' });
+  assert.deepEqual(readCrankArgs({ position_ids: ['1', '2'] }), { ids: [1n, 2n] });
+  assert.deepEqual(quoteOpenArgs({ market: 4, side: 'Short', leverage: 2, stake: 10_000_000n }), { market: 4, side: 'Short', leverage: 2, stake: '10000000' });
+  // The relay reads them strictly: numbers where strings go, and the reverse, are refused.
+  assert.throws(() => readOpenArgs({ ...open, market: '4' }), /market/);
+  assert.throws(() => readOpenArgs({ ...open, side: 'long' }), /side/);
+  assert.throws(() => readOpenArgs({ ...open, stake: 100 }), /stake/);
+  assert.throws(() => readOpenArgs({ ...open, limit_e2: '18446744073709551616' }), /limit_e2/);
+  assert.throws(() => readCloseArgs({ position_id: 7, limit_e2: '1' }), /position_id/);
+  assert.throws(() => readCrankArgs({ position_ids: '1' }), /array/);
+});
+
+test('decodePosition: the view extras (end, levels, value, at risk) when present, null when not', () => {
+  const p = decodePosition({
+    id: '7', account: 'alice-h.atnx.testnet', market: 1, side: 'Long', leverage: 3, stake: '100000000', fee: '1000000', reserved: '900000000',
+    state: 'Open', placed_at: '1794300000', limit_e2: '41289', entry_e2: '40880', opened_at: '1794300006', close_requested_at: null, close_limit_e2: null,
+    expires_at: '1795509606', fill_print_id: '905', liquidation_e2: '27253', cap_e2: '163520', value: '93542075', at_risk: false,
+  });
+  assert.equal(p.expiresAt, 1_795_509_606);
+  assert.equal(p.liquidationE2, 27253n);
+  assert.equal(p.capE2, 163520n);
+  assert.equal(p.value, 93_542_075n);
+  assert.equal(p.atRisk, false);
+  const bare = decodePosition({ id: 8, account: 'a-h.atnx.testnet', market: 1, side: 'Short', leverage: 2, stake: '1', fee: '1', reserved: '0', state: 'Pending', placed_at: 1, limit_e2: '1' });
+  assert.equal(bare.expiresAt, null);
+  assert.equal(bare.value, null);
+  assert.equal(bare.atRisk, null);
+});
+
+test('decodeMarket: side_cap, opens and reason when present', () => {
+  const m = decodeMarket({
+    id: 2, reference: '46a8890c25ce42319112fc1b3ba8ac07', finder: null, live_since: '1794000000', status: 'Open', quotes: [],
+    long: { stake: '0', notional: '0', reserved: '0', count: 0 }, short: null, side_cap: '200000000000', opens: false, reason: 'market has no quote',
+  });
+  assert.equal(m.sideCap, 200_000_000_000n);
+  assert.equal(m.opens, false);
+  assert.equal(m.reason, 'market has no quote');
+  const plain = decodeMarket({ id: 2, reference: '46a8890c25ce42319112fc1b3ba8ac07', finder: null, live_since: 1, status: 'CloseOnly', quotes: [] });
+  assert.equal(plain.sideCap, null);
+  assert.equal(plain.opens, null);
+});
+
+test('history_of: entries decoded, newest first whatever the view order', () => {
+  const entry = (id: string, closed: string, reason: string) => ({
+    id, market: 1, side: 'Long', leverage: 3, stake: '100000000', entry_e2: '40880', exit_e2: '47641', payout: '149615949', reason, opened_at: '1794300006', closed_at: closed,
+  });
+  const h = decodeHistory([entry('3', '1794300100', 'close'), entry('5', '1794300300', 'cap'), entry('4', '1794300300', 'liquidation')]);
+  assert.deepEqual(h.map((c) => c.id), [5n, 4n, 3n]);
+  assert.deepEqual(decodeClosed(entry('3', '1794300100', 'expiry')), {
+    id: 3n, market: 1, side: 'Long', leverage: 3, stake: 100_000_000n, entryE2: 40880n, exitE2: 47641n, payout: 149_615_949n, reason: 'expiry', openedAt: 1_794_300_006, closedAt: 1_794_300_100,
+  });
+  assert.deepEqual(decodeHistory([]), []);
+  assert.throws(() => decodeHistory({}), /array/);
+  assert.throws(() => decodeClosed({ ...entry('3', '1', 'close'), side: 'Up' }), /side/);
+});
+
+test('quote_open: the fields the ticket can use; the extras optional', () => {
+  const v = {
+    allowed: true, reason: null, score_e2: '40000', lead_e2: '40880', buy_e2: '40880', sell_e2: '40000', entry_e2: '40880', fee: '1000000',
+    liquidation_e2: '27253', cap_e2: '163520', max_profit: '900000000', value_on_fill: '93542075',
+  };
+  const q = decodeOpenQuote(v);
+  assert.equal(q.allowed, true);
+  assert.equal(q.reason, null);
+  assert.equal(q.entryE2, 40880n);
+  assert.equal(q.valueOnFill, 93_542_075n);
+  assert.equal(q.readingE2, null);
+  assert.equal(q.wouldFill, null);
+  const more = decodeOpenQuote({ ...v, allowed: false, reason: 'the two prices are too far apart', reading_e2: '42000', spread_bps: '220', would_fill: false, fill_reason: 'spread' });
+  assert.equal(more.reason, 'the two prices are too far apart');
+  assert.equal(more.readingE2, 42000n);
+  assert.equal(more.spreadBps, 220n);
+  assert.equal(more.fillReason, 'spread');
+  assert.throws(() => decodeOpenQuote({ ...v, allowed: 'yes' }), /allowed/);
 });

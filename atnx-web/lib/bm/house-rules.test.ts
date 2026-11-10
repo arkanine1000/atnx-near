@@ -95,8 +95,9 @@ test('quotePrices: the worked example (score 400, reading 420; then 480 and 470)
   // gap 5 %, lambda 0.44, lead 408.8: buy at the lead, sell at the score.
   assert.deepEqual(a, { lead: 40880n, buy: 40880n, sell: 40000n });
   const b = quotePrices(48000n, 47000n, CFG);
-  // gap 2.08 %, lambda 0.358, lead 476.42: sell at the lead, buy at the score.
-  assert.deepEqual(b, { lead: 47642n, buy: 48000n, sell: 47642n });
+  // gap 2.08 % (209 bps rounded up), lambda 0.3586, the lead 3.59 below the
+  // score (rounded up): 476.41. Sell at the lead, buy at the score.
+  assert.deepEqual(b, { lead: 47641n, buy: 48000n, sell: 47641n });
 });
 
 test('quotePrices: no gap, a gap past the full one, a zero score', () => {
