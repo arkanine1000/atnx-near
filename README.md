@@ -24,7 +24,7 @@ All on NEAR testnet. `code_hash` is the SHA-256 of the deployed wasm in base58, 
 
 | Account | What it is | Code hash | How to check |
 |---|---|---|---|
-| `house.atnx.testnet` | This entry: the house market (`near/house`). Owner and treasury `atnx.testnet`, keeper `keeper.atnx.testnet` | `zpFF3Wq4VEjXXUBE3bKUU8oL5tzRiLW8T2hmbaWoCgW` (hex `0ecf86deaf2376c9e515fc336138c9d6be63bef8c2482667ee8beb50302ac59f`) | Step [a1](#a-no-login-no-install). Built by [CI run 42746055574](https://github.com/arkanine1000/atnx-near/actions/runs/42746055574) (`near-build`, reproducible) from commit `5cff59c`, which its `contract_source_metadata` view names; rebuild it with step [c3](#c-from-a-clone) |
+| `house.atnx.testnet` | This entry: the house market (`near/house`). Owner and treasury `atnx.testnet`, keeper `keeper.atnx.testnet` | `EN6eaeUyNxp1VUJ5nWDtv3wTNmHrx53u7eNPwTScEnb3` (hex `c68f835f30accfef64c43c55705b1d44410af10c6a83b9cb59238339c9584662`) | Step [a1](#a-no-login-no-install). Built by [CI run 42915086367](https://github.com/arkanine1000/atnx-near/actions/runs/42915086367) (`near-build`, reproducible) from commit `5c019b5`, which its `contract_source_metadata` view names; rebuild it with step [c3](#c-from-a-clone) |
 | `usdg.atnx.testnet` | USDG, "ATNX test USD": a NEP-141 test token with 6 decimals (`near/usdg`) | `3ew3uCaQ95H1vnmL3CHvLamsiaTQ6aFjPv6nYs9x5AsQ` | `view_account` as in step a1; its `contract_source_metadata` names commit `4f0791e` |
 | `rounds.atnx.testnet` | An earlier market design on NEAR, built in the same hackathon window and still deployed: rolling pari-mutuel rounds on the VI ([docs/rounds.md](docs/rounds.md)). The house replaced it as the product | `3XiZgR4xdsPX7fotjtp4d9cc1DAN81SmvWXGLDXJLizw` | As above; commit `4f0791e` |
 | `keeper.atnx.testnet`, `relayer.atnx.testnet`, `atnx.testnet` | The keeper, the relayer, and the owner, treasury and parent of every trader account. Plain accounts, no contract | | |
@@ -61,10 +61,10 @@ house_view contract_source_metadata '{}' | jq '{version, link, contract_path: .b
 See the code hash from the table and the commit it was built from:
 
 ```
-"zpFF3Wq4VEjXXUBE3bKUU8oL5tzRiLW8T2hmbaWoCgW"
+"EN6eaeUyNxp1VUJ5nWDtv3wTNmHrx53u7eNPwTScEnb3"
 {
   "version": "0.1.0",
-  "link": "https://github.com/arkanine1000/atnx-near/tree/5cff59ce1ea57e182ef7c8df308f5d823f194525",
+  "link": "https://github.com/arkanine1000/atnx-near/tree/5c019b5a2d8466ccdaebcf8b1a943ed082863f0e",
   "contract_path": "near/house",
   "build_environment": "sourcescan/cargo-near:0.23.0-rust-1.99.1@sha256:8013f039e8005627f10ae66b5519d1a6eeeed7d7aef4b5067d5e9a86c4302fcc"
 }
@@ -251,16 +251,16 @@ cargo test -p integration-tests --test house -- --test-threads=1
 
 See `test result: ok. 6 passed; 0 failed` after about three minutes: faucet, deposits and withdraw; orders filling after a fresh read and positions ending; positions at 1x; a push of 75 markets in one call; the vault's exit and `migrate`; a failed withdraw refunded.
 
-**c3. The deployed code, rebuilt** (needs Docker; not run on the machine that wrote this README, which has none; CI run 42746055574 ran it). From the repository root, run:
+**c3. The deployed code, rebuilt** (needs Docker; not run on the machine that wrote this README, which has none; CI run 42915086367 ran it). From the repository root, run:
 
 ```bash
-git checkout 5cff59c
+git checkout 5c019b5
 (cd near/house && cargo near build reproducible-wasm)
 sha256sum near/target/near/house/house.wasm
 git checkout -
 ```
 
-See `0ecf86deaf2376c9e515fc336138c9d6be63bef8c2482667ee8beb50302ac59f`, the deployed code hash in hex. While `git diff 5cff59c -- near/house` prints nothing, the contract source in your checkout is the deployed one.
+See `c68f835f30accfef64c43c55705b1d44410af10c6a83b9cb59238339c9584662`, the deployed code hash in hex. While `git diff 5c019b5 -- near/house` prints nothing, the contract source in your checkout is the deployed one.
 
 **c4. The web tests.** From the repository root, run `cd atnx-web && npm ci && npm run test:near && npm run test:bm`. See each suite end with `# fail 0`: accounts and handles, the relayer and its house policy, the house checks, the public push routes, the keeper's rules, the commitment, the ticket's numbers. (`npm ci` was not run here; the suites were, on the existing install: 153 and 202 tests on 2026-11-10.)
 

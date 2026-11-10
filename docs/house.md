@@ -210,7 +210,7 @@ As of 2026-11-10.
 
 - [x] Contract `near/house` (near-sdk 5.30): two prices, orders filled at a quote read after them, liquidation, the cap, the 14-day end, the vault with notice-period exits, the faucet pool, close-only and stale markets, `quote_open`, NEP-297 events, `migrate`
 - [x] Tests: 58 unit tests (the worked examples, fill timing, refunds, liquidation and the cap on both sides, the score clip, the vault, the storage floor, access control, the config ranges, and two random sequences checking both invariants after every call) and 5 near-sandbox tests (`near/integration-tests/tests/house.rs`, among them a push of 75 markets in one call)
-- [x] Reproducible build in CI with NEP-330 metadata; deployed from CI run 42746055574 (commit `5cff59c`) to `house.atnx.testnet`
+- [x] Reproducible build in CI with NEP-330 metadata; deployed from CI run 42915086367 (commit `5c019b5`) to `house.atnx.testnet`, upgraded in place with `migrate` on 2026-11-10 when 1x was added (first deployed from run 42746055574, commit `5cff59c`)
 - [x] Seeded: 10,000,000 USDG in the vault, 2,000,000 in the faucet pool; 57 markets listed
 - [x] The keeper's three runs on Vercel cron, with dry mode, the commitment on every push, and `house:verify:public`
 - [x] Public routes for the pushes and their verification
