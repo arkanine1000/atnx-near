@@ -834,3 +834,885 @@ fn a_position_ends_after_14_days_at_the_first_quote_after_its_end() {
     assert_eq!((t.bal(&alice()) - a0, t.bal(&bob()) - b0), (130 * USDG, 130 * USDG));
     assert_eq!(t.last_closed(&bob()).reason, "expiry");
 }
+
+// --------------------------------------------------------- push rules
+
+/// One entry that breaks a rule never fails a push: it is skipped and
+/// counted, and the rest of the batch is applied.
+#[test]
+fn a_push_skips_and_counts_entries_that_break_a_rule() {
+    let (mut t, m) = setup(10_000, 10_000);
+    let other = t.list(REF_B, None);
+    t.now += 300;
+    let now = t.now;
+    let batch = vec![
+        qin(m, 10_500, 10_400, 1_001, now - 10, now),     // a new print: accepted
+        qin(99, 10_000, 10_000, 1_002, now, now),         // an unknown market
+        qin(m, 10_000, 10_000, 999, now - 20, now),       // an older print
+        qin(m, 10_600, 10_400, 1_001, now - 10, now),     // the same print with other numbers
+        qin(m, 10_500, 10_400, 1_001, now - 10, now - 5), // a read time going back
+        qin(m, 10_500, 10_400, 1_001, now - 10, now + 1), // a read time after the block time
+        qin(other, 20_000, 20_000, 1_003, now + 1, now),  // a print time after the block time
+        qin(other, 20_000, 20_000, 1_003, now - 1, now),  // a first print: accepted
+        qin(m, 10_500, 10_400, 1_001, now - 10, now),     // the same print read again: accepted
+    ];
+    let r = t.call(&keeper(), |c| c.push_quotes(batch, commitment()));
+    assert_eq!(r, PushResult { count: 9, accepted: 3, skipped: 6 });
+    let ev = logs_with("quotes_pushed");
+    assert_eq!(ev.len(), 1, "one event for the whole batch");
+    assert!(
+        ev[0].ends_with(&format!(
+            r#""data":[{{"count":"9","accepted":"3","skipped":"6","first_print_id":"999","last_print_id":"1003","commitment":"{}"}}]}}"#,
+            commitment()
+        )),
+        "{}",
+        ev[0]
+    );
+    let q = t.c.get_market(m).unwrap().quote.unwrap();
+    assert_eq!((q.print_id.0, q.score_e2.0, q.reading_e2.0, q.last_read_at.0), (1_001, 10_500, 10_400, now));
+    assert_eq!(t.score(other), 20_000);
+
+    // The call itself fails only for another caller or a bad commitment.
+    for who in [owner(), alice(), treasury()] {
+        t.fails(&who, "not the keeper", |c| {
+            c.push_quotes(vec![], commitment());
+        });
+    }
+    let bad = "commitment must be 64 lowercase hex characters";
+    t.fails(&keeper(), bad, |c| {
+        c.push_quotes(vec![], "AB".repeat(32));
+    });
+    t.fails(&keeper(), bad, |c| {
+        c.push_quotes(vec![], "ab".repeat(31));
+    });
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![], commitment()));
+    assert_eq!(r, PushResult { count: 0, accepted: 0, skipped: 0 });
+    // Entries past the first MAX_QUOTES_PER_PUSH are skipped.
+    t.now += 1;
+    let now = t.now;
+    let at = q.print_at.0;
+    let many: Vec<QuoteIn> = (0..MAX_QUOTES_PER_PUSH + 3).map(|_| qin(m, 10_500, 10_400, 1_001, at, now)).collect();
+    let r = t.call(&keeper(), |c| c.push_quotes(many, commitment()));
+    assert_eq!(r, PushResult { count: MAX_QUOTES_PER_PUSH as u32 + 3, accepted: MAX_QUOTES_PER_PUSH as u32, skipped: 3 });
+}
+
+/// A new print's score moves with the print's own time, at most 15 % per
+/// five minutes however many prints arrive, and a print 2–3 minutes after
+/// the last one can be pushed at once.
+#[test]
+fn the_score_moves_with_the_print_time_however_many_prints_arrive() {
+    let (mut t, m) = setup(100_000, 100_000);
+    // The second print of the hour, 150 s after the first: 7.5 % at most.
+    t.now += 150;
+    t.push(m, 120_000, 120_000);
+    let q = t.c.get_market(m).unwrap().quote.unwrap();
+    assert_eq!((q.score_e2.0, q.pushed_score_e2.0), (107_500, 120_000));
+    // Ten prints 30 s apart: 1.5 % each, about 16 % over the five minutes.
+    let mut expect = 107_500u64;
+    for _ in 0..10 {
+        t.now += 30;
+        t.push(m, 200_000, 200_000);
+        expect += expect * 150 / 10_000;
+        assert_eq!(t.score(m), expect);
+    }
+    assert!(expect * 100 < 107_500 * 117, "{expect}");
+    // One second later: the 10 bps minimum.
+    t.now += 1;
+    t.push(m, 300_000, 300_000);
+    assert_eq!(t.score(m), expect + expect / 1_000);
+    // A print not later than the stored one is skipped, whatever its id.
+    let stored = t.c.get_market(m).unwrap().quote.unwrap();
+    t.now += 60;
+    let now = t.now;
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 1, 1, 5_000, stored.print_at.0, now)], commitment()));
+    assert_eq!(r.skipped, 1);
+    assert_eq!(t.c.get_market(m).unwrap().quote.unwrap().print_id, stored.print_id);
+    // On the way down the same rule applies: eleven minutes after the
+    // stored print, 33 %.
+    t.now += 600;
+    t.push(m, 1_000, 1_000);
+    let s0 = expect + expect / 1_000;
+    assert_eq!(t.score(m), s0 - s0 * 3_300 / 10_000);
+}
+
+/// The ring keeps the numbers as pushed next to the clipped score, so a
+/// clipped print can be read again with its own numbers.
+#[test]
+fn a_clipped_print_is_read_again_with_its_pushed_numbers() {
+    let (mut t, m) = setup(10_000, 10_000);
+    let id = t.next(m, 20_000, 11_600);
+    let q = t.c.get_market(m).unwrap().quote.unwrap();
+    assert_eq!((q.score_e2.0, q.pushed_score_e2.0, q.reading_e2.0), (11_500, 20_000, 11_600));
+    let print_at = q.print_at.0;
+    let o = t.open(&alice(), m, Side::Short, 2, STAKE, ANY_SHORT);
+    t.now += 20;
+    let now = t.now;
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 20_000, 11_600, id, print_at, now)], commitment()));
+    assert_eq!((r.accepted, r.skipped), (1, 0));
+    let mk = t.c.get_market(m).unwrap();
+    let q = mk.quote.unwrap();
+    assert_eq!((mk.quotes.len(), q.score_e2.0, q.last_read_at.0, q.first_read_at.0), (2, 11_500, now, print_at));
+    // The clipped score is not what was pushed: that entry is skipped.
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 11_500, 11_600, id, print_at, now)], commitment()));
+    assert_eq!((r.accepted, r.skipped), (0, 1));
+    // The order placed before the re-read fills at the clipped print's prices.
+    assert_eq!(t.crank(&bob(), &[o]), ["filled"]);
+    assert_eq!(n(t.pos(o).unwrap().entry_e2), 11_500, "a short opens at the sell price, the clipped score");
+}
+
+// ------------------------------------------------------------ markets
+
+/// A reference whose market is settled is listed again as a new market;
+/// one whose market is open or close-only is refused.
+#[test]
+fn a_settled_reference_is_listed_again_as_a_new_market() {
+    let (mut t, m) = setup(50_000, 50_000);
+    let live = U64(t.now - 3 * DAY);
+    t.fails(&keeper(), "already listed", |c| {
+        c.list_market(REF_A.to_string(), None, live);
+    });
+    t.call(&keeper(), |c| c.set_market(m, Some(MarketStatus::CloseOnly), None));
+    t.fails(&keeper(), "already listed", |c| {
+        c.list_market(REF_A.to_string(), None, live);
+    });
+    t.now += DAY;
+    t.call(&carol(), |c| c.settle_stale(m));
+    let m2 = t.list(REF_A, Some(finder()));
+    assert_eq!(m2, m + 1);
+    assert!(logs_with("market_listed")[0].contains(&format!(r#""replaces":"{m}""#)));
+    assert_eq!(t.c.get_market_by_reference(REF_A.to_string()).unwrap().id, m2);
+    assert_eq!(t.c.get_market(m).unwrap().status, MarketStatus::Settled, "the old market stays settled");
+    t.push(m2, 60_000, 60_000);
+    let id = t.filled(&alice(), m2, Side::Long, 3, STAKE);
+    assert_eq!(n(t.pos(id).unwrap().entry_e2), 60_000);
+    t.fails(&keeper(), "already listed", |c| {
+        c.list_market(REF_A.to_string(), None, live);
+    });
+    t.fails(&keeper(), "reference must be 32 lowercase hex characters", |c| {
+        c.list_market(REF_A.to_uppercase(), None, live);
+    });
+    t.fails(&keeper(), "reference must be 32 lowercase hex characters", |c| {
+        c.list_market(REF_A[..31].to_string(), None, live);
+    });
+    let future = U64(t.now + 1);
+    t.fails(&keeper(), "live_since is after the block time", |c| {
+        c.list_market(REF_B.to_string(), None, future);
+    });
+}
+
+/// After `emergency_secs` without a read anyone can settle a market at its
+/// last score: every position closes at that one price and pending orders
+/// are refunded. A close that was already due settles at its own quote.
+#[test]
+fn a_stale_market_settles_at_its_last_score_for_everyone() {
+    let (mut t, m) = setup(50_000, 50_000);
+    t.faucet(&carol(), 1_000 * USDG);
+    t.faucet(&dave(), 1_000 * USDG);
+    let a = t.filled(&alice(), m, Side::Long, 3, STAKE);
+    let b = t.filled(&bob(), m, Side::Short, 3, STAKE);
+    let d = t.filled(&dave(), m, Side::Long, 2, STAKE);
+    t.walk(m, 55_000, 54_000);
+    // dave's close is due at a re-read nobody cranked.
+    t.now += 10;
+    t.close(&dave(), d, ANY_SHORT);
+    t.now += 10;
+    t.reread(m);
+    let read = t.now;
+    t.now += 1;
+    let o = t.open(&carol(), m, Side::Long, 3, STAKE, ANY_LONG);
+    // A re-read keeps the market fresh even with no new print.
+    t.now = read + DAY - 100;
+    t.reread(m);
+    let read = t.now;
+    t.now = read + DAY - 1;
+    t.fails(&carol(), "market has had a quote within the emergency period", |c| c.settle_stale(m));
+    for who in [keeper(), owner()] {
+        t.fails(&who, "a market can only move from Open to CloseOnly", |c| {
+            c.set_market(m, Some(MarketStatus::Settled), None)
+        });
+    }
+    t.now = read + DAY;
+    t.call(&carol(), |c| c.settle_stale(m));
+    let mk = t.c.get_market(m).unwrap();
+    assert_eq!((mk.status, mk.final_e2, mk.settled_at), (MarketStatus::Settled, Some(U64(55_000)), Some(U64(t.now))));
+    assert!(logs_with("market_status")[0].contains(r#""status":"Settled","final_e2":"55000","by":"carol.near""#));
+    t.fails(&bob(), "market is already settled", |c| c.settle_stale(m));
+    t.fails(&alice(), "market is not open", |c| {
+        c.open(m, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 1, 1, 99_999, read, read)], commitment()));
+    assert_eq!(r.skipped, 1, "a settled market takes no quotes");
+    let p = t.pos(a).unwrap();
+    assert_eq!(p.value, Some(u(130 * USDG)), "positions are valued at the final price");
+
+    let (a0, b0, c0, d0) = (t.bal(&alice()), t.bal(&bob()), t.bal(&carol()), t.bal(&dave()));
+    assert_eq!(t.crank(&carol(), &[a, b, d, o]), ["closed", "closed", "closed", "refunded"]);
+    // One price, 550, for the long and the short alike.
+    assert_eq!(t.bal(&alice()) - a0, 130 * USDG);
+    assert_eq!(t.bal(&bob()) - b0, 70 * USDG);
+    assert_eq!(t.last_closed(&alice()).reason, "settled");
+    assert_eq!(t.last_closed(&bob()).exit_e2.0, 55_000);
+    // dave's close settled at its quote, the sell price 546.49: 100 + 200 × 46.49 / 500.
+    let h = t.last_closed(&dave());
+    assert_eq!((h.reason.as_str(), h.exit_e2.0, h.paid.0), ("close", 54_649, 118_596_000));
+    assert_eq!(t.bal(&dave()) - d0, 118_596_000);
+    assert_eq!(t.bal(&carol()) - c0, 101 * USDG);
+    assert_eq!(t.last_closed(&carol()).detail, "market_closed");
+    assert_eq!(t.c.active_count(), 0);
+
+    // A market with no quote at all settles a day after its listing, at 0.
+    let e = t.list(REF_B, None);
+    t.now += DAY - 1;
+    t.fails(&carol(), "market has had a quote within the emergency period", |c| c.settle_stale(e));
+    t.now += 1;
+    t.call(&carol(), |c| c.settle_stale(e));
+    assert_eq!(t.c.get_market(e).unwrap().final_e2, Some(U64(0)));
+}
+
+/// Moving a market to CloseOnly refunds its pending orders at the next
+/// crank and keeps closes and liquidations going; it never reopens.
+#[test]
+fn a_close_only_market_refunds_orders_and_keeps_exits() {
+    let (mut t, m) = setup(50_000, 50_000);
+    let a = t.filled(&alice(), m, Side::Long, 3, STAKE);
+    let o = t.open(&bob(), m, Side::Long, 3, STAKE, ANY_LONG);
+    t.call(&owner(), |c| c.set_market(m, Some(MarketStatus::CloseOnly), None));
+    t.fails(&keeper(), "a market can only move from Open to CloseOnly", |c| {
+        c.set_market(m, Some(MarketStatus::Open), None)
+    });
+    t.fails(&alice(), "market is not open", |c| {
+        c.open(m, Side::Short, 3, u(STAKE), U64(ANY_SHORT));
+    });
+    t.now += 10;
+    t.reread(m);
+    assert_eq!(t.crank(&carol(), &[o]), ["refunded"]);
+    assert_eq!(t.last_closed(&bob()).detail, "market_closed");
+    t.close(&alice(), a, ANY_SHORT);
+    t.next(m, 52_000, 52_000);
+    assert_eq!(t.crank(&carol(), &[a]), ["closed"]);
+    t.fails(&keeper(), "no such market", |c| c.set_market(7, None, None));
+}
+
+// --------------------------------------------------------- the vault
+
+/// The vault starts with dead shares at one USDG a share. The treasury
+/// deposits; others only once `lp_open` is set. Exits go by notice: too
+/// early fails, inside the window pays, after it the request lapses.
+#[test]
+fn the_vault_mints_shares_and_exits_by_notice() {
+    let mut t = T::new();
+    let v = t.vault();
+    assert_eq!((v.shares.0, v.dead_shares.0, v.assets.0, v.share_price.0), (DEAD_SHARES, DEAD_SHARES, 0, USDG as u128));
+    assert_eq!(t.c.convert_to_shares(u(USDG)).0, SHARE, "one USDG buys one share");
+    t.seed(1_000_000 * USDG, POOL);
+    let v = t.vault();
+    assert_eq!((v.shares.0, v.share_price.0, t.c.total_assets().0), (DEAD_SHARES + 1_000_000 * SHARE, USDG as u128, 1_000_000 * USDG as u128));
+    assert!(logs_with("lp_deposit").is_empty(), "the last call was the faucet deposit");
+    assert_eq!(t.c.lp_of(treasury()).shares.0, 1_000_000 * SHARE);
+
+    t.faucet(&alice(), 1_000 * USDG);
+    t.fails(&alice(), "vault deposits are open to the treasury only", |c| {
+        c.lp_deposit(u(100 * USDG));
+    });
+    t.call(&owner(), |c| c.set_config(ConfigPatch { lp_open: Some(true), ..Default::default() }));
+    assert_eq!(t.call(&alice(), |c| c.lp_deposit(u(100 * USDG))).0, 100 * SHARE);
+    assert!(logs_with("lp_deposit")[0].contains(r#""amount":"100000000","shares":"100000000000""#));
+    t.fails(&alice(), "amount is zero", |c| {
+        c.lp_deposit(u(0));
+    });
+    t.fails(&alice(), "balance too low", |c| {
+        c.lp_deposit(u(901 * USDG));
+    });
+    let lp = t.c.lp_of(alice());
+    assert_eq!((lp.shares.0, lp.value.0, lp.request), (100 * SHARE, 100 * USDG as u128, None));
+
+    t.fails(&alice(), "no withdrawal request", |c| {
+        c.lp_withdraw();
+    });
+    t.fails(&alice(), "not enough shares", |c| c.lp_request_withdraw(U128(100 * SHARE + 1)));
+    t.fails(&alice(), "amount is zero", |c| c.lp_request_withdraw(U128(0)));
+    t.call(&alice(), |c| c.lp_request_withdraw(U128(50 * SHARE)));
+    let ready = t.now + DAY;
+    let r = t.view().lp_of(alice()).request.unwrap();
+    assert_eq!((r.ready_at.0, r.closes_at.0, r.state.as_str()), (ready, ready + 3_600, "waiting"));
+    t.fails(&alice(), "withdrawal request is not ready yet", |c| {
+        c.lp_withdraw();
+    });
+    t.fails(&alice(), "a withdrawal request is already pending", |c| c.lp_request_withdraw(U128(1)));
+    assert_eq!(t.view().max_withdraw(alice()).0, 0);
+    t.now = ready - 1;
+    t.fails(&alice(), "withdrawal request is not ready yet", |c| {
+        c.lp_withdraw();
+    });
+    t.now = ready;
+    assert_eq!(t.view().max_withdraw(alice()).0, 50 * USDG as u128);
+    let before = t.bal(&alice());
+    assert_eq!(t.call(&alice(), |c| c.lp_withdraw()).0, 50 * USDG as u128);
+    assert_eq!(t.bal(&alice()) - before, 50 * USDG);
+    assert_eq!(t.c.lp_of(alice()).shares.0, 50 * SHARE);
+    assert!(t.c.lp_of(alice()).request.is_none());
+
+    // A request not used inside its window lapses; the shares stay.
+    t.call(&alice(), |c| c.lp_request_withdraw(U128(20 * SHARE)));
+    let ready = t.now + DAY;
+    t.now = ready + 3_600;
+    assert_eq!(t.view().lp_of(alice()).request.unwrap().state, "ready", "the last second of the window");
+    t.now = ready + 3_601;
+    assert_eq!(t.view().lp_of(alice()).request.unwrap().state, "lapsed");
+    assert_eq!(t.view().max_withdraw(alice()).0, 0);
+    assert_eq!(t.call(&alice(), |c| c.lp_withdraw()).0, 0);
+    assert!(logs_with("lp_withdraw_lapsed")[0].contains(r#""shares":"20000000000""#));
+    assert!(t.c.lp_of(alice()).request.is_none());
+    assert_eq!(t.c.lp_of(alice()).shares.0, 50 * SHARE);
+    // A lapsed request is replaced by a new one without a lapse call too.
+    t.call(&alice(), |c| c.lp_request_withdraw(U128(SHARE)));
+    t.now += DAY + 4_000;
+    t.call(&alice(), |c| c.lp_request_withdraw(U128(2 * SHARE)));
+    assert_eq!(t.c.lp_of(alice()).request.unwrap().shares.0, 2 * SHARE);
+}
+
+/// Share holders take out unreserved assets only, and the share price
+/// moves only when a position ends.
+#[test]
+fn share_holders_take_out_unreserved_assets_only() {
+    let mut t = T::new();
+    t.seed(100_000 * USDG, POOL);
+    let m = t.list(REF_A, None);
+    t.push(m, 50_000, 50_000);
+    t.faucet(&alice(), 1_000 * USDG);
+    let id = t.filled(&alice(), m, Side::Long, 3, 200 * USDG);
+    assert_eq!(t.vault().reserved.0, 1_800 * USDG as u128);
+    let all = t.c.lp_of(treasury()).shares.0;
+    t.call(&treasury(), |c| c.lp_request_withdraw(U128(all)));
+    t.now += DAY;
+    assert_eq!(t.view().max_withdraw(treasury()).0, 0);
+    t.fails(&treasury(), "not enough unreserved assets in the vault", |c| {
+        c.lp_withdraw();
+    });
+    // An open loss is not in the price.
+    let price = t.vault().share_price.0;
+    t.next(m, 43_000, 42_000);
+    assert!(t.pos(id).unwrap().value.unwrap().0 < 200 * USDG as u128);
+    assert_eq!(t.vault().share_price.0, price);
+    // Realised, it is: the stake (less the reward) joins the assets.
+    t.walk(m, 33_333, 33_000);
+    assert_eq!(t.crank(&bob(), &[id]), ["liquidated"]);
+    let v = t.vault();
+    assert_eq!((v.assets.0, v.reserved.0), (100_000 * USDG as u128 + 198 * USDG as u128, 0));
+    assert!(v.share_price.0 > price);
+    let paid = t.call(&treasury(), |c| c.lp_withdraw()).0;
+    assert_eq!(paid, 100_197_999_999, "every share but the dead ones, rounded down");
+    let v = t.vault();
+    assert_eq!((v.shares.0, v.assets.0), (DEAD_SHARES, 100_000 * USDG as u128 + 198 * USDG as u128 - paid));
+    assert!(v.share_price.0 > 0, "the price stays defined");
+}
+
+// --------------------------------------------------- money in and out
+
+#[test]
+fn the_token_is_taken_from_the_treasury_only() {
+    let mut t = T::new();
+    assert_eq!(t.transfer_call(&token(), &alice(), 5 * USDG, ""), 5 * USDG, "from anyone else: returned in full");
+    assert_eq!(t.transfer_call(&token(), &alice(), 5 * USDG, "faucet"), 5 * USDG);
+    assert_eq!(t.transfer_call(&acc("other-token.near"), &treasury(), 5 * USDG, ""), 5 * USDG, "another token");
+    assert_eq!(t.transfer_call(&alice(), &treasury(), 5 * USDG, ""), 5 * USDG, "a direct call is another token");
+    assert!(get_logs().is_empty());
+    assert_eq!((t.bal(&alice()), t.bal(&treasury()), t.vault().faucet_pool.0), (0, 0, 0));
+    assert_eq!(t.transfer_call(&token(), &treasury(), 7 * USDG, "anything"), 0);
+    assert_eq!(t.bal(&treasury()), 7 * USDG);
+    assert_eq!(
+        get_logs(),
+        vec![r#"EVENT_JSON:{"standard":"atnx_house","version":"1.0.0","event":"deposit","data":[{"account":"treasury.near","amount":"7000000","to":"balance"}]}"#]
+    );
+    assert_eq!(t.transfer_call(&token(), &treasury(), 9 * USDG, "faucet"), 0);
+    assert_eq!((t.bal(&treasury()), t.vault().faucet_pool.0), (7 * USDG, 9 * USDG as u128));
+    assert!(get_logs()[0].contains(r#""to":"faucet_pool""#));
+}
+
+#[test]
+fn the_faucet_is_capped_per_account() {
+    let mut t = T::new();
+    t.seed(0, 15_000 * USDG);
+    t.fails(&alice(), "amount is zero", |c| {
+        c.faucet(u(0));
+    });
+    t.faucet(&alice(), 6_000 * USDG);
+    t.fails(&alice(), "faucet limit reached for this account", |c| {
+        c.faucet(u(4_000 * USDG + 1));
+    });
+    t.faucet(&alice(), 4_000 * USDG);
+    assert!(logs_with("faucet")[0].contains(r#""amount":"4000000000","claimed":"10000000000""#));
+    t.fails(&alice(), "faucet limit reached for this account", |c| {
+        c.faucet(u(1));
+    });
+    assert_eq!((t.bal(&alice()), t.c.faucet_claimed(alice()).0), (10_000 * USDG, 10_000 * USDG as u128));
+    // Spending it does not reopen the faucet.
+    t.withdraw(&alice(), 10_000 * USDG, true);
+    t.fails(&alice(), "faucet limit reached for this account", |c| {
+        c.faucet(u(1));
+    });
+    t.faucet(&bob(), 5_000 * USDG);
+    t.fails(&carol(), "faucet pool too low", |c| {
+        c.faucet(u(1));
+    });
+    assert_eq!(t.transfer_call(&token(), &treasury(), 50 * USDG, "faucet"), 0);
+    t.faucet(&carol(), 50 * USDG);
+}
+
+#[test]
+fn withdraw_debits_first_and_refunds_a_failed_transfer() {
+    let (mut t, _) = setup(50_000, 50_000);
+    t.fails(&alice(), "amount is zero", |c| {
+        let _ = c.withdraw(u(0));
+    });
+    t.fails(&alice(), "balance too low", |c| {
+        let _ = c.withdraw(u(10_000 * USDG + 1));
+    });
+    assert_eq!(t.withdraw(&alice(), 3_000 * USDG, false), 0, "the transfer failed: re-credited");
+    assert_eq!(t.bal(&alice()), 10_000 * USDG);
+    assert_eq!(t.withdraw(&alice(), 3_000 * USDG, true), 3_000 * USDG);
+    assert_eq!(t.bal(&alice()), 7_000 * USDG);
+    assert!(logs_with("withdraw")[0].contains(r#""account":"alice.near","amount":"3000000000""#));
+}
+
+/// Under the storage floor, calls that add state stop; closes, fills,
+/// cranks, quotes, withdrawals and vault exits go on.
+#[test]
+fn under_the_storage_floor_only_state_growth_stops() {
+    let (mut t, m) = setup(50_000, 50_000);
+    let a = t.filled(&alice(), m, Side::Long, 3, STAKE);
+    let o = t.open(&bob(), m, Side::Long, 3, STAKE, ANY_LONG);
+    // The mocked account uses 300 KB, which locks 3 NEAR: with 5 NEAR the
+    // contract has 2 free, under its 3 NEAR floor.
+    t.balance = NearToken::from_near(5);
+    let floor = "the contract is under its storage floor";
+    t.fails(&alice(), floor, |c| {
+        c.open(m, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    t.fails(&carol(), floor, |c| {
+        c.faucet(u(USDG));
+    });
+    t.fails(&treasury(), floor, |c| {
+        c.lp_deposit(u(USDG / 10));
+    });
+    let live = U64(t.now - 3 * DAY);
+    t.fails(&keeper(), floor, |c| {
+        c.list_market(REF_B.to_string(), None, live);
+    });
+    assert_eq!(t.view().quote_open(m, Side::Long, 3, u(STAKE), None).reason.as_deref(), Some(floor));
+    assert_eq!(t.view().get_market(m).unwrap().reason.as_deref(), Some(floor));
+    // Into an existing balance or the pool, a deposit is still taken.
+    assert_eq!(t.transfer_call(&token(), &treasury(), 5 * USDG, ""), 0);
+    assert_eq!(t.transfer_call(&token(), &treasury(), 5 * USDG, "faucet"), 0);
+    t.close(&alice(), a, ANY_SHORT);
+    t.now += 10;
+    t.reread(m);
+    assert_eq!(t.crank(&carol(), &[a, o]), ["closed", "filled"]);
+    assert_eq!(t.withdraw(&alice(), 10 * USDG, true), 10 * USDG);
+    t.call(&treasury(), |c| c.lp_request_withdraw(U128(SHARE)));
+    t.balance = NearToken::from_near(100);
+    t.open(&alice(), m, Side::Long, 3, STAKE, ANY_LONG);
+
+    // A deposit that would add a ledger entry under the floor is returned.
+    drop(t);
+    let mut t = T::new();
+    t.balance = NearToken::from_near(5);
+    assert_eq!(t.transfer_call(&token(), &treasury(), 5 * USDG, ""), 5 * USDG);
+    assert_eq!(t.transfer_call(&token(), &treasury(), 5 * USDG, "faucet"), 0);
+}
+
+// ------------------------------------------------------ open checks
+
+/// `open` checks every term before it debits anything, and `quote_open`
+/// reports the same reason.
+#[test]
+fn open_checks_every_term_before_it_debits() {
+    let (mut t, m) = setup(50_000, 50_000);
+    let try_open = |t: &mut T, msg: &str, side: Side, lev: u8, stake: u64, limit: u64| {
+        t.fails(&alice(), msg, move |c| {
+            c.open(m, side, lev, u(stake), U64(limit));
+        });
+    };
+    for lev in [0, 1, 4] {
+        try_open(&mut t, "leverage must be 2 or 3", Side::Long, lev, STAKE, ANY_LONG);
+    }
+    try_open(&mut t, "stake below the minimum", Side::Long, 3, 10 * USDG - 1, ANY_LONG);
+    try_open(&mut t, "stake above the maximum", Side::Short, 3, 250 * USDG + 1, ANY_SHORT);
+    try_open(&mut t, "a limit price is required", Side::Long, 3, STAKE, 0);
+    try_open(&mut t, "stake below the minimum", Side::Long, 3, 0, ANY_LONG);
+    t.fails(&alice(), "arithmetic overflow", |c| {
+        c.open(m, Side::Long, 3, U128(u64::MAX as u128 + 1), U64(ANY_LONG));
+    });
+    t.fails(&alice(), "no such market", |c| {
+        c.open(9, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    let q = t.view().quote_open(m, Side::Long, 1, u(STAKE), None);
+    assert_eq!((q.allowed, q.reason.as_deref(), q.fill_reason.as_deref()), (false, Some("leverage must be 2 or 3"), Some("leverage")));
+    assert_eq!(t.bal(&alice()), 10_000 * USDG, "nothing debited");
+
+    // The edges of the stake range, then the position limit (pending included).
+    t.open(&alice(), m, Side::Long, 3, 10 * USDG, ANY_LONG);
+    t.open(&alice(), m, Side::Short, 2, 250 * USDG, ANY_SHORT);
+    for _ in 0..8 {
+        t.open(&alice(), m, Side::Long, 2, STAKE, ANY_LONG);
+    }
+    assert_eq!(t.c.positions_of(alice()).len(), 10);
+    try_open(&mut t, "position limit reached for this account", Side::Long, 3, STAKE, ANY_LONG);
+    assert_eq!(
+        t.view().quote_open(m, Side::Long, 3, u(STAKE), Some(alice())).reason.as_deref(),
+        Some("position limit reached for this account")
+    );
+    t.fails(&dave(), "balance too low", |c| {
+        c.open(m, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+
+    // Paused by the keeper, resumed by the owner.
+    t.call(&keeper(), |c| c.set_paused(true));
+    assert!(logs_with("opens_paused")[0].contains(r#""paused":"true","by":"keeper.near""#));
+    t.fails(&bob(), "new orders are paused", |c| {
+        c.open(m, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    t.call(&owner(), |c| c.set_paused(false));
+    t.open(&bob(), m, Side::Long, 3, STAKE, ANY_LONG);
+
+    // A quote too old, then read again: fresh.
+    let last = t.c.get_market(m).unwrap().quote.unwrap().last_read_at.0;
+    t.now = last + 901;
+    t.fails(&bob(), "the market's newest quote is too old", |c| {
+        c.open(m, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    t.reread(m);
+    t.open(&bob(), m, Side::Long, 3, STAKE, ANY_LONG);
+
+    // No quote yet; inside the cool-off; a score under 100.
+    let b = t.list(REF_B, None);
+    t.fails(&bob(), "market has no quote", |c| {
+        c.open(b, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    t.push(b, 9_999, 9_999);
+    t.fails(&bob(), "score is under the minimum to open", |c| {
+        c.open(b, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    let live = U64(t.now - 2 * DAY + 1);
+    let young = t.call(&keeper(), |c| c.list_market("00112233445566778899aabbccddeeff".to_string(), None, live));
+    t.push(young, 50_000, 50_000);
+    t.fails(&bob(), "market is inside its cool-off", |c| {
+        c.open(young, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    t.now += 1;
+    t.reread(young);
+    t.open(&bob(), young, Side::Long, 3, STAKE, ANY_LONG);
+}
+
+// ------------------------------------------------------------- crank
+
+/// One bad id never fails the batch, and ids beyond the first 20 are
+/// ignored.
+#[test]
+fn a_crank_skips_bad_ids_and_ignores_ids_beyond_20() {
+    let (mut t, m) = setup(50_000, 50_000);
+    let a = t.open(&alice(), m, Side::Long, 3, STAKE, ANY_LONG);
+    t.now += 10;
+    t.reread(m);
+    t.now += 1;
+    let w = t.open(&bob(), m, Side::Long, 3, STAKE, ANY_LONG);
+    assert_eq!(t.crank(&carol(), &[999_999, a, w, a, 0]), ["unknown", "filled", "waiting", "waiting", "unknown"]);
+    let mut ids: Vec<u64> = vec![999; MAX_CRANK_IDS];
+    ids.push(w);
+    t.now += 10;
+    t.reread(m);
+    let out = t.crank(&carol(), &ids);
+    assert_eq!(out.len(), MAX_CRANK_IDS + 1);
+    assert_eq!(out[MAX_CRANK_IDS], "ignored");
+    assert_eq!(t.pos(w).unwrap().state, PositionState::Pending, "the 21st id was not processed");
+    assert_eq!(t.crank(&carol(), &[w]), ["filled"]);
+}
+
+fn long_account(i: usize) -> AccountId {
+    acc(&format!("{}{:08}", "a".repeat(56), i))
+}
+
+/// 20 fills, then 20 liquidations by a caller with a 64-character id, of
+/// positions held by 64-character accounts on a market with a 64-character
+/// finder: each batch's logs stay well inside 16 KB and 100 entries.
+#[test]
+fn a_crank_of_20_with_64_character_accounts_fits_the_log_limits() {
+    let mut t = T::new();
+    t.seed(VAULT, POOL);
+    let m = t.list(REF_A, Some(long_account(999)));
+    t.known.insert(long_account(999));
+    t.push(m, 50_000, 50_000);
+    let ids: Vec<u64> = (0..MAX_CRANK_IDS)
+        .map(|i| {
+            let who = long_account(i);
+            assert_eq!(who.as_str().len(), 64);
+            t.faucet(&who, 1_000 * USDG);
+            t.open(&who, m, Side::Long, 3, 250 * USDG, ANY_LONG)
+        })
+        .collect();
+    t.now += 10;
+    t.reread(m);
+    let caller = long_account(500);
+    assert!(t.crank(&caller, &ids).iter().all(|a| a == "filled"));
+    let logs = get_logs();
+    let bytes: usize = logs.iter().map(|l| l.len()).sum();
+    assert_eq!(logs.len(), MAX_CRANK_IDS);
+    assert!(bytes < 16_384, "20 fills wrote {bytes} bytes of logs");
+    println!("log bytes for 20 fills with 64-character ids: {bytes}");
+    t.walk(m, 33_000, 33_000);
+    assert!(t.crank(&caller, &ids).iter().all(|a| a == "liquidated"));
+    let logs = get_logs();
+    let bytes: usize = logs.iter().map(|l| l.len()).sum();
+    assert_eq!(logs.len(), MAX_CRANK_IDS);
+    assert!(bytes < 16_384 * 2 / 3, "20 liquidations wrote {bytes} bytes of logs");
+    println!("log bytes for 20 liquidations with 64-character ids: {bytes}");
+    assert_eq!(t.bal(&caller), 20 * 2_500_000);
+}
+
+// ----------------------------------------------------- access control
+
+#[test]
+fn keeper_and_owner_methods_are_guarded() {
+    let (mut t, m) = setup(50_000, 50_000);
+    let live = U64(t.now - 3 * DAY);
+    for who in [owner(), alice(), treasury(), finder()] {
+        t.fails(&who, "not the keeper", |c| {
+            c.push_quotes(vec![], commitment());
+        });
+        t.fails(&who, "not the keeper", |c| {
+            c.list_market(REF_B.to_string(), None, live);
+        });
+    }
+    for who in [alice(), treasury(), finder()] {
+        t.fails(&who, "not the owner or the keeper", |c| c.set_market(m, Some(MarketStatus::CloseOnly), None));
+        t.fails(&who, "not the owner or the keeper", |c| c.set_paused(true));
+    }
+    for who in [keeper(), alice(), treasury()] {
+        t.fails(&who, "not the owner", |c| c.set_config(ConfigPatch::default()));
+    }
+    // The finder can be named by the keeper or the owner.
+    t.call(&keeper(), |c| c.set_market(m, None, Some(carol())));
+    assert_eq!(t.c.get_market(m).unwrap().finder, Some(carol()));
+    t.call(&owner(), |c| c.set_market(m, None, Some(dave())));
+    assert_eq!(t.c.get_market(m).unwrap().status, MarketStatus::Open);
+    // The owner hands the keeper role on.
+    t.call(&owner(), |c| c.set_config(ConfigPatch { keeper: Some(carol()), ..Default::default() }));
+    t.fails(&keeper(), "not the keeper", |c| {
+        c.push_quotes(vec![], commitment());
+    });
+    t.call(&carol(), |c| c.push_quotes(vec![], commitment()));
+    t.fails(&keeper(), "not the owner or the keeper", |c| c.set_paused(true));
+}
+
+/// Every number in `set_config` stays inside a range fixed in the code.
+#[test]
+fn set_config_stays_inside_fixed_ranges() {
+    let mut t = T::new();
+    let d = ConfigPatch::default;
+    let s = U64;
+    let bad: Vec<(ConfigPatch, &str)> = vec![
+        (ConfigPatch { fee_bps: Some(501), ..d() }, "fee_bps"),
+        (ConfigPatch { finder_bps: Some(10_001), ..d() }, "finder_bps"),
+        (ConfigPatch { lead_min_bps: Some(10_001), ..d() }, "lead_min_bps"),
+        (ConfigPatch { lead_full_gap_bps: Some(0), ..d() }, "lead_full_gap_bps"),
+        (ConfigPatch { lead_full_gap_bps: Some(10_001), ..d() }, "lead_full_gap_bps"),
+        (ConfigPatch { max_open_gap_bps: Some(99), ..d() }, "max_open_gap_bps"),
+        (ConfigPatch { max_open_gap_bps: Some(100_001), ..d() }, "max_open_gap_bps"),
+        (ConfigPatch { max_profit_bps: Some(999), ..d() }, "max_profit_bps"),
+        (ConfigPatch { max_profit_bps: Some(90_001), ..d() }, "max_profit_bps"),
+        (ConfigPatch { min_score_e2: Some(s(0)), ..d() }, "min_score_e2"),
+        (ConfigPatch { cooloff_secs: Some(s(30 * DAY + 1)), ..d() }, "cooloff_secs"),
+        (ConfigPatch { market_cap_bps: Some(0), ..d() }, "market_cap_bps"),
+        (ConfigPatch { market_cap_bps: Some(10_001), ..d() }, "market_cap_bps"),
+        (ConfigPatch { utilisation_cap_bps: Some(0), ..d() }, "utilisation_cap_bps"),
+        (ConfigPatch { utilisation_cap_bps: Some(9_001), ..d() }, "utilisation_cap_bps"),
+        (ConfigPatch { min_stake: Some(u(USDG - 1)), ..d() }, "min_stake"),
+        (ConfigPatch { max_stake: Some(u(10 * USDG - 1)), ..d() }, "max_stake"),
+        (ConfigPatch { max_stake: Some(u(100_000 * USDG + 1)), ..d() }, "max_stake"),
+        (ConfigPatch { max_positions_per_account: Some(0), ..d() }, "max_positions_per_account"),
+        (ConfigPatch { max_positions_per_account: Some(51), ..d() }, "max_positions_per_account"),
+        (ConfigPatch { min_fill_delay_secs: Some(s(601)), ..d() }, "min_fill_delay_secs"),
+        (ConfigPatch { order_ttl_secs: Some(s(59)), ..d() }, "order_ttl_secs"),
+        (ConfigPatch { order_ttl_secs: Some(s(DAY + 1)), ..d() }, "order_ttl_secs"),
+        (ConfigPatch { min_fill_delay_secs: Some(s(500)), order_ttl_secs: Some(s(500)), ..d() }, "order_ttl_secs"),
+        (ConfigPatch { max_quote_age_secs: Some(s(59)), ..d() }, "max_quote_age_secs"),
+        (ConfigPatch { max_quote_age_secs: Some(s(DAY + 1)), ..d() }, "max_quote_age_secs"),
+        (ConfigPatch { emergency_secs: Some(s(3_599)), ..d() }, "emergency_secs"),
+        (ConfigPatch { emergency_secs: Some(s(7 * DAY + 1)), ..d() }, "emergency_secs"),
+        (ConfigPatch { max_quote_age_secs: Some(s(DAY)), emergency_secs: Some(s(3_600)), ..d() }, "emergency_secs"),
+        (ConfigPatch { max_position_secs: Some(s(DAY - 1)), ..d() }, "max_position_secs"),
+        (ConfigPatch { max_position_secs: Some(s(90 * DAY + 1)), ..d() }, "max_position_secs"),
+        (ConfigPatch { lp_exit_delay_secs: Some(s(7 * DAY + 1)), ..d() }, "lp_exit_delay_secs"),
+        (ConfigPatch { lp_exit_window_secs: Some(s(599)), ..d() }, "lp_exit_window_secs"),
+        (ConfigPatch { lp_exit_window_secs: Some(s(7 * DAY + 1)), ..d() }, "lp_exit_window_secs"),
+        (ConfigPatch { max_step_bps: Some(0), ..d() }, "max_step_bps"),
+        (ConfigPatch { max_step_bps: Some(10_001), ..d() }, "max_step_bps"),
+        (ConfigPatch { liq_reward_bps: Some(1_001), ..d() }, "liq_reward_bps"),
+        (ConfigPatch { faucet_per_account: Some(u(1_000_000 * USDG + 1)), ..d() }, "faucet_per_account"),
+        (ConfigPatch { storage_floor: Some(U128(1_000 * NEAR_YOCTO + 1)), ..d() }, "storage_floor"),
+    ];
+    let before = t.c.get_config();
+    for (patch, field) in bad {
+        t.fails(&owner(), &format!("config value out of range: {field}"), move |c| c.set_config(patch));
+    }
+    assert_eq!(t.c.get_config(), before, "nothing changed");
+    t.call(&owner(), |c| {
+        c.set_config(ConfigPatch { fee_bps: Some(500), lead_min_bps: Some(10_000), lp_open: Some(true), ..d() })
+    });
+    assert!(logs_with("config_set")[0].contains(r#""fields":"fee_bps,lead_min_bps,lp_open""#));
+    let c = t.c.get_config();
+    assert_eq!((c.fee_bps, c.lead_min_bps, c.lp_open, c.max_step_bps), (500, 10_000, true, 1_500));
+
+    // Unknown fields are refused when the argument is parsed.
+    assert!(serde_json::from_str::<ConfigPatch>(r#"{"fee_bp":1}"#).is_err());
+    let p: ConfigPatch = serde_json::from_str(r#"{"fee_bps":1,"cooloff_secs":"60","min_stake":"2000000"}"#).unwrap();
+    assert_eq!((p.fee_bps, p.cooloff_secs, p.min_stake, p.keeper), (Some(1), Some(U64(60)), Some(u(2 * USDG)), None));
+    // The config as JSON: numbers as strings, bps as numbers, one flat object.
+    let v = serde_json::to_value(Contract::new(owner(), keeper(), treasury(), token()).get_config()).unwrap();
+    assert_eq!((v["fee_bps"].as_u64(), v["cooloff_secs"].as_str(), v["min_stake"].as_str()), (Some(100), Some("172800"), Some("10000000")));
+    assert_eq!((v["storage_floor"].as_str(), v["max_profit_bps"].as_u64(), v["opens_paused"].as_bool()), (Some("3000000000000000000000000"), Some(90_000), Some(false)));
+    assert!(v.get("min_quote_gap_secs").is_none());
+}
+
+// -------------------------------------------------------------- views
+
+#[test]
+fn views_speak_strings_and_nulls() {
+    let (mut t, m) = setup(40_000, 42_000);
+    let o = t.open(&alice(), m, Side::Long, 3, STAKE, ANY_LONG);
+    let v = serde_json::to_value(t.pos(o).unwrap()).unwrap();
+    assert_eq!((v["id"].as_str(), v["side"].as_str(), v["state"].as_str(), v["leverage"].as_u64()), (Some("1"), Some("Long"), Some("Pending"), Some(3)));
+    assert_eq!((v["stake"].as_str(), v["reserved"].as_str(), v["placed_at"].as_str()), (Some("100000000"), Some("0"), Some(T0.to_string().as_str())));
+    for f in ["entry_e2", "opened_at", "close_requested_at", "close_limit_e2", "value"] {
+        assert!(v[f].is_null(), "{f} is null while pending");
+    }
+    t.now += 10;
+    t.reread(m);
+    t.crank(&bob(), &[o]);
+    t.close(&alice(), o, 40_000);
+    let v = serde_json::to_value(t.pos(o).unwrap()).unwrap();
+    assert_eq!((v["state"].as_str(), v["entry_e2"].as_str(), v["close_limit_e2"].as_str()), (Some("Closing"), Some("40880"), Some("40000")));
+    assert_eq!(v["reserved"].as_str(), Some("900000000"));
+    let ids: Vec<String> = t.c.list_active(None, None).iter().map(|p| p.id.0.to_string()).collect();
+    assert_eq!(ids, ["1"]);
+    let mk = serde_json::to_value(t.c.get_market(m).unwrap()).unwrap();
+    assert_eq!((mk["id"].as_u64(), mk["status"].as_str(), mk["live_since"].as_str()), (Some(0), Some("Open"), Some((T0 - 3 * DAY).to_string().as_str())));
+    let q = &mk["quotes"][0];
+    assert_eq!((q["score_e2"].as_str(), q["pushed_score_e2"].as_str(), q["reading_e2"].as_str(), q["print_id"].as_str()), (Some("40000"), Some("40000"), Some("42000"), Some("1000")));
+    assert_eq!((q["print_at"].as_str(), q["last_read_at"].as_str()), (Some(T0.to_string().as_str()), Some((T0 + 10).to_string().as_str())));
+    assert!(mk["final_e2"].is_null());
+    assert_eq!((mk["long"]["reserved"].as_str(), mk["long"]["count"].as_u64()), (Some("900000000"), Some(1)));
+    let vault = serde_json::to_value(t.c.get_vault()).unwrap();
+    for f in ["assets", "reserved", "free", "margin", "shares", "share_price", "faucet_pool"] {
+        assert!(vault[f].is_string(), "{f}");
+    }
+    assert_eq!(t.c.list_markets(Some(1), None), vec![]);
+    assert!(t.c.get_market_by_reference(REF_B.to_string()).is_none());
+    assert_eq!(t.c.history_of(bob()), vec![]);
+}
+
+// ------------------------------------------------------------ migrate
+
+/// `migrate` re-reads the stored state: only the owner or the contract
+/// itself may call it, and an unknown layout fails.
+#[test]
+fn migrate_keeps_the_state_and_checks_the_caller_and_the_version() {
+    let (mut t, m) = setup(50_000, 50_000);
+    let a = t.filled(&alice(), m, Side::Long, 3, STAKE);
+    let before = (t.c.get_config(), t.vault(), t.c.get_market(m), t.pos(a), t.bal(&alice()), t.c.history_of(alice()));
+    t.ctx(&owner());
+    let old = std::mem::replace(&mut t.c, Contract::new(owner(), keeper(), treasury(), token()));
+    env::state_write(&old);
+    drop(old); // writes every collection's entries
+    t.ctx(&alice());
+    expect_err("not the owner", || {
+        Contract::migrate();
+    });
+    t.ctx(&owner());
+    t.c = Contract::migrate();
+    let after = (t.c.get_config(), t.vault(), t.c.get_market(m), t.pos(a), t.bal(&alice()), t.c.history_of(alice()));
+    assert_eq!(after, before);
+    assert!(logs_with("migrated")[0].contains(r#""state_version":"1""#));
+    t.check();
+    t.ctx(&house());
+    let again = Contract::migrate();
+    assert_eq!(again.get_config(), t.c.get_config(), "the contract account may migrate too");
+    drop(again);
+    // Trading goes on from the migrated state.
+    t.close(&alice(), a, ANY_SHORT);
+    t.next(m, 51_000, 51_000);
+    assert_eq!(t.crank(&bob(), &[a]), ["closed"]);
+    // An unknown layout, and no state at all.
+    t.ctx(&owner());
+    let raw = env::storage_read(b"STATE").unwrap();
+    let mut v2 = raw.clone();
+    v2[0] = 2;
+    env::storage_write(b"STATE", &v2);
+    expect_err("unknown state version", || {
+        Contract::migrate();
+    });
+    env::storage_remove(b"STATE");
+    expect_err("no contract state to migrate", || {
+        Contract::migrate();
+    });
+    env::storage_write(b"STATE", &raw);
+}
+
+// ------------------------------------------------------- zero prices
+
+/// A reading of 0 makes the sell price 0: no fill happens there, a close
+/// with a limit goes back to Open, an end-of-life close waits for the next
+/// print, and nothing divides by zero. A score of 0 is handled too.
+#[test]
+fn zero_readings_and_zero_scores_never_fill_or_divide_by_zero() {
+    let (mut t, m) = setup(10_173, 10_173);
+    let long = t.filled(&alice(), m, Side::Long, 3, STAKE);
+    let short = t.filled(&bob(), m, Side::Short, 3, STAKE);
+    t.close(&alice(), long, ANY_SHORT);
+    let pl = t.open(&alice(), m, Side::Long, 3, STAKE, ANY_LONG);
+    let ps = t.open(&bob(), m, Side::Short, 3, STAKE, ANY_SHORT);
+    t.next(m, 10_173, 0);
+    let q = t.c.get_market(m).unwrap().quote.unwrap();
+    assert_eq!((q.buy_e2.0, q.sell_e2.0, q.spread_bps.0), (10_173, 0, 10_000));
+    assert_eq!(t.crank(&carol(), &[pl, ps, long, short]), ["refunded", "refunded", "close_missed", "waiting"]);
+    assert_eq!(t.c.history_of(bob())[0].detail, "zero_price");
+    assert_eq!(t.c.history_of(alice())[0].detail, "spread");
+    let p = t.pos(long).unwrap();
+    assert_eq!((p.state, p.value, p.at_risk), (PositionState::Open, Some(u(0)), true));
+    assert_eq!(t.pos(short).unwrap().value, Some(u(STAKE)));
+    t.fails(&bob(), "the two prices are too far apart", |c| {
+        c.open(m, Side::Short, 3, u(STAKE), U64(ANY_SHORT));
+    });
+    t.call(&owner(), |c| c.set_config(ConfigPatch { max_open_gap_bps: Some(100_000), ..Default::default() }));
+    t.fails(&bob(), "the price is zero", |c| {
+        c.open(m, Side::Short, 3, u(STAKE), U64(ANY_SHORT));
+    });
+
+    // At its end, the long's close skips the zero-price print and settles at the next one.
+    let end = n(t.pos(long).unwrap().expires_at);
+    t.now = end + 10;
+    t.push(m, 10_173, 0);
+    assert_eq!(t.crank(&carol(), &[long]), ["closing"]);
+    assert_eq!(t.crank(&carol(), &[long]), ["waiting"]);
+    t.next(m, 10_173, 10_173);
+    assert_eq!(t.crank(&carol(), &[long]), ["closed"]);
+    let h = t.last_closed(&alice());
+    assert_eq!((h.reason.as_str(), h.exit_e2.0, h.paid.0), ("expiry", 10_173, STAKE as u128));
+
+    // A first print with a score of 0, and readings above a score of 0.
+    let z = t.list(REF_B, None);
+    t.push(z, 0, 0);
+    let q = t.c.get_market(z).unwrap().quote.unwrap();
+    assert_eq!((q.buy_e2.0, q.sell_e2.0, q.spread_bps.0), (0, 0, 0));
+    t.fails(&bob(), "score is under the minimum to open", |c| {
+        c.open(z, Side::Long, 3, u(STAKE), U64(ANY_LONG));
+    });
+    t.next(z, 0, 5_000);
+    let q = t.c.get_market(z).unwrap().quote.unwrap();
+    assert_eq!((q.score_e2.0, q.buy_e2.0, q.sell_e2.0, q.spread_bps.0), (0, 5_000, 0, u64::MAX));
+    assert_eq!(t.view().quote_open(z, Side::Long, 3, u(STAKE), None).reason.as_deref(), Some("score is under the minimum to open"));
+    t.next(z, 5_000, 5_000);
+    assert_eq!(t.score(z), 1, "the score leaves 0 by the minimum step");
+    let quote = t.view().quote_open(z, Side::Short, 2, u(STAKE), None);
+    assert!(!quote.allowed);
+}
