@@ -420,13 +420,22 @@ export function useNearAccount(): NearAccount {
   const act = useCallback(
     async (method: NearMethod, args: Record<string, unknown>) => {
       if (!actor) throw new NearActError("no_account", 0, null, null);
-      const key = HOUSE ? ["near", "house"] : ["near", "rounds"];
+      // House on: a call changes the account's positions and balance (the
+      // faucet also its allowance used, which Settings and the history query
+      // read); the markets, the vault and the history are read again when a
+      // waiting position resolves (components/house/useNearHouse.ts).
+      const keys = HOUSE
+        ? method === "faucet"
+          ? [["near", "house", "account"], ["near", "house", "account-history"], ["near", "house", "usdg"], ["near", "house", "claimed"]]
+          : [["near", "house", "account"]]
+        : [["near", "rounds"]];
+      const refresh = () => keys.forEach((queryKey) => void queryClient.invalidateQueries({ queryKey }));
       try {
         return await actor.act(method, args);
       } finally {
         // The RPC can lag the call by a block or two: read now and again shortly.
-        void queryClient.invalidateQueries({ queryKey: key });
-        setTimeout(() => void queryClient.invalidateQueries({ queryKey: key }), 2_000);
+        refresh();
+        setTimeout(refresh, 2_000);
       }
     },
     [actor, queryClient],
