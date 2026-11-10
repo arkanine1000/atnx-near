@@ -60,9 +60,10 @@ pub const STATE_VERSION: u32 = 1;
 pub const RING: usize = 8;
 /// Closed positions and refunded orders kept per account.
 pub const HISTORY_LEN: usize = 20;
-/// Ids per `crank` call. Each id writes at most one event of at most about
-/// 500 bytes, which keeps a full batch inside the 16 KB log limit.
-pub const MAX_CRANK_IDS: usize = 30;
+/// Ids `crank` processes per call; it ignores any beyond. Each id writes at
+/// most one event of at most about 500 bytes, so a full batch stays well
+/// inside the 16 KB and 100-log limits of a call.
+pub const MAX_CRANK_IDS: usize = 20;
 /// Quotes per `push_quotes` call.
 pub const MAX_QUOTES_PER_PUSH: usize = 200;
 /// Shares minted to nobody at init, so the share price is always defined.
@@ -174,7 +175,7 @@ pub struct Config {
     pub max_profit_bps: u32,
     pub min_score_e2: U64,
     /// A market opens this long after it went live.
-    pub cooloff_secs: u64,
+    pub cooloff_secs: U64,
     /// Reserve per market and side, as a share of the vault's assets.
     pub market_cap_bps: u32,
     /// Total reserve, as a share of the vault's assets.
@@ -183,14 +184,13 @@ pub struct Config {
     pub max_stake: U128,
     /// Pending, open and closing positions per account.
     pub max_positions_per_account: u32,
-    pub min_fill_delay_secs: u64,
-    pub order_ttl_secs: u64,
-    pub max_quote_age_secs: u64,
-    pub min_quote_gap_secs: u64,
-    pub emergency_secs: u64,
-    pub max_position_secs: u64,
-    pub lp_exit_delay_secs: u64,
-    pub lp_exit_window_secs: u64,
+    pub min_fill_delay_secs: U64,
+    pub order_ttl_secs: U64,
+    pub max_quote_age_secs: U64,
+    pub emergency_secs: U64,
+    pub max_position_secs: U64,
+    pub lp_exit_delay_secs: U64,
+    pub lp_exit_window_secs: U64,
     /// The most a new print's score may move from the stored score.
     pub max_step_bps: u32,
     /// Paid to whoever liquidates a position, out of its stake.
@@ -218,20 +218,19 @@ impl Config {
             max_open_gap_bps: 1_000,
             max_profit_bps: 90_000,
             min_score_e2: U64(10_000),
-            cooloff_secs: 2 * DAY,
+            cooloff_secs: U64(2 * DAY),
             market_cap_bps: 200,
             utilisation_cap_bps: 8_000,
             min_stake: U128(10 * USDG as u128),
             max_stake: U128(250 * USDG as u128),
             max_positions_per_account: 10,
-            min_fill_delay_secs: 5,
-            order_ttl_secs: 900,
-            max_quote_age_secs: 900,
-            min_quote_gap_secs: 240,
-            emergency_secs: DAY,
-            max_position_secs: 14 * DAY,
-            lp_exit_delay_secs: DAY,
-            lp_exit_window_secs: 3_600,
+            min_fill_delay_secs: U64(5),
+            order_ttl_secs: U64(900),
+            max_quote_age_secs: U64(900),
+            emergency_secs: U64(DAY),
+            max_position_secs: U64(14 * DAY),
+            lp_exit_delay_secs: U64(DAY),
+            lp_exit_window_secs: U64(3_600),
             max_step_bps: 1_500,
             liq_reward_bps: 100,
             faucet_per_account: U128(10_000 * USDG as u128),
@@ -257,20 +256,19 @@ pub struct ConfigPatch {
     pub max_open_gap_bps: Option<u32>,
     pub max_profit_bps: Option<u32>,
     pub min_score_e2: Option<U64>,
-    pub cooloff_secs: Option<u64>,
+    pub cooloff_secs: Option<U64>,
     pub market_cap_bps: Option<u32>,
     pub utilisation_cap_bps: Option<u32>,
     pub min_stake: Option<U128>,
     pub max_stake: Option<U128>,
     pub max_positions_per_account: Option<u32>,
-    pub min_fill_delay_secs: Option<u64>,
-    pub order_ttl_secs: Option<u64>,
-    pub max_quote_age_secs: Option<u64>,
-    pub min_quote_gap_secs: Option<u64>,
-    pub emergency_secs: Option<u64>,
-    pub max_position_secs: Option<u64>,
-    pub lp_exit_delay_secs: Option<u64>,
-    pub lp_exit_window_secs: Option<u64>,
+    pub min_fill_delay_secs: Option<U64>,
+    pub order_ttl_secs: Option<U64>,
+    pub max_quote_age_secs: Option<U64>,
+    pub emergency_secs: Option<U64>,
+    pub max_position_secs: Option<U64>,
+    pub lp_exit_delay_secs: Option<U64>,
+    pub lp_exit_window_secs: Option<U64>,
     pub max_step_bps: Option<u32>,
     pub liq_reward_bps: Option<u32>,
     pub faucet_per_account: Option<U128>,
@@ -466,9 +464,19 @@ pub struct QuoteIn {
     /// The print's id (`vi_history.id`): a newer print has a larger id.
     pub print_id: U64,
     /// When the print was recorded.
-    pub print_at: u64,
-    /// When the keeper read it as the market's newest print.
-    pub read_at: u64,
+    pub print_at: U64,
+    /// The block time just before the keeper read it as the market's newest
+    /// print.
+    pub read_at: U64,
+}
+
+/// What `push_quotes` did with a batch.
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushResult {
+    pub count: u32,
+    pub accepted: u32,
+    pub skipped: u32,
 }
 
 // ---------------------------------------------------------------- views
@@ -485,9 +493,9 @@ pub struct QuoteView {
     /// (buy − sell) / score, in basis points.
     pub spread_bps: U64,
     pub print_id: U64,
-    pub print_at: u64,
-    pub first_read_at: u64,
-    pub last_read_at: u64,
+    pub print_at: U64,
+    pub first_read_at: U64,
+    pub last_read_at: U64,
 }
 
 #[near(serializers = [json])]
@@ -505,11 +513,11 @@ pub struct MarketView {
     pub id: u32,
     pub reference: String,
     pub finder: Option<AccountId>,
-    pub live_since: u64,
-    pub listed_at: u64,
+    pub live_since: U64,
+    pub listed_at: U64,
     pub status: MarketStatus,
     pub final_e2: Option<U64>,
-    pub settled_at: Option<u64>,
+    pub settled_at: Option<U64>,
     /// The newest quote with its two prices.
     pub quote: Option<QuoteView>,
     /// The ring, oldest first.
@@ -534,21 +542,28 @@ pub struct PositionView {
     pub leverage: u8,
     pub stake: U128,
     pub fee: U128,
-    /// The maximum profit, reserved from the fill (0 while pending).
-    pub max_profit: U128,
+    /// The maximum profit, reserved in the vault from the fill (0 while
+    /// pending).
+    pub reserved: U128,
     pub state: PositionState,
-    pub placed_at: u64,
+    pub placed_at: U64,
     pub limit_e2: U64,
-    pub entry_e2: U64,
-    pub opened_at: u64,
-    pub expires_at: u64,
-    pub fill_print_id: U64,
-    pub close_requested_at: u64,
-    pub close_limit_e2: U64,
-    pub liquidation_e2: U64,
-    pub cap_e2: U64,
-    /// What closing would pay at the newest quote's close-side price
-    /// (absent while pending).
+    /// Null until the fill.
+    pub entry_e2: Option<U64>,
+    /// Null until the fill.
+    pub opened_at: Option<U64>,
+    /// Null until a close is requested, or the position has reached its end.
+    pub close_requested_at: Option<U64>,
+    /// Null until a close is requested; null for the end-of-life close,
+    /// which has no limit.
+    pub close_limit_e2: Option<U64>,
+    /// When the position ends (null until the fill).
+    pub expires_at: Option<U64>,
+    pub fill_print_id: Option<U64>,
+    pub liquidation_e2: Option<U64>,
+    pub cap_e2: Option<U64>,
+    /// What closing would pay at the newest quote's close-side price (the
+    /// final price on a settled market); null while pending.
     pub value: Option<U128>,
     /// value − stake, signed.
     pub pnl: Option<String>,
@@ -572,9 +587,9 @@ pub struct ClosedView {
     pub pnl: String,
     pub reason: String,
     pub detail: String,
-    pub placed_at: u64,
-    pub opened_at: u64,
-    pub closed_at: u64,
+    pub placed_at: U64,
+    pub opened_at: U64,
+    pub closed_at: U64,
 }
 
 #[near(serializers = [json])]
@@ -600,9 +615,9 @@ pub struct VaultView {
 pub struct LpRequestView {
     pub shares: U128,
     pub value: U128,
-    pub ready_at: u64,
+    pub ready_at: U64,
     /// The end of the window; after it the request lapses.
-    pub closes_at: u64,
+    pub closes_at: U64,
     /// waiting, ready or lapsed.
     pub state: String,
 }
@@ -628,7 +643,7 @@ pub struct OpenQuote {
     pub sell_e2: U64,
     pub spread_bps: U64,
     pub print_id: U64,
-    pub print_at: u64,
+    pub print_at: U64,
     /// The entry if the order filled at the newest quote.
     pub entry_e2: U64,
     pub fee: U128,
@@ -658,7 +673,7 @@ pub enum HouseError {
     Overflow,
     InsufficientBalance,
     NoMarket,
-    MarketExists,
+    AlreadyListed,
     BadReference,
     BadCommitment,
     LiveSinceInFuture,
@@ -684,13 +699,6 @@ pub enum HouseError {
     PositionExpired,
     CancelTooEarly,
     HasQuote,
-    TooManyIds,
-    EmptyPush,
-    TooManyQuotes,
-    PrintInFuture,
-    ReadInFuture,
-    ReadBeforePrint,
-    PrintChanged,
     NotStale,
     AlreadySettled,
     FaucetCap,
@@ -716,7 +724,7 @@ impl HouseError {
             HouseError::Overflow => "arithmetic overflow",
             HouseError::InsufficientBalance => "balance too low",
             HouseError::NoMarket => "no such market",
-            HouseError::MarketExists => "a market with this reference already exists",
+            HouseError::AlreadyListed => "already listed",
             HouseError::BadReference => "reference must be 32 lowercase hex characters",
             HouseError::BadCommitment => "commitment must be 64 lowercase hex characters",
             HouseError::LiveSinceInFuture => "live_since is after the block time",
@@ -742,13 +750,6 @@ impl HouseError {
             HouseError::PositionExpired => "position has reached its end and is closing",
             HouseError::CancelTooEarly => "an order can be cancelled only once its time to live has passed",
             HouseError::HasQuote => "order has a quote to fill at",
-            HouseError::TooManyIds => "too many ids in one crank",
-            HouseError::EmptyPush => "no quotes to push",
-            HouseError::TooManyQuotes => "too many quotes in one push",
-            HouseError::PrintInFuture => "print time is after the block time",
-            HouseError::ReadInFuture => "read time is after the block time",
-            HouseError::ReadBeforePrint => "read time is before the print time",
-            HouseError::PrintChanged => "the same print was pushed with different numbers",
             HouseError::NotStale => "market has had a quote within the emergency period",
             HouseError::AlreadySettled => "market is already settled",
             HouseError::FaucetCap => "faucet limit reached for this account",
@@ -883,24 +884,55 @@ fn validate_config(c: &Config) {
     r((100..=100_000).contains(&c.max_open_gap_bps), "max_open_gap_bps");
     r((1_000..=90_000).contains(&c.max_profit_bps), "max_profit_bps");
     r((1..=1_000_000).contains(&c.min_score_e2.0), "min_score_e2");
-    r(c.cooloff_secs <= 30 * DAY, "cooloff_secs");
+    r(c.cooloff_secs.0 <= 30 * DAY, "cooloff_secs");
     r((1..=bps).contains(&c.market_cap_bps), "market_cap_bps");
     r((1..=9_000).contains(&c.utilisation_cap_bps), "utilisation_cap_bps");
     r(c.min_stake.0 >= USDG as u128, "min_stake");
     r(c.max_stake.0 >= c.min_stake.0 && c.max_stake.0 <= 100_000 * USDG as u128, "max_stake");
     r((1..=50).contains(&c.max_positions_per_account), "max_positions_per_account");
-    r(c.min_fill_delay_secs <= 600, "min_fill_delay_secs");
-    r((60..=DAY).contains(&c.order_ttl_secs) && c.order_ttl_secs > c.min_fill_delay_secs, "order_ttl_secs");
-    r((60..=DAY).contains(&c.max_quote_age_secs), "max_quote_age_secs");
-    r((60..=3_600).contains(&c.min_quote_gap_secs), "min_quote_gap_secs");
-    r((3_600..=7 * DAY).contains(&c.emergency_secs) && c.emergency_secs >= c.max_quote_age_secs, "emergency_secs");
-    r((DAY..=90 * DAY).contains(&c.max_position_secs), "max_position_secs");
-    r(c.lp_exit_delay_secs <= 7 * DAY, "lp_exit_delay_secs");
-    r((600..=7 * DAY).contains(&c.lp_exit_window_secs), "lp_exit_window_secs");
+    r(c.min_fill_delay_secs.0 <= 600, "min_fill_delay_secs");
+    r((60..=DAY).contains(&c.order_ttl_secs.0) && c.order_ttl_secs.0 > c.min_fill_delay_secs.0, "order_ttl_secs");
+    r((60..=DAY).contains(&c.max_quote_age_secs.0), "max_quote_age_secs");
+    r((3_600..=7 * DAY).contains(&c.emergency_secs.0) && c.emergency_secs.0 >= c.max_quote_age_secs.0, "emergency_secs");
+    r((DAY..=90 * DAY).contains(&c.max_position_secs.0), "max_position_secs");
+    r(c.lp_exit_delay_secs.0 <= 7 * DAY, "lp_exit_delay_secs");
+    r((600..=7 * DAY).contains(&c.lp_exit_window_secs.0), "lp_exit_window_secs");
     r((1..=bps).contains(&c.max_step_bps), "max_step_bps");
     r(c.liq_reward_bps <= 1_000, "liq_reward_bps");
     r(c.faucet_per_account.0 <= 1_000_000 * USDG as u128, "faucet_per_account");
     r(c.storage_floor.0 <= 1_000 * NEAR_YOCTO, "storage_floor");
+}
+
+/// Applies one pushed print to its market (see `push_quotes`). Returns false,
+/// with the market unchanged, when the entry breaks a rule.
+fn apply_quote(m: &mut Market, qi: &QuoteIn, now: u64, max_step_bps: u64) -> bool {
+    let (score, reading, print_id) = (qi.score_e2.0, qi.reading_e2.0, qi.print_id.0);
+    let (print_at, read_at) = (qi.print_at.0, qi.read_at.0);
+    if m.status == MarketStatus::Settled || print_at > now || read_at > now {
+        return false;
+    }
+    let Some(s) = m.quotes.last().cloned() else {
+        Contract::push_ring(m, score, score, reading, print_id, print_at, read_at);
+        return true;
+    };
+    if read_at < s.last_read_at {
+        return false;
+    }
+    if print_id == s.print_id {
+        if s.pushed_score_e2 != score || s.reading_e2 != reading || s.print_at != print_at {
+            return false;
+        }
+        if let Some(n) = m.quotes.last_mut() {
+            n.last_read_at = read_at;
+        }
+        return true;
+    }
+    if print_id < s.print_id || print_at <= s.print_at {
+        return false;
+    }
+    let clipped = quote::clip_score(s.score_e2, score, max_step_bps, print_at - s.print_at);
+    Contract::push_ring(m, clipped, score, reading, print_id, print_at, read_at);
+    true
 }
 
 /// Where the earliest quote read at or after a time sits in a ring.
@@ -1029,7 +1061,6 @@ impl Contract {
             min_fill_delay_secs,
             order_ttl_secs,
             max_quote_age_secs,
-            min_quote_gap_secs,
             emergency_secs,
             max_position_secs,
             lp_exit_delay_secs,
@@ -1157,12 +1188,19 @@ impl Contract {
 
     /// Lists a market. Keeper only. `reference` is the ATNX market uuid as
     /// 32 lowercase hex characters; `live_since` is when it went live on
-    /// atnx.app, and opens start `cooloff_secs` after it. Returns the id
-    /// (0 for the first market).
-    pub fn list_market(&mut self, reference: String, finder: Option<AccountId>, live_since: u64) -> u32 {
+    /// atnx.app, and opens start `cooloff_secs` after it. A reference whose
+    /// market is settled is listed again as a new market, and the reference
+    /// then points to the new one; any other listed reference fails. Returns
+    /// the id (0 for the first market).
+    pub fn list_market(&mut self, reference: String, finder: Option<AccountId>, live_since: U64) -> u32 {
         self.assert_keeper();
         check(is_hex(&reference, 32), HouseError::BadReference);
-        check(!self.market_by_reference.contains_key(&reference), HouseError::MarketExists);
+        let replaces = self.market_by_reference.get(&reference).copied();
+        if let Some(old) = replaces {
+            let settled = self.markets.get(old).map(|m| m.status == MarketStatus::Settled).unwrap_or(false);
+            check(settled, HouseError::AlreadyListed);
+        }
+        let live_since = live_since.0;
         let now = now_secs();
         check(live_since <= now, HouseError::LiveSinceInFuture);
         self.check_storage_floor();
@@ -1188,6 +1226,7 @@ impl Contract {
                 ("reference", reference),
                 ("finder", finder.map(|f| f.to_string()).unwrap_or_default()),
                 ("live_since", live_since.to_string()),
+                ("replaces", replaces.map(|r| r.to_string()).unwrap_or_default()),
             ],
         );
         id
@@ -1218,16 +1257,17 @@ impl Contract {
         self.markets.set(market, m);
     }
 
-    /// Anyone, once a market's newest print is `emergency_secs` old (or, with
-    /// no quote, its listing is): the market is settled at its last score.
+    /// Anyone, once a market's newest quote was last read `emergency_secs`
+    /// ago (or, with no quote, it was listed that long ago): the market is
+    /// settled at its last score.
     /// Every position on it then closes at that one price, and pending
     /// orders are refunded. Final: a market that comes back is listed again.
     pub fn settle_stale(&mut self, market: u32) {
         let mut m = self.market_or_fail(market);
         check(m.status != MarketStatus::Settled, HouseError::AlreadySettled);
         let now = now_secs();
-        let last = m.newest().map(|q| q.print_at).unwrap_or(m.listed_at);
-        check(now >= last.saturating_add(self.config.emergency_secs), HouseError::NotStale);
+        let last = m.newest().map(|q| q.last_read_at).unwrap_or(m.listed_at);
+        check(now >= last.saturating_add(self.config.emergency_secs.0), HouseError::NotStale);
         let final_e2 = m.newest().map(|q| q.score_e2).unwrap_or(0);
         m.status = MarketStatus::Settled;
         m.final_e2 = Some(final_e2);
@@ -1247,88 +1287,72 @@ impl Contract {
     /// Keeper only: the 5-minute batch, or one market on demand. The contract
     /// derives both prices from the score and the reading itself.
     ///
-    /// Per entry: a newer print (larger `print_id`) needs `print_at` at least
-    /// `min_quote_gap_secs` after the stored print's, and its score is
-    /// clipped to `max_step_bps` from the stored score. The stored print
-    /// again must carry identical numbers and only moves its `last_read_at`
-    /// forward. Print and read times are never after the block time, and a
-    /// read is never before its print.
+    /// Per entry, all times against the block time:
+    /// - the stored print again (same `print_id`) must repeat the numbers as
+    ///   they were pushed, and moves its `last_read_at` forward;
+    /// - a new print needs a larger `print_id` and a later `print_at`, and
+    ///   its score may move from the stored score at most
+    ///   `max_step_bps × (print_at − stored print_at) / 300` (never less than
+    ///   10 bps, nor less than one hundredth); a larger move is clipped and
+    ///   catches up on later prints;
+    /// - `print_at` and `read_at` are never after the block time, and
+    ///   `read_at` is never before the stored `last_read_at`.
     ///
-    /// Entries that lose a race between two keeper transactions, or arrive
-    /// too soon, are skipped and counted, not applied: an older print, the
-    /// stored print with a read time not after the stored one, a new print
-    /// read before the stored print's last read, a new print under the gap,
-    /// or a settled market. Anything else that breaks a rule fails the call.
-    /// `commitment` is the sha256 of the canonical batch of public rows.
-    pub fn push_quotes(&mut self, quotes: Vec<QuoteIn>, commitment: String) {
+    /// An entry that breaks a rule, names an unknown or settled market, or
+    /// comes after the first `MAX_QUOTES_PER_PUSH`, is skipped and counted; it
+    /// never fails the call. Returns the counts, which the `quotes_pushed`
+    /// event also carries. `commitment` is the sha256 of the canonical batch
+    /// of public rows.
+    pub fn push_quotes(&mut self, quotes: Vec<QuoteIn>, commitment: String) -> PushResult {
         self.assert_keeper();
         check(is_hex(&commitment, 64), HouseError::BadCommitment);
-        check(!quotes.is_empty(), HouseError::EmptyPush);
-        check(quotes.len() <= MAX_QUOTES_PER_PUSH, HouseError::TooManyQuotes);
         let now = now_secs();
-        let (gap, step) = (self.config.min_quote_gap_secs, self.config.max_step_bps as u64);
-        let (mut applied, mut reread, mut skipped) = (0u32, 0u32, 0u32);
-        let (mut first, mut last) = (u64::MAX, 0u64);
-        // Updated markets are written only once every entry has passed.
+        let step = self.config.max_step_bps as u64;
+        let (mut accepted, mut skipped) = (0u32, 0u32);
+        let (mut first, mut last): (Option<u64>, Option<u64>) = (None, None);
+        // Markets an entry changed, written once at the end.
         let mut staged: std::collections::BTreeMap<u32, Market> = std::collections::BTreeMap::new();
-        for qi in &quotes {
+        for (i, qi) in quotes.iter().enumerate() {
+            let print_id = qi.print_id.0;
+            first = Some(first.map_or(print_id, |f| f.min(print_id)));
+            last = Some(last.map_or(print_id, |l| l.max(print_id)));
+            if i >= MAX_QUOTES_PER_PUSH {
+                skipped += 1;
+                continue;
+            }
             let mut m = match staged.remove(&qi.market) {
                 Some(m) => m,
-                None => self.market_or_fail(qi.market),
-            };
-            let (score, reading, print_id) = (qi.score_e2.0, qi.reading_e2.0, qi.print_id.0);
-            check(qi.print_at <= now, HouseError::PrintInFuture);
-            check(qi.read_at <= now, HouseError::ReadInFuture);
-            check(qi.read_at >= qi.print_at, HouseError::ReadBeforePrint);
-            first = first.min(print_id);
-            last = last.max(print_id);
-            let stored = m.quotes.last().cloned();
-            match stored {
-                _ if m.status == MarketStatus::Settled => skipped += 1,
-                Some(s) if print_id == s.print_id => {
-                    check(
-                        s.pushed_score_e2 == score && s.reading_e2 == reading && s.print_at == qi.print_at,
-                        HouseError::PrintChanged,
-                    );
-                    match m.quotes.last_mut() {
-                        Some(n) if qi.read_at > n.last_read_at => {
-                            n.last_read_at = qi.read_at;
-                            reread += 1;
-                        }
-                        _ => skipped += 1,
+                None => match self.markets.get(qi.market) {
+                    Some(m) => m.clone(),
+                    None => {
+                        skipped += 1;
+                        continue;
                     }
-                }
-                Some(s) if print_id < s.print_id => skipped += 1,
-                Some(s) if qi.print_at < s.print_at.saturating_add(gap) || qi.read_at < s.last_read_at => {
-                    skipped += 1
-                }
-                Some(s) => {
-                    let clipped = quote::clip_score(s.score_e2, score, step);
-                    Self::push_ring(&mut m, clipped, score, reading, print_id, qi.print_at, qi.read_at);
-                    applied += 1;
-                }
-                None => {
-                    Self::push_ring(&mut m, score, score, reading, print_id, qi.print_at, qi.read_at);
-                    applied += 1;
-                }
+                },
+            };
+            if apply_quote(&mut m, qi, now, step) {
+                accepted += 1;
+            } else {
+                skipped += 1;
             }
             staged.insert(qi.market, m);
         }
         for (id, m) in staged {
             self.markets.set(id, m);
         }
+        let id_str = |v: Option<u64>| v.map(|v| v.to_string()).unwrap_or_default();
         emit(
             "quotes_pushed",
             &[
                 ("count", quotes.len().to_string()),
-                ("applied", applied.to_string()),
-                ("reread", reread.to_string()),
+                ("accepted", accepted.to_string()),
                 ("skipped", skipped.to_string()),
-                ("first_print_id", first.to_string()),
-                ("last_print_id", last.to_string()),
+                ("first_print_id", id_str(first)),
+                ("last_print_id", id_str(last)),
                 ("commitment", commitment),
             ],
         );
+        PushResult { count: quotes.len() as u32, accepted, skipped }
     }
 
     // ------------------------------------------------------------ trading
@@ -1429,7 +1453,7 @@ impl Contract {
         check(p.account == caller, HouseError::NotYours);
         check(p.state == PositionState::Pending, HouseError::NotPending);
         let now = now_secs();
-        check(now >= p.placed_at.saturating_add(self.config.order_ttl_secs), HouseError::CancelTooEarly);
+        check(now >= p.placed_at.saturating_add(self.config.order_ttl_secs.0), HouseError::CancelTooEarly);
         let m = self.market_or_fail(p.market);
         check(!matches!(self.fill_due(&m, &p, now), FillDue::At(_)), HouseError::HasQuote);
         self.refund(id, p, Refund::Cancelled, now);
@@ -1437,7 +1461,8 @@ impl Contract {
 
     /// Anyone. For each id, does the one thing that is due and returns what
     /// it did; an id that is unknown or has nothing due is skipped, so one
-    /// bad id never fails the batch. At most `MAX_CRANK_IDS` ids.
+    /// bad id never fails the batch. The first `MAX_CRANK_IDS` ids are
+    /// processed and any beyond are returned as "ignored".
     ///
     /// A pending order: on a market that is no longer open, refunded. Else at
     /// the earliest quote read at least `min_fill_delay_secs` after it (and
@@ -1460,10 +1485,13 @@ impl Contract {
     ///    maximum profit;
     /// 5. past `expires_at`, it becomes Closing as of that moment.
     pub fn crank(&mut self, position_ids: Vec<U64>) -> Vec<String> {
-        check(position_ids.len() <= MAX_CRANK_IDS, HouseError::TooManyIds);
         let caller = env::predecessor_account_id();
         let now = now_secs();
-        position_ids.iter().map(|id| self.crank_one(id.0, &caller, now).to_string()).collect()
+        position_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| if i < MAX_CRANK_IDS { self.crank_one(id.0, &caller, now) } else { "ignored" }.to_string())
+            .collect()
     }
 
     // -------------------------------------------------------------- vault
@@ -1504,9 +1532,9 @@ impl Contract {
         check(s <= held, HouseError::NoShares);
         let now = now_secs();
         if let Some(r) = self.lp_requests.get(&caller) {
-            check(now > r.ready_at.saturating_add(self.config.lp_exit_window_secs), HouseError::RequestPending);
+            check(now > r.ready_at.saturating_add(self.config.lp_exit_window_secs.0), HouseError::RequestPending);
         }
-        let ready_at = now.saturating_add(self.config.lp_exit_delay_secs);
+        let ready_at = now.saturating_add(self.config.lp_exit_delay_secs.0);
         self.lp_requests.insert(caller.clone(), LpRequest { shares: s, ready_at });
         emit(
             "lp_withdraw_requested",
@@ -1514,7 +1542,7 @@ impl Contract {
                 ("account", caller.to_string()),
                 ("shares", s.to_string()),
                 ("ready_at", ready_at.to_string()),
-                ("closes_at", ready_at.saturating_add(self.config.lp_exit_window_secs).to_string()),
+                ("closes_at", ready_at.saturating_add(self.config.lp_exit_window_secs.0).to_string()),
             ],
         );
     }
@@ -1528,7 +1556,7 @@ impl Contract {
         let r = self.lp_requests.get(&caller).cloned().unwrap_or_else(|| fail(HouseError::NoRequest));
         let now = now_secs();
         check(now >= r.ready_at, HouseError::RequestNotReady);
-        if now > r.ready_at.saturating_add(self.config.lp_exit_window_secs) {
+        if now > r.ready_at.saturating_add(self.config.lp_exit_window_secs.0) {
             self.lp_requests.remove(&caller);
             emit("lp_withdraw_lapsed", &[("account", caller.to_string()), ("shares", r.shares.to_string())]);
             return U128(0);
@@ -1598,7 +1626,7 @@ impl Contract {
             return U128(0);
         };
         let now = now_secs();
-        if now < r.ready_at || now > r.ready_at.saturating_add(self.config.lp_exit_window_secs) {
+        if now < r.ready_at || now > r.ready_at.saturating_add(self.config.lp_exit_window_secs.0) {
             return U128(0);
         }
         let value = to_assets(r.shares, self.vault.assets, self.vault.shares);
@@ -1624,13 +1652,13 @@ impl Contract {
         (from..self.markets.len()).take(limit as usize).filter_map(|id| self.get_market(id)).collect()
     }
 
-    pub fn get_position(&self, position_id: U64) -> Option<PositionView> {
-        self.positions.get(&position_id.0).map(|p| self.position_view(position_id.0, p))
+    pub fn get_position(&self, id: U64) -> Option<PositionView> {
+        self.positions.get(&id.0).map(|p| self.position_view(id.0, p))
     }
 
     /// An account's pending, open and closing positions.
-    pub fn positions_of(&self, account_id: AccountId) -> Vec<PositionView> {
-        let Some(set) = self.account_positions.get(&account_id) else {
+    pub fn positions_of(&self, account: AccountId) -> Vec<PositionView> {
+        let Some(set) = self.account_positions.get(&account) else {
             return Vec::new();
         };
         set.iter().filter_map(|id| self.positions.get(id).map(|p| self.position_view(*id, p))).collect()
@@ -1638,8 +1666,8 @@ impl Contract {
 
     /// An account's last `HISTORY_LEN` closed positions and refunded orders,
     /// newest first.
-    pub fn history_of(&self, account_id: AccountId) -> Vec<ClosedView> {
-        let Some(h) = self.history.get(&account_id) else {
+    pub fn history_of(&self, account: AccountId) -> Vec<ClosedView> {
+        let Some(h) = self.history.get(&account) else {
             return Vec::new();
         };
         h.iter().rev().map(closed_view).collect()
@@ -1664,21 +1692,21 @@ impl Contract {
         self.active.len()
     }
 
-    pub fn balance_of(&self, account_id: AccountId) -> U128 {
-        u(self.balances.get(&account_id).copied().unwrap_or(0))
+    pub fn balance_of(&self, account: AccountId) -> U128 {
+        u(self.balances.get(&account).copied().unwrap_or(0))
     }
 
     /// How much of the faucet an account has claimed.
-    pub fn faucet_claimed(&self, account_id: AccountId) -> U128 {
-        u(self.faucet_claimed.get(&account_id).copied().unwrap_or(0))
+    pub fn faucet_claimed(&self, account: AccountId) -> U128 {
+        u(self.faucet_claimed.get(&account).copied().unwrap_or(0))
     }
 
     /// An account's vault shares, their value now, and its pending request.
-    pub fn lp_of(&self, account_id: AccountId) -> LpView {
-        let shares = self.lp_shares.get(&account_id).copied().unwrap_or(0);
+    pub fn lp_of(&self, account: AccountId) -> LpView {
+        let shares = self.lp_shares.get(&account).copied().unwrap_or(0);
         let now = now_secs();
-        let request = self.lp_requests.get(&account_id).map(|r| {
-            let closes_at = r.ready_at.saturating_add(self.config.lp_exit_window_secs);
+        let request = self.lp_requests.get(&account).map(|r| {
+            let closes_at = r.ready_at.saturating_add(self.config.lp_exit_window_secs.0);
             let state = if now < r.ready_at {
                 "waiting"
             } else if now <= closes_at {
@@ -1689,8 +1717,8 @@ impl Contract {
             LpRequestView {
                 shares: U128(r.shares),
                 value: u(to_assets(r.shares, self.vault.assets, self.vault.shares)),
-                ready_at: r.ready_at,
-                closes_at,
+                ready_at: U64(r.ready_at),
+                closes_at: U64(closes_at),
                 state: state.to_string(),
             }
         });
@@ -1710,13 +1738,13 @@ impl Contract {
         side: Side,
         leverage: u8,
         stake: U128,
-        account_id: Option<AccountId>,
+        account: Option<AccountId>,
     ) -> OpenQuote {
         let now = now_secs();
         let stake = u64::try_from(stake.0).unwrap_or(u64::MAX);
         let m = self.markets.get(market);
         let verdict = match m {
-            Some(m) => self.open_checks(account_id.as_ref(), m, side, leverage, stake, now),
+            Some(m) => self.open_checks(account.as_ref(), m, side, leverage, stake, now),
             None => Err(HouseError::NoMarket),
         };
         let q = m.and_then(|m| m.newest());
@@ -1753,7 +1781,7 @@ impl Contract {
             sell_e2: U64(px.sell),
             spread_bps: U64(spread_bps(&px)),
             print_id: U64(q.map(|q| q.print_id).unwrap_or(0)),
-            print_at: q.map(|q| q.print_at).unwrap_or(0),
+            print_at: U64(q.map(|q| q.print_at).unwrap_or(0)),
             entry_e2: U64(entry),
             fee: u(fee),
             finder_fee: u(finder_fee),
@@ -1785,9 +1813,9 @@ fn closed_view(c: &Closed) -> ClosedView {
         pnl: pnl.to_string(),
         reason: c.reason.clone(),
         detail: c.detail.clone(),
-        placed_at: c.placed_at,
-        opened_at: c.opened_at,
-        closed_at: c.closed_at,
+        placed_at: U64(c.placed_at),
+        opened_at: U64(c.opened_at),
+        closed_at: U64(c.closed_at),
     }
 }
 
@@ -1870,9 +1898,9 @@ impl Contract {
         ok(stake as u128 <= c.max_stake.0, HouseError::StakeTooLarge)?;
         ok(!c.opens_paused, HouseError::OpensPaused)?;
         ok(m.status == MarketStatus::Open, HouseError::MarketNotOpen)?;
-        ok(now >= m.live_since.saturating_add(c.cooloff_secs), HouseError::CoolOff)?;
+        ok(now >= m.live_since.saturating_add(c.cooloff_secs.0), HouseError::CoolOff)?;
         let q = m.newest().ok_or(HouseError::NoQuote)?;
-        ok(now <= q.print_at.saturating_add(c.max_quote_age_secs), HouseError::StaleQuote)?;
+        ok(now <= q.last_read_at.saturating_add(c.max_quote_age_secs.0), HouseError::StaleQuote)?;
         ok(q.score_e2 >= c.min_score_e2.0, HouseError::ScoreTooLow)?;
         let px = self.prices_of(q);
         ok(spread_bps(&px) <= c.max_open_gap_bps as u64, HouseError::SpreadTooWide)?;
@@ -1943,8 +1971,8 @@ impl Contract {
     /// time to live, so a quote that arrives later refunds the order however
     /// late anyone cranks it.
     fn fill_due(&self, m: &Market, p: &Position, now: u64) -> FillDue {
-        let from = p.placed_at.saturating_add(self.config.min_fill_delay_secs);
-        let deadline = p.placed_at.saturating_add(self.config.order_ttl_secs);
+        let from = p.placed_at.saturating_add(self.config.min_fill_delay_secs.0);
+        let deadline = p.placed_at.saturating_add(self.config.order_ttl_secs.0);
         match find_quote(m, from) {
             Lookup::Found(i) => {
                 if m.quotes[i].first_read_at.max(from) <= deadline {
@@ -1963,7 +1991,7 @@ impl Contract {
     /// the expiry close: no limit, and it waits past a zero price for the
     /// next quote.
     fn close_due(&self, m: &Market, side: Side, at: u64, limit: u64) -> CloseDue {
-        let from = at.saturating_add(self.config.min_fill_delay_secs);
+        let from = at.saturating_add(self.config.min_fill_delay_secs.0);
         let start = match find_quote(m, from) {
             Lookup::Found(i) => i,
             Lookup::RolledOut => 0,
@@ -2121,8 +2149,8 @@ impl Contract {
     fn fill(&mut self, id: u64, mut p: Position, m: &mut Market, q: &Quote, f: Fill) {
         let c = &self.config;
         let (finder_fee, treasury_fee) = split_fee(p.fee, c.finder_bps as u64, m.finder.is_some());
-        let opened_at = q.first_read_at.max(p.placed_at.saturating_add(c.min_fill_delay_secs));
-        let expires_at = opened_at.saturating_add(c.max_position_secs);
+        let opened_at = q.first_read_at.max(p.placed_at.saturating_add(c.min_fill_delay_secs.0));
+        let expires_at = opened_at.saturating_add(c.max_position_secs.0);
         let treasury = c.treasury.clone();
         self.vault.margin = sub(self.vault.margin, p.fee);
         if let Some(finder) = m.finder.clone() {
@@ -2361,9 +2389,9 @@ impl Contract {
                 sell_e2: U64(px.sell),
                 spread_bps: U64(spread_bps(&px)),
                 print_id: U64(q.print_id),
-                print_at: q.print_at,
-                first_read_at: q.first_read_at,
-                last_read_at: q.last_read_at,
+                print_at: U64(q.print_at),
+                first_read_at: U64(q.first_read_at),
+                last_read_at: U64(q.last_read_at),
             }
         };
         let stake = self.config.min_stake.0 as u64;
@@ -2372,11 +2400,11 @@ impl Contract {
             id,
             reference: m.reference.clone(),
             finder: m.finder.clone(),
-            live_since: m.live_since,
-            listed_at: m.listed_at,
+            live_since: U64(m.live_since),
+            listed_at: U64(m.listed_at),
             status: m.status,
             final_e2: m.final_e2.map(U64),
-            settled_at: m.settled_at,
+            settled_at: m.settled_at.map(U64),
             quote: m.newest().map(qv),
             quotes: m.quotes.iter().map(qv).collect(),
             long: book_view(&m.long),
@@ -2389,14 +2417,8 @@ impl Contract {
 
     fn position_view(&self, id: u64, p: &Position) -> PositionView {
         let filled = p.state != PositionState::Pending;
-        let (liq, cap) = if filled {
-            (
-                liquidation_e2(p.side, p.leverage, p.entry_e2),
-                cap_e2(p.side, p.leverage, p.stake, p.entry_e2, p.reserved),
-            )
-        } else {
-            (0, 0)
-        };
+        let when = |cond: bool, v: u64| if cond { Some(U64(v)) } else { None };
+        let closing = p.state == PositionState::Closing;
         let value = if filled {
             self.markets.get(p.market).and_then(|m| {
                 let exit = match m.status {
@@ -2416,18 +2438,18 @@ impl Contract {
             leverage: p.leverage,
             stake: u(p.stake),
             fee: u(p.fee),
-            max_profit: u(p.reserved),
+            reserved: u(p.reserved),
             state: p.state,
-            placed_at: p.placed_at,
+            placed_at: U64(p.placed_at),
             limit_e2: U64(p.limit_e2),
-            entry_e2: U64(p.entry_e2),
-            opened_at: p.opened_at,
-            expires_at: p.expires_at,
-            fill_print_id: U64(p.fill_print_id),
-            close_requested_at: p.close_requested_at,
-            close_limit_e2: U64(p.close_limit_e2),
-            liquidation_e2: U64(liq),
-            cap_e2: U64(cap),
+            entry_e2: when(filled, p.entry_e2),
+            opened_at: when(filled, p.opened_at),
+            close_requested_at: when(closing, p.close_requested_at),
+            close_limit_e2: when(closing && p.close_limit_e2 > 0, p.close_limit_e2),
+            expires_at: when(filled, p.expires_at),
+            fill_print_id: when(filled, p.fill_print_id),
+            liquidation_e2: when(filled, liquidation_e2(p.side, p.leverage, p.entry_e2)),
+            cap_e2: when(filled, cap_e2(p.side, p.leverage, p.stake, p.entry_e2, p.reserved)),
             value: value.map(u),
             pnl: value.map(|v| (v as i128 - p.stake as i128).to_string()),
             at_risk: value == Some(0),

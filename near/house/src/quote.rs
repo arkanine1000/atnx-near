@@ -206,11 +206,19 @@ pub fn cap_e2(side: Side, leverage: u8, stake: u64, entry: u64, max_profit: u64)
     }
 }
 
-/// The score a new print may take: within max_step_bps of the stored score
-/// (at least one hundredth either way, so a score at or near 0 can still
+/// The score of a new print is limited by the print's own time: real time
+/// sets the speed, however many prints are pushed.
+pub const STEP_SECS: u64 = 300;
+/// The smallest move a new print is allowed, in basis points.
+pub const MIN_STEP_BPS: u64 = 10;
+
+/// The score a new print may take, `elapsed_secs` after the stored print:
+/// within max_step_bps × elapsed / 300 of the stored score (at least
+/// MIN_STEP_BPS, and at least one hundredth so a score at or near 0 can still
 /// move), rounded towards the stored score.
-pub fn clip_score(stored: u64, pushed: u64, max_step_bps: u64) -> u64 {
-    let step = sat_u64(stored as u128 * max_step_bps as u128 / BPS as u128).max(1);
+pub fn clip_score(stored: u64, pushed: u64, max_step_bps: u64, elapsed_secs: u64) -> u64 {
+    let allowance = (max_step_bps as u128 * elapsed_secs as u128 / STEP_SECS as u128).max(MIN_STEP_BPS as u128);
+    let step = sat_u64((stored as u128).saturating_mul(allowance) / BPS as u128).max(1);
     pushed.clamp(stored.saturating_sub(step), stored.saturating_add(step))
 }
 
@@ -364,13 +372,22 @@ mod tests {
     }
 
     #[test]
-    fn the_clip_moves_at_most_a_step_and_never_sticks() {
-        assert_eq!(clip_score(10_000, 20_000, 1_500), 11_500);
-        assert_eq!(clip_score(10_000, 1_000, 1_500), 8_500);
-        assert_eq!(clip_score(10_000, 10_700, 1_500), 10_700);
-        assert_eq!(clip_score(0, 50_000, 1_500), 1);
-        assert_eq!(clip_score(1, 0, 1_500), 0);
-        assert_eq!(clip_score(6, 100, 1_500), 7);
+    fn the_clip_follows_the_print_time_and_never_sticks() {
+        // Five minutes: 15 %.
+        assert_eq!(clip_score(10_000, 20_000, 1_500, 300), 11_500);
+        assert_eq!(clip_score(10_000, 1_000, 1_500, 300), 8_500);
+        assert_eq!(clip_score(10_000, 10_700, 1_500, 300), 10_700);
+        // Two and a half minutes: 7.5 %; ten minutes: 30 %.
+        assert_eq!(clip_score(10_000, 20_000, 1_500, 150), 10_750);
+        assert_eq!(clip_score(10_000, 20_000, 1_500, 600), 13_000);
+        // One second: the 10 bps minimum.
+        assert_eq!(clip_score(100_000, 200_000, 1_500, 1), 100_100);
+        // Near 0: at least one hundredth either way.
+        assert_eq!(clip_score(0, 50_000, 1_500, 300), 1);
+        assert_eq!(clip_score(1, 0, 1_500, 300), 0);
+        assert_eq!(clip_score(6, 100, 1_500, 300), 7);
+        // No overflow at the extremes.
+        assert_eq!(clip_score(u64::MAX, 0, 10_000, u64::MAX), 0);
     }
 
     #[test]

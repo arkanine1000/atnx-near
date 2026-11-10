@@ -63,12 +63,51 @@ fn dave() -> AccountId {
 }
 
 fn qin(market: u32, score: u64, reading: u64, print_id: u64, print_at: u64, read_at: u64) -> QuoteIn {
-    QuoteIn { market, score_e2: U64(score), reading_e2: U64(reading), print_id: U64(print_id), print_at, read_at }
+    QuoteIn {
+        market,
+        score_e2: U64(score),
+        reading_e2: U64(reading),
+        print_id: U64(print_id),
+        print_at: U64(print_at),
+        read_at: U64(read_at),
+    }
+}
+
+/// An optional view number, 0 when null.
+fn n(v: Option<U64>) -> u64 {
+    v.map(|v| v.0).unwrap_or(0)
+}
+
+thread_local! {
+    /// While set, the panic hook stays silent: expected failures don't
+    /// flood the output, and real assertion failures still print.
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn quiet_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !QUIET.with(|q| q.get()) {
+                default(info)
+            }
+        }));
+    });
+}
+
+/// Runs `f`, returning its result or None if it panicked, quietly.
+fn attempt<R>(f: impl FnOnce() -> R) -> Result<R, Box<dyn std::any::Any + Send>> {
+    quiet_panics();
+    QUIET.with(|q| q.set(true));
+    let r = catch_unwind(AssertUnwindSafe(f));
+    QUIET.with(|q| q.set(false));
+    r
 }
 
 /// Runs `f`, which must panic with a message containing `msg`.
 fn expect_err(msg: &str, f: impl FnOnce()) {
-    let err = catch_unwind(AssertUnwindSafe(f)).expect_err(&format!("expected a panic with {msg:?}"));
+    let err = attempt(f).expect_err(&format!("expected a panic with {msg:?}"));
     let text = err
         .downcast_ref::<String>()
         .cloned()
@@ -163,10 +202,10 @@ impl T {
             for p in &page {
                 if p.state == PositionState::Pending {
                     held += p.stake.0 + p.fee.0;
-                    assert_eq!(p.max_profit.0, 0, "a pending order reserves nothing");
+                    assert_eq!(p.reserved.0, 0, "a pending order reserves nothing");
                 } else {
                     held += p.stake.0;
-                    res += p.max_profit.0;
+                    res += p.reserved.0;
                 }
             }
             seen += page.len() as u32;
@@ -242,7 +281,7 @@ impl T {
     /// Lists a market that went live three days ago.
     fn list(&mut self, reference: &str, finder: Option<AccountId>) -> u32 {
         let live = self.now - 3 * DAY;
-        self.call(&keeper(), |c| c.list_market(reference.to_string(), finder, live))
+        self.call(&keeper(), |c| c.list_market(reference.to_string(), finder, U64(live)))
     }
 
     fn push_raw(&mut self, quotes: Vec<QuoteIn>) {
@@ -268,7 +307,7 @@ impl T {
     fn reread(&mut self, market: u32) {
         let q = self.c.get_market(market).unwrap().quote.unwrap();
         let now = self.now;
-        self.push_raw(vec![qin(market, q.pushed_score_e2.0, q.reading_e2.0, q.print_id.0, q.print_at, now)]);
+        self.push_raw(vec![qin(market, q.pushed_score_e2.0, q.reading_e2.0, q.print_id.0, q.print_at.0, now)]);
     }
 
     /// New prints every five minutes until the stored score is `score`.
@@ -370,7 +409,7 @@ fn worked_example_long_3x_to_the_cent() {
     assert_eq!(t.crank(&bob(), &[id]), ["filled"]);
     let p = t.pos(id).unwrap();
     assert_eq!(p.state, PositionState::Open);
-    assert_eq!((p.entry_e2.0, p.liquidation_e2.0, p.cap_e2.0, p.max_profit.0), (40_880, 27_253, 163_520, 900_000_000));
+    assert_eq!((n(p.entry_e2), n(p.liquidation_e2), n(p.cap_e2), p.reserved.0), (40_880, 27_253, 163_520, 900_000_000));
     assert_eq!(t.bal(&finder()) - finder0, 500_000, "half the fee to the finder");
     assert_eq!(t.bal(&treasury()) - treasury0, 500_000, "half to the treasury");
     assert_eq!((t.vault().margin.0, t.vault().reserved.0), (100 * USDG as u128, 900 * USDG as u128));
@@ -402,7 +441,7 @@ fn round_trip(side: Side, leverage: u8, first: (u64, u64), second: (u64, u64), w
     t.faucet(&alice(), 10_000 * USDG);
     let (f0, t0) = (t.bal(&finder()), t.bal(&treasury()));
     let id = t.filled(&alice(), m, side, leverage, STAKE);
-    let entry = t.pos(id).unwrap().entry_e2.0;
+    let entry = n(t.pos(id).unwrap().entry_e2);
     let fees = (t.bal(&finder()) - f0, t.bal(&treasury()) - t0);
     t.walk(m, second.0, second.1);
     t.now += 10;
@@ -456,11 +495,11 @@ fn an_order_fills_at_the_earliest_quote_read_after_it() {
         let who = [carol(), keeper(), alice()][late as usize].clone();
         assert_eq!(t.crank(&who, &[id]), ["filled"]);
         let p = t.pos(id).unwrap();
-        assert_eq!(p.fill_print_id.0, q2);
+        assert_eq!(n(p.fill_print_id), q2);
         // Q2: S 510, R 520, gap 196.08 → 197 bps, lambda 3,552, lead 513.552 → 513.56.
-        assert_eq!(p.entry_e2.0, 51_356);
+        assert_eq!(n(p.entry_e2), 51_356);
         let q2_read = t.c.get_market(m).unwrap().quotes.iter().find(|q| q.print_id.0 == q2).unwrap().first_read_at;
-        assert_eq!(p.opened_at, q2_read);
+        assert_eq!(n(p.opened_at), q2_read.0);
     }
 }
 
@@ -479,7 +518,7 @@ fn a_quote_read_before_the_order_does_not_fill_it() {
     t.reread(m);
     assert_eq!(t.crank(&bob(), &[id]), ["filled"], "read 5 s after: the same print fills it");
     let p = t.pos(id).unwrap();
-    assert_eq!((p.entry_e2.0, p.opened_at), (50_000, placed + 5));
+    assert_eq!((n(p.entry_e2), n(p.opened_at)), (50_000, placed + 5));
 }
 
 /// A first quote that arrives after the order's time to live refunds it,
@@ -631,7 +670,7 @@ fn a_close_settles_inside_its_limit_or_goes_back_to_open() {
     let missed = logs_with("close_missed");
     assert!(missed[0].contains(r#""price_e2":"47641","limit_e2":"49000""#), "{}", missed[0]);
     let p = t.pos(id).unwrap();
-    assert_eq!((p.state, p.close_limit_e2.0), (PositionState::Open, 0));
+    assert_eq!((p.state, p.close_limit_e2, p.close_requested_at), (PositionState::Open, None, None));
     // The trader asks again with a limit the next print meets.
     t.now += 30;
     t.close(&alice(), id, 47_000);
@@ -686,10 +725,12 @@ fn a_close_cannot_be_withdrawn_and_an_order_waits_for_its_ttl() {
 fn a_long_is_liquidated_only_when_both_prices_reach_the_level() {
     let (mut t, m) = setup(60_000, 60_000);
     let id = t.filled(&alice(), m, Side::Long, 3, STAKE);
-    assert_eq!(t.pos(id).unwrap().liquidation_e2.0, 40_000);
-    t.next(m, 50_000, 10_000); // the score is clipped to 510; the reading pulls the lead to 100
+    assert_eq!(n(t.pos(id).unwrap().liquidation_e2), 40_000);
+    // 310 s after the stored print the score may move 15.5 %: to 507. The
+    // reading pulls the lead, and the sell price, to 100.
+    t.next(m, 50_000, 10_000);
     let q = t.c.get_market(m).unwrap().quote.unwrap();
-    assert_eq!((q.score_e2.0, q.buy_e2.0, q.sell_e2.0), (51_000, 51_000, 10_000));
+    assert_eq!((q.score_e2.0, q.pushed_score_e2.0, q.buy_e2.0, q.sell_e2.0), (50_700, 50_000, 50_700, 10_000));
     assert_eq!(t.crank(&bob(), &[id]), ["waiting"]);
     let p = t.pos(id).unwrap();
     assert_eq!((p.value.unwrap().0, p.at_risk), (0, true));
@@ -714,10 +755,10 @@ fn a_long_is_liquidated_only_when_both_prices_reach_the_level() {
 fn a_short_is_liquidated_only_when_both_prices_reach_the_level() {
     let (mut t, m) = setup(60_000, 60_000);
     let id = t.filled(&alice(), m, Side::Short, 3, STAKE);
-    assert_eq!(t.pos(id).unwrap().liquidation_e2.0, 80_000);
+    assert_eq!(n(t.pos(id).unwrap().liquidation_e2), 80_000);
     t.next(m, 70_000, 400_000);
     let q = t.c.get_market(m).unwrap().quote.unwrap();
-    assert_eq!((q.score_e2.0, q.sell_e2.0, q.buy_e2.0), (69_000, 69_000, 400_000));
+    assert_eq!((q.score_e2.0, q.sell_e2.0, q.buy_e2.0), (69_300, 69_300, 400_000));
     assert_eq!(t.crank(&bob(), &[id]), ["waiting"], "a high reading alone does not liquidate");
     t.walk(m, 79_999, 81_000);
     assert_eq!(t.crank(&bob(), &[id]), ["waiting"]);
@@ -733,7 +774,7 @@ fn a_short_is_liquidated_only_when_both_prices_reach_the_level() {
 fn a_long_is_closed_at_the_cap() {
     let (mut t, m) = setup(50_000, 50_000);
     let id = t.filled(&alice(), m, Side::Long, 3, STAKE);
-    assert_eq!(t.pos(id).unwrap().cap_e2.0, 200_000);
+    assert_eq!(n(t.pos(id).unwrap().cap_e2), 200_000);
     t.walk(m, 100_000, 100_000);
     t.next(m, 100_000, 10_000_000);
     assert_eq!(t.crank(&bob(), &[id]), ["waiting"], "a high reading alone does not reach the cap");
@@ -756,7 +797,7 @@ fn a_short_is_closed_at_the_cap() {
     t.call(&owner(), |c| c.set_config(ConfigPatch { max_profit_bps: Some(15_000), ..Default::default() }));
     let id = t.filled(&alice(), m, Side::Short, 3, STAKE);
     let p = t.pos(id).unwrap();
-    assert_eq!((p.max_profit.0, p.cap_e2.0), (150 * USDG as u128, 30_000));
+    assert_eq!((p.reserved.0, n(p.cap_e2)), (150 * USDG as u128, 30_000));
     t.walk(m, 30_001, 30_001);
     assert_eq!(t.crank(&bob(), &[id]), ["waiting"]);
     let before = t.bal(&alice());
@@ -773,16 +814,16 @@ fn a_position_ends_after_14_days_at_the_first_quote_after_its_end() {
     let (mut t, m) = setup(50_000, 50_000);
     let a = t.filled(&alice(), m, Side::Long, 3, STAKE);
     let b = t.filled(&bob(), m, Side::Long, 3, STAKE);
-    let end = t.pos(a).unwrap().expires_at;
-    assert_eq!(end, t.pos(a).unwrap().opened_at + 14 * DAY);
-    assert_eq!(t.pos(b).unwrap().expires_at, end + 10);
+    let end = n(t.pos(a).unwrap().expires_at);
+    assert_eq!(end, n(t.pos(a).unwrap().opened_at) + 14 * DAY);
+    assert_eq!(n(t.pos(b).unwrap().expires_at), end + 10);
     t.now = end - 100;
     t.push(m, 52_000, 52_000);
     t.now = end + 10;
     t.fails(&bob(), "position has reached its end and is closing", |c| c.close(U64(b), U64(1)));
     assert_eq!(t.crank(&keeper(), &[a]), ["closing"]);
     let p = t.pos(a).unwrap();
-    assert_eq!((p.state, p.close_requested_at, p.close_limit_e2.0), (PositionState::Closing, end, 0));
+    assert_eq!((p.state, n(p.close_requested_at), p.close_limit_e2), (PositionState::Closing, end, None));
     assert!(logs_with("close_requested")[0].contains(r#""by":"expiry""#));
     t.fails(&alice(), "position is not open", |c| c.close(U64(a), U64(1)));
     t.next(m, 55_000, 55_000);
