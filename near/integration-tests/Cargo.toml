@@ -1,6 +1,6 @@
 [package]
 name = "integration-tests"
-description = "near-workspaces sandbox tests for usdg and rounds; run after building both wasm files"
+description = "near-workspaces sandbox tests for usdg, rounds and house; run after building the wasm files"
 version.workspace = true
 edition.workspace = true
 publish = false
