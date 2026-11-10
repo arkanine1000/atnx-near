@@ -399,9 +399,15 @@ test('relay, house on: a user relays from the house account; the rounds still fr
 test('relay, house off: a delegate to the house is checked as the rounds account and refused', async () => {
   const { deps, aliceKey, calls } = await world([rounds]);
   const off: RelayDeps = { ...deps, house: undefined };
+  // From the house account: not the rounds account on record (the sender is
+  // checked first, as before).
   const r = await handleRelay(off, alice, { signedDelegate: await sign(aliceKey, { senderId: 'alice-h.atnx.testnet' }) });
   assert.equal(r.status, 400);
-  assert.equal(r.body.error, 'receiver_not_allowed');
+  assert.equal(r.body.error, 'sender_mismatch');
+  // From the rounds account to the house: no policy names it.
+  const r2 = await handleRelay(off, alice, { signedDelegate: await sign(aliceKey, { senderId: 'alice.atnx.testnet' }) });
+  assert.equal(r2.status, 400);
+  assert.equal(r2.body.error, 'receiver_not_allowed');
   assert.equal(calls.send, 0);
 });
 

@@ -189,9 +189,11 @@ export async function checkDelegate(
   }
 
   const da = sd.delegateAction;
+  // The policy the receiver names. The sender is checked first, as with a
+  // single policy, against that policy (or the first one when the receiver
+  // names none, which is then refused just after).
   const chosen = selectPolicy(policies, da.receiverId);
-  if (!chosen) throw new RelayRejected('receiver_not_allowed', da.receiverId);
-  const policy = fullPolicy(chosen);
+  const policy = fullPolicy(chosen ?? (Array.isArray(policies) ? (policies as readonly RelayPolicy[])[0] : (policies as RelayPolicy)));
   if (ctx.expectedSenderId && da.senderId !== ctx.expectedSenderId) {
     throw new RelayRejected('sender_mismatch', `${da.senderId} is not the signed-in user's account`);
   }
@@ -199,7 +201,7 @@ export async function checkDelegate(
     throw new RelayRejected('sender_not_allowed', da.senderId);
   }
   if (ctx.relayerId && da.senderId === ctx.relayerId) throw new RelayRejected('sender_not_allowed', 'relayer itself');
-  if (da.receiverId !== policy.contractId) throw new RelayRejected('receiver_not_allowed', da.receiverId);
+  if (!chosen || da.receiverId !== policy.contractId) throw new RelayRejected('receiver_not_allowed', da.receiverId);
 
   // A function-call key may sign exactly one FunctionCall; neither contract
   // needs batching.
