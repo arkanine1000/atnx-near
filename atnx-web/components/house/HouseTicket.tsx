@@ -104,8 +104,10 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
       return null;
     }
   }, [atnxMarketId]);
-  const { tracks, add, dismiss } = useTracks();
-  const sentRecently = tracks.some((t) => nowMs - t.sentAtMs < 20_000);
+  // This account's orders and closes from this tab; the lines below show
+  // this market's.
+  const { tracks: allTracks, add, dismiss, settle } = useTracks(accountId);
+  const sentRecently = allTracks.some((t) => nowMs - t.sentAtMs < 20_000);
   const house = useNearHouse({ reference, accountId, fast: sentRecently });
   const cfg = house.config;
   const market = house.market.market;
@@ -270,7 +272,16 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
     />
   );
   const trackBlock = (
-    <TrackLines tracks={tracks} account={account} marketOf={() => market} cfg={cfg} nowMs={nowMs} act={act} onDismiss={dismiss} />
+    <TrackLines
+      tracks={allTracks.filter((t) => t.market === undefined || t.market === market.id)}
+      account={account}
+      marketOf={() => market}
+      cfg={cfg}
+      nowMs={nowMs}
+      act={act}
+      onDismiss={dismiss}
+      onSettled={settle}
+    />
   );
 
   if (funding === "faucet" && mine.length === 0) {
@@ -327,7 +338,7 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
       const r = await act("open", openArgs({ market: market!.id, side, leverage: lev, stake, limitE2 }));
       setLastTx(r.txHash);
       const id = typeof r.value === "string" && /^\d+$/.test(r.value) ? BigInt(r.value) : typeof r.value === "number" ? BigInt(r.value) : null;
-      if (id !== null) add(id, "open");
+      if (id !== null) add(id, "open", market!.id);
       setLimitText(null);
     } catch (e) {
       setError(friendlyNearError(e));
