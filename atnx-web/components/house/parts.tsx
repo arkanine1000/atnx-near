@@ -238,6 +238,7 @@ export function PositionLine({
           <button
             type="button"
             disabled={busy}
+            aria-label="Close position"
             onClick={() => onClose(p, limitPastE2(closeAt!, p.side, "close"))}
             title={`Closes at the ${p.side === "Long" ? "sell" : "buy"} price, no worse than ${fmtPriceE2(limitPastE2(closeAt!, p.side, "close"))}`}
             className="h-7 px-3 rounded-lg border border-surface text-secondary btn-quiet font-bold cursor-pointer disabled:opacity-50"
