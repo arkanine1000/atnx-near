@@ -67,7 +67,7 @@ export function AccountGate({ near, label, autoError, onRetry, guest = false }: 
       if (autoError && near.status === "none") {
         return (
           <>
-            <p className="text-xs text-atnx-magenta mb-3 break-words">{autoError}</p>
+            <p className="text-sm text-atnx-magenta light:text-atnx-magenta-light mb-3 break-words">{autoError}</p>
             <button type="button" onClick={onRetry} className={BUTTON}>
               Try again
             </button>
@@ -79,7 +79,7 @@ export function AccountGate({ near, label, autoError, onRetry, guest = false }: 
     case "other-browser":
       return (
         <>
-          <p className="text-xs text-secondary mb-3">Your account was set up in another browser. Start a new one here to trade; the old one keeps what it holds.</p>
+          <p className="text-sm text-secondary mb-3">Your account was set up in another browser. Start a new one here to trade; the old one keeps what it holds.</p>
           <button
             type="button"
             disabled={busy}
@@ -95,7 +95,7 @@ export function AccountGate({ near, label, autoError, onRetry, guest = false }: 
           >
             {busy ? "Setting up your account…" : "Start a new account here"}
           </button>
-          {fresh && <p className="text-xs text-atnx-magenta mt-3 break-words">{fresh}</p>}
+          {fresh && <p className="text-sm text-atnx-magenta light:text-atnx-magenta-light mt-3 break-words">{fresh}</p>}
         </>
       );
     case "unsupported":
@@ -103,7 +103,7 @@ export function AccountGate({ near, label, autoError, onRetry, guest = false }: 
     case "error":
       return (
         <>
-          <p className="text-xs text-atnx-magenta mb-3">{near.error ?? "Your account could not be read just now."}</p>
+          <p className="text-sm text-atnx-magenta light:text-atnx-magenta-light mb-3">{near.error ?? "Your account could not be read just now."}</p>
           <button type="button" onClick={near.refetch} className={BUTTON}>
             Try again
           </button>

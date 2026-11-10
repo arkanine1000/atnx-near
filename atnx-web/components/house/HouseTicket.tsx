@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Card, Segmented } from "@/components/ui";
-import { fmtUsdg, parseUsdg, shortHash } from "@/components/bm/format";
+import { fmtUsdg, parseUsdg } from "@/components/bm/format";
 import { FUND_HREF } from "@/components/rounds/FundFromAnyChain";
 import { AccountGate, useAutoAccount } from "@/components/rounds/NearAccountGate";
 import { NearGuestChoice } from "@/components/rounds/NearGuestChoice";
-import { AmountInput, Row, SideButton } from "@/components/rounds/ticket-parts";
+import { AmountInput, SideButton } from "@/components/rounds/ticket-parts";
 import { useNow } from "@/components/rounds/time";
 import { useNearAccount } from "@/components/rounds/useNearAccount";
 import { useAuth } from "@/context/AuthContext";
@@ -26,20 +26,21 @@ import {
   withinLimit,
 } from "@/lib/bm/house-ticket";
 import { faucetArgs, openArgs, uuidToReference, type HouseConfig, type HousePosition, type HouseSide } from "@/lib/bm/house-types";
-import { HOUSE_FAUCET_UNITS, isNearHouseDeployed, nearTxUrl } from "@/lib/near/config";
+import { HOUSE_FAUCET_UNITS, isNearHouseDeployed } from "@/lib/near/config";
 import { friendlyNearError } from "@/lib/near/errors";
-import { HouseFooter, PositionLine, TrackLines, pctText, sendClose, useTracks } from "./parts";
+import { Help, HowItWorks, LastTxLink, PositionLine, TestnetChip, TrackLines, pctText, sendClose, useTracks } from "./parts";
 import { useNearHouse } from "./useNearHouse";
 
 // The house ticket on a market page (NEXT_PUBLIC_BM_NEAR_PRODUCT=house):
 // atnx.app's long/short ticket on NEAR testnet, against the house
-// contract's vault. UP (a long) or DOWN (a short), an amount of 10 to 250
-// USDG, 1×, 2× or 3×, and what the order would do: the two prices, the worst
-// price accepted (filled in 1 % past the current price, editable), the
-// fee, the liquidation level, the maximum win and what it would be worth
-// the moment it filled. Every number is worked out here from the
-// contract's config and the market's newest quote with the same functions
-// the relay checks with (lib/bm/house-ticket.ts); the contract decides.
+// contract's vault. UP (a long) or DOWN (a short), each with the price it
+// gets in at, an amount of 10 to 250 USDG, 1×, 2× or 3×, and what the order
+// would do: the fee, the total, the liquidation level and the maximum win;
+// behind "Advanced", the entry, the worst price accepted (filled in 1 % past
+// the current price, editable) and what it would be worth the moment it
+// filled. Every number is worked out here from the contract's config and
+// the market's newest quote with the same functions the relay checks with
+// (lib/bm/house-ticket.ts); the contract decides.
 //
 // States, one plain line each: sign in or try as a guest, setting up the
 // account, "Get 10,000 test USDG", not on chain yet or not tradable yet,
@@ -47,10 +48,12 @@ import { useNearHouse } from "./useNearHouse";
 // paused, the price feed late. After the tap, "Confirming…" until the
 // order has filled (with its entry) or been refunded (with why, when the
 // market's quotes say); the user's positions on this market follow, each
-// with its value and a Close button.
+// with its value and a Close button. "How it works" is the "?" in the
+// header.
 
 const BUTTON = "btn-cyan w-full h-11 rounded-xl font-bold text-sm cursor-pointer disabled:opacity-50";
 const USDG = 1_000_000n;
+const ERROR = "text-sm text-atnx-magenta light:text-atnx-magenta-light mt-3 break-words";
 
 type DockSide = "up" | "down";
 
@@ -66,13 +69,34 @@ interface Props {
   onToast?: (message: string, detail: string | undefined, type: DockSide) => void;
 }
 
+// The card: "Trade <name>'s index" with the TESTNET chip, and the "?" that
+// opens how it works under the header.
 function Shell({ name, children }: { name: string; children: React.ReactNode }) {
   return (
     <Card className="p-4 sm:p-5">
-      <p className="text-sm font-bold text-primary leading-snug mb-3">Trade {name}&apos;s index</p>
-      {children}
-      <HouseFooter />
+      <Help label="How it works" note={<HowItWorks />}>
+        {(help) => (
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <p className="text-base font-bold text-primary leading-snug">Trade {name}&apos;s index</p>
+              <TestnetChip />
+            </div>
+            {help}
+          </div>
+        )}
+      </Help>
+      <div className="mt-3">{children}</div>
     </Card>
+  );
+}
+
+// A breakdown row: the label in the secondary ink, the number at 16 px.
+function Line({ k, v, tone = "text-primary" }: { k: React.ReactNode; v: React.ReactNode; tone?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2 py-0.5">
+      <span className="min-w-0 text-sm text-secondary">{k}</span>
+      <span className={`shrink-0 whitespace-nowrap text-base font-semibold tabular-nums text-right ${tone}`}>{v}</span>
+    </div>
   );
 }
 
@@ -120,7 +144,12 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
   const [limitText, setLimitText] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The newest transaction with no notice to carry its link (a test USDG
+  // claim); an order's link is in its own notice.
   const [lastTx, setLastTx] = useState<string | null>(null);
+  // The "Advanced" fold under the breakdown: the entry, the worst price and
+  // the worth on fill.
+  const [advanced, setAdvanced] = useState(false);
 
   // ------------------------------------------------------- not trading yet
 
@@ -176,15 +205,17 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
   const limitE2 = limitText === null ? autoLimit : parsePriceE2(limitText);
   const mine = (account?.positions ?? []).filter((p) => p.market === market.id).sort((a, b) => (a.id < b.id ? 1 : -1));
 
+  // The two prices, in every state but the order form, whose UP and DOWN
+  // tiles carry them.
   const priceLine = prices ? (
-    <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
-      <div className="rounded-lg border border-surface bg-elevated/60 px-3 py-2">
-        <div className="text-tertiary">Buy price</div>
-        <div className="font-display font-bold text-lg tabular-nums text-primary">{fmtPriceE2(prices.buy)}</div>
+    <div className="grid grid-cols-2 gap-2 mb-4">
+      <div className="rounded-lg border border-surface px-3 py-2">
+        <div className="text-sm text-secondary">Buy price</div>
+        <div className="font-display font-bold text-xl tabular-nums text-primary">{fmtPriceE2(prices.buy)}</div>
       </div>
-      <div className="rounded-lg border border-surface bg-elevated/60 px-3 py-2">
-        <div className="text-tertiary">Sell price</div>
-        <div className="font-display font-bold text-lg tabular-nums text-primary">{fmtPriceE2(prices.sell)}</div>
+      <div className="rounded-lg border border-surface px-3 py-2">
+        <div className="text-sm text-secondary">Sell price</div>
+        <div className="font-display font-bold text-xl tabular-nums text-primary">{fmtPriceE2(prices.sell)}</div>
       </div>
     </div>
   ) : null;
@@ -204,7 +235,7 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
     return (
       <Shell name={name}>
         {priceLine}
-        {mb && <p className="text-xs text-secondary mb-3">{marketLine(mb)}</p>}
+        {mb && <p className="text-sm text-secondary mb-3">{marketLine(mb)}</p>}
         {guestFlow ? (
           <>
             <button type="button" onClick={openLoginModal} className={BUTTON}>
@@ -290,10 +321,10 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
         {priceLine}
         <p className="text-sm text-secondary mb-3">You need test USDG to trade.</p>
         {faucetButton}
-        <Link href={FUND_HREF} className="block mt-3 text-[11px] text-tertiary link-quiet">
+        <Link href={FUND_HREF} className="block mt-3 text-sm text-secondary underline underline-offset-2 link-quiet">
           Have USDC on another chain? See what bringing it to NEAR would cost.
         </Link>
-        {error && <p className="text-xs text-atnx-magenta mt-3 break-words">{error}</p>}
+        {error && <p className={ERROR}>{error}</p>}
         {trackBlock}
       </Shell>
     );
@@ -311,7 +342,7 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
         <p className="text-sm text-secondary">{marketLine(mBlock)}</p>
         {positionsBlock}
         {trackBlock}
-        {error && <p className="text-xs text-atnx-magenta mt-3 break-words">{error}</p>}
+        {error && <p className={ERROR}>{error}</p>}
       </Shell>
     );
   }
@@ -336,9 +367,11 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
     setError(null);
     try {
       const r = await act("open", openArgs({ market: market!.id, side, leverage: lev, stake, limitE2 }));
-      setLastTx(r.txHash);
       const id = typeof r.value === "string" && /^\d+$/.test(r.value) ? BigInt(r.value) : typeof r.value === "number" ? BigInt(r.value) : null;
-      if (id !== null) add(id, "open", market!.id);
+      // The order's notice carries its link; with no position id to follow,
+      // the link goes under the form instead.
+      if (id !== null) add(id, "open", market!.id, r.txHash);
+      setLastTx(id !== null ? null : r.txHash);
       setLimitText(null);
     } catch (e) {
       setError(friendlyNearError(e));
@@ -348,10 +381,13 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
   }
 
   const up = side === "Long";
+  // A worst price that keeps the order from going out holds the fold open,
+  // so the field the line under the button talks about is on screen.
+  const limitProblem = limitText !== null && (limitE2 === null || limitPast);
+  const advancedOpen = advanced || limitProblem;
   return (
     <Shell name={name}>
-      {priceLine}
-      <div className="grid grid-cols-2 gap-2 mb-4" role="radiogroup" aria-label="Side">
+      <div className="grid grid-cols-2 gap-2 mb-3" role="radiogroup" aria-label="Side">
         <SideButton side="up" caption={prices ? `in at ${fmtPriceE2(prices.buy)}` : "UP"} selected={up} onClick={() => (setSide("Long"), setLimitText(null))} />
         <SideButton side="down" caption={prices ? `in at ${fmtPriceE2(prices.sell)}` : "DOWN"} selected={!up} onClick={() => (setSide("Short"), setLimitText(null))} />
       </div>
@@ -359,79 +395,99 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
       {/* Whole USDG, rounded down, so "You have" never reads more than the balance. */}
       <AmountInput amount={amount} setAmount={setAmount} usdg={account.balance - (account.balance % USDG)} maxBuy={maxS !== null ? fmtUsdg(maxS, 2).replace(/,/g, "") : String(minStake)} label="Amount" />
 
-      <div className="flex items-center justify-between gap-3 mt-4">
-        <span className="text-xs text-secondary">Leverage</span>
-        <Segmented ariaLabel="Leverage" value={leverage} onChange={(v) => setLeverage(v)} options={[{ value: "1", label: "1×" }, { value: "2", label: "2×" }, { value: "3", label: "3×" }]} />
+      <div className="flex items-center justify-between gap-3 mt-3">
+        <span className="text-sm text-secondary">Leverage</span>
+        <Segmented ariaLabel="Leverage" size="md" value={leverage} onChange={(v) => setLeverage(v)} options={[{ value: "1", label: "1×" }, { value: "2", label: "2×" }, { value: "3", label: "3×" }]} />
       </div>
 
       {nums && (
-        <dl className="mt-4 rounded-xl bg-elevated/60 border border-surface px-3 py-2.5 space-y-1.5 text-[11px]">
-          <Row k={up ? "You get in at the buy price" : "You get in at the sell price"} v={fmtPriceE2(nums.entryE2)} />
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-tertiary">
-              Worst price you accept
-              {limitText !== null && (
-                <button type="button" onClick={() => setLimitText(null)} className="ml-1.5 link-quiet cursor-pointer">
-                  reset
-                </button>
-              )}
-            </dt>
-            <dd>
-              <input
-                inputMode="decimal"
-                aria-label="Worst price you accept"
-                value={limitText ?? (autoLimit !== null ? (Number(autoLimit) / 100).toFixed(2) : "")}
-                onChange={(e) => setLimitText(e.target.value)}
-                className="w-24 rounded-md border border-surface bg-elevated px-2 py-1 text-right font-mono tabular-nums text-secondary outline-none focus:border-atnx-cyan/60"
-              />
-            </dd>
-          </div>
-          <Row k={`Fee (${(cfg.feeBps ?? 100) / 100} %), on top`} v={`${fmtUsdg(nums.fee)} USDG`} />
+        <div className="mt-3 rounded-xl border border-surface px-3 py-1.5">
+          <Line k={`Fee (${(cfg.feeBps ?? 100) / 100} %)`} v={`${fmtUsdg(nums.fee)} USDG`} />
+          <Line k="Total" v={`${fmtUsdg(nums.cost)} USDG`} />
           {/* A 1× UP position has no liquidation level above zero. */}
-          <Row k="Liquidation at" v={side === "Long" && lev === 1 ? "None" : fmtPriceE2(nums.liquidationE2)} />
-          <Row k="Maximum win" v={`+${fmtUsdg(nums.maxProfit)} USDG`} />
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-tertiary" title="What closing at once would pay back">
-              Worth on fill
-            </dt>
-            <dd className={`tabular-nums ${nums.valueOnFill >= stake! ? "text-secondary" : "text-atnx-magenta"}`}>
-              {fmtUsdg(nums.valueOnFill)} USDG ({pctText(nums.valueOnFillPct)})
-            </dd>
+          <Line k="Liquidation at" v={side === "Long" && lev === 1 ? "None" : fmtPriceE2(nums.liquidationE2)} />
+          <Line k="Maximum win" v={`+${fmtUsdg(nums.maxProfit)} USDG`} />
+
+          <button
+            type="button"
+            onClick={() => setAdvanced((v) => !v)}
+            aria-expanded={advancedOpen}
+            className="mt-1 w-full flex items-center justify-between gap-3 border-t border-surface pt-2.5 pb-1.5 text-sm font-bold text-secondary link-quiet cursor-pointer"
+          >
+            <span>
+              Advanced
+              {limitText !== null && <span className="font-normal"> · your worst price</span>}
+            </span>
+            <span aria-hidden="true" className={`inline-block transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${advancedOpen ? "rotate-90" : ""}`}>
+              ▸
+            </span>
+          </button>
+          {/* Always mounted so it can open and fold with the atnx.app
+              ticket's motion (.trade-advanced in globals.css); inert while
+              folded away. */}
+          <div data-open={advancedOpen ? "" : undefined} inert={!advancedOpen} className="trade-advanced grid">
+            <div className="trade-advanced-body min-h-0 overflow-hidden">
+              <div className="pb-1.5">
+                <Line k={up ? "You get in at the buy price" : "You get in at the sell price"} v={fmtPriceE2(nums.entryE2)} />
+                <div className="flex items-center justify-between gap-2 py-0.5">
+                  <span className="min-w-0 text-sm text-secondary">
+                    Worst price you accept
+                    {limitText !== null && (
+                      <button type="button" onClick={() => setLimitText(null)} className="ml-2 underline underline-offset-2 link-quiet cursor-pointer">
+                        reset
+                      </button>
+                    )}
+                  </span>
+                  <input
+                    inputMode="decimal"
+                    aria-label="Worst price you accept"
+                    value={limitText ?? (autoLimit !== null ? (Number(autoLimit) / 100).toFixed(2) : "")}
+                    onChange={(e) => setLimitText(e.target.value)}
+                    className="w-24 shrink-0 rounded-md border border-surface bg-elevated px-2 py-1 text-right font-mono text-base tabular-nums text-primary outline-none focus:border-atnx-cyan/60"
+                  />
+                </div>
+                <Help label="About Worth on fill" note={`Closing at once pays at the ${up ? "sell" : "buy"} price, so a new position usually starts a little down.`} noteClassName="mb-1.5">
+                  {(help) => (
+                    <Line
+                      k={
+                        <span className="inline-flex items-center gap-1.5 whitespace-nowrap" title="What closing at once would pay back">
+                          Worth on fill {help}
+                        </span>
+                      }
+                      v={
+                        <>
+                          {fmtUsdg(nums.valueOnFill)} USDG <span className="text-sm">({pctText(nums.valueOnFillPct)})</span>
+                        </>
+                      }
+                      tone={nums.valueOnFill >= stake! ? "text-primary" : "text-atnx-magenta light:text-atnx-magenta-light"}
+                    />
+                  )}
+                </Help>
+              </div>
+            </div>
           </div>
-          {nums.valueOnFillPct < -0.05 && (
-            <p className="pt-1 text-tertiary">Closing at once pays at the {up ? "sell" : "buy"} price, so a new position usually starts a little down.</p>
-          )}
-        </dl>
+        </div>
       )}
 
       <button
         type="button"
         onClick={submit}
         disabled={!canSubmit}
-        className={`mt-4 w-full h-12 rounded-xl font-bold text-sm cursor-pointer disabled:opacity-40 ${up ? "btn-cyan" : "btn-magenta"}`}
+        className={`mt-3 w-full h-12 rounded-xl font-bold text-sm cursor-pointer disabled:opacity-40 ${up ? "btn-cyan" : "btn-magenta"}`}
       >
         {busy === "open" ? "Sending…" : `Open ${up ? "UP" : "DOWN"} ${lev}×${stake && stake > 0n ? ` · ${fmtUsdg(stake, stake % USDG === 0n ? 0 : 2)} USDG` : ""}`}
       </button>
-      {formError && <p className="mt-2 text-xs text-secondary">{formError}</p>}
-      {nums && !formError && (
-        <p className="mt-2 text-[11px] text-tertiary">
-          Costs {fmtUsdg(nums.cost)} USDG with the fee. It fills in a few seconds at a price read after you tap.
-        </p>
-      )}
+      {formError && <p className="mt-2 text-sm text-secondary">{formError}</p>}
 
       {funding !== "ok" && (
-        <div className="mt-3 text-xs">
+        <div className="mt-3 text-sm">
           {funding === "faucet" ? faucetButton : <p className="text-secondary">You have had all the test USDG this account can get. Close a position to free some up.</p>}
         </div>
       )}
 
       {trackBlock}
-      {error && <p className="text-xs text-atnx-magenta mt-3 break-words">{error}</p>}
-      {lastTx && (
-        <a href={nearTxUrl(lastTx)} target="_blank" rel="noreferrer" className="block mt-2 text-[11px] text-tertiary link-quiet">
-          View last transaction {shortHash(lastTx)} ↗
-        </a>
-      )}
+      {error && <p className={ERROR}>{error}</p>}
+      {lastTx && <LastTxLink txHash={lastTx} className="mt-3" />}
       {positionsBlock}
     </Shell>
   );
@@ -472,7 +528,7 @@ function PositionsHere({
   if (positions.length === 0) return null;
   return (
     <div className="mt-4 pt-3 border-t border-surface">
-      <div className="text-xs font-bold text-secondary mb-1">Your positions here</div>
+      <div className="text-sm font-bold text-primary">Your positions here</div>
       {positions.map((p) => (
         <PositionLine key={p.id.toString()} p={p} market={market} cfg={cfg} nowMs={nowMs} busy={busyId === p.id.toString()} onClose={onClose} />
       ))}
