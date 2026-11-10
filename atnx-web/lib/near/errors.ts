@@ -25,6 +25,10 @@ const CODES: Record<string, string> = {
   faucet_full: 'You already have plenty of test USDG.',
   rate_limited: 'That is a lot of actions for one hour. Try again later.',
   busy: 'Another action is still going through. Try again in a moment.',
+  // The network could not be reached: before anything was sent, or while
+  // it was being sent.
+  rpc_busy: 'The network is busy. Nothing was sent; try again in a moment.',
+  rpc_unsure: 'The network is slow to answer, so this may still go through. Check in a moment before you try again.',
   expired: 'That took too long to go through. Try again.',
   stale_nonce: 'Something else went through first. Try again.',
   signed_out: 'Sign in to trade.',

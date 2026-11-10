@@ -289,8 +289,22 @@ test('relay: a failure on chain is reported with its hash and message', async ()
   const r = await handleRelay({ store, relayer }, alice, { signedDelegate: 'ok' });
   assert.equal(r.status, 422);
   assert.deepEqual(r.body, { error: 'failed_on_chain', txHash: 'TXF', message: 'fewer shares than the minimum you set' });
-  const crash = await handleRelay({ store, relayer: fakeRelayer({ send: async () => Promise.reject(new Error('socket hang up')) }).relayer }, alice, { signedDelegate: 'ok' });
+  const crash = await handleRelay({ store, relayer: fakeRelayer({ send: async () => Promise.reject(new Error('boom')) }).relayer }, alice, { signedDelegate: 'ok' });
   assert.equal(crash.status, 502);
+});
+
+test('relay: the RPC out of reach says whether anything may have been sent', async () => {
+  const { store } = await withAccount();
+  const limited = () => Object.assign(new Error('Rate limits exceeded'), { cause: 429 });
+  // Before the send: nothing went out.
+  const before = await handleRelay({ store, relayer: fakeRelayer({ preflight: async () => Promise.reject(limited()) }).relayer }, alice, { signedDelegate: 'ok' });
+  assert.deepEqual([before.status, before.body], [503, { error: 'rpc_busy' }]);
+  // The send turned away unread: nothing went out either.
+  const refused = await handleRelay({ store, relayer: fakeRelayer({ send: async () => Promise.reject(limited()) }).relayer }, alice, { signedDelegate: 'ok' });
+  assert.deepEqual([refused.status, refused.body], [503, { error: 'rpc_busy' }]);
+  // The connection dropped during the send: it may still land.
+  const dropped = await handleRelay({ store, relayer: fakeRelayer({ send: async () => Promise.reject(new Error('socket hang up')) }).relayer }, alice, { signedDelegate: 'ok' });
+  assert.deepEqual([dropped.status, dropped.body], [503, { error: 'rpc_unsure' }]);
 });
 
 test('relay: one delegate in flight per user', async () => {

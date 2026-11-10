@@ -75,6 +75,18 @@ export function isRetryableRpcError(err: unknown): boolean {
   return /fetch failed|failed to fetch|FetchError|NetworkError|load failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR|socket hang up|other side closed/i.test(t);
 }
 
+// Whether the endpoint turned the request away unread (rate limited), so a
+// transaction in it was certainly not sent on.
+export function isRpcRefusal(err: unknown): boolean {
+  let e: unknown = err;
+  for (let i = 0; i < 3 && e && typeof e === 'object'; i++) {
+    const cause = (e as { cause?: unknown }).cause;
+    if (cause === 429) return true;
+    e = cause;
+  }
+  return /rate limit|too many requests|"code":\s*-429/i.test(texts(err));
+}
+
 // What the log says about a refusal: never the message, which may hold the
 // URL.
 function refusalWord(err: unknown): string {
@@ -193,6 +205,9 @@ export function rpcProvider(urls: string | readonly string[], opts: RpcProviderO
         const s = await statusAt(e, tx, noWait ? 'NONE' : waitUntil);
         return s === null ? null : method === 'broadcast_tx_async' ? tx.hash : s;
       };
+      // The error passed on when every endpoint fails: a refusal only while
+      // no send could have gone out, else one that leaves it open.
+      let blame: unknown = first;
       for (let i = 1; i < tried.length; i++) {
         const e = tried[i];
         try {
@@ -203,7 +218,10 @@ export function rpcProvider(urls: string | readonly string[], opts: RpcProviderO
           try {
             return await e.client.sendJsonRpc(method, params);
           } catch (again) {
-            if (isRetryableRpcError(again)) throw again;
+            if (isRetryableRpcError(again)) {
+              if (isRpcRefusal(blame)) blame = again;
+              throw again;
+            }
             const late = await known(e).catch(() => null);
             if (late !== null) return late;
             throw redact(again);
@@ -213,7 +231,7 @@ export function rpcProvider(urls: string | readonly string[], opts: RpcProviderO
           rest(e, err, tried[i + 1]);
         }
       }
-      throw redact(first);
+      throw redact(blame);
     }
   }
 

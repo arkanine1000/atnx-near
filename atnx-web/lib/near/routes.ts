@@ -10,6 +10,7 @@ import { GUEST_CAPS, GUEST_LOCK, GUEST_METHODS, guestAccountId, isGuestAccountId
 import { handleCandidates, pickAccountId, type HandleSource } from './handle';
 import { houseAccountId, houseKeyVerdict, roundsAccountOf, type AccountKey } from './house-account';
 import { RelayFailed, RelayRejected, delegateTarget, type CheckedDelegate, type RelayResult, type Relayer } from './relay';
+import { isRetryableRpcError, isRpcRefusal } from './rpc';
 import type { LockResult, NearAccountRow, NearAccountStore, NearGuestRow, NearGuestStore, RelayLockOptions } from './store';
 
 export interface RouteUser extends HandleSource {
@@ -441,9 +442,14 @@ async function relayLocked(
   if (lock === 'rate') return json(429, { error: 'rate_limited' });
   if (lock === 'no_account') return json(409, { error: 'no_account' });
 
+  // Whether the transaction may have gone out: an RPC failure before the
+  // send means nothing was sent (rpc_busy); one during the send that the
+  // endpoint did not refuse outright may still land (rpc_unsure).
+  let sending = false;
   try {
     await deps.relayer.preflight(checked);
     if (deps.appCheck) await deps.appCheck(checked);
+    sending = true;
     const r = await deps.relayer.send(checked);
     if (deps.afterSend) {
       try {
@@ -456,6 +462,7 @@ async function relayLocked(
   } catch (err) {
     if (err instanceof RelayRejected) return json(400, { error: err.reason, detail: err.detail ?? null });
     if (err instanceof RelayFailed) return json(422, { error: 'failed_on_chain', txHash: err.txHash, message: err.contractMessage });
+    if (isRetryableRpcError(err)) return json(503, { error: sending && !isRpcRefusal(err) ? 'rpc_unsure' : 'rpc_busy' });
     return json(502, { error: 'relay_error', detail: String((err as Error)?.message ?? err).slice(0, 200) });
   } finally {
     await lockFns.release(token).catch(() => {});

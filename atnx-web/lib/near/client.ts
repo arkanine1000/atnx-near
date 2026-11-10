@@ -9,7 +9,7 @@
 // over itself.
 import { Account, JsonRpcProvider, actions, base64Encode, buildDelegateAction, encodeSignedDelegate, type Signer } from 'near-api-js';
 import { DELEGATE_TTL_BLOCKS, METHOD_GAS, NEAR_ROUNDS, type HouseMethod, type UserMethod } from './config';
-import { nearRpcProvider, rpcProvider } from './rpc';
+import { isRetryableRpcError, nearRpcProvider, rpcProvider } from './rpc';
 import type { RoundsEvent } from './relay';
 
 export interface SignedCall {
@@ -120,7 +120,15 @@ export function createActor(cfg: ActorConfig): { act: Act } {
   async function once(method: NearMethod, args: Record<string, unknown>): Promise<ActResult> {
     const gas = gasTable[method];
     if (gas === undefined) throw new NearActError('method_not_allowed', 0, null, null, method);
-    const { signedDelegateBase64 } = await signCall({ provider, accountId: cfg.accountId, signer: cfg.signer, contractId, methodName: method, args, gas });
+    let signedDelegateBase64: string;
+    try {
+      ({ signedDelegateBase64 } = await signCall({ provider, accountId: cfg.accountId, signer: cfg.signer, contractId, methodName: method, args, gas }));
+    } catch (err) {
+      // The reads a signature needs (the key's nonce, a recent block) did
+      // not get through: nothing was sent.
+      if (isRetryableRpcError(err)) throw new NearActError('rpc_busy', 503, null, null);
+      throw err;
+    }
     const res = await doFetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
