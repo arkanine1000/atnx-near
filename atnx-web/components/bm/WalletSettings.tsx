@@ -18,7 +18,9 @@ const NearAccountSettings = dynamic(() => import("@/components/rounds/NearAccoun
 // testnets (bounded markets, the first iteration) and Solana devnet (the
 // rounds). Each has its address, network, a mock USDG faucet and
 // disconnect. With NEXT_PUBLIC_BM_CHAIN=near the rounds block is the NEAR
-// trading account instead (NearAccountSettings): no wallet to connect.
+// trading account instead (NearAccountSettings): no wallet to connect. The
+// house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) shows the NEAR account
+// alone.
 export function WalletSettings() {
   return (
     <div className="space-y-5">
@@ -33,10 +35,13 @@ export function WalletSettings() {
           <SolanaWalletSettings />
         </div>
       )}
-      <div>
-        <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">EVM testnets · bounded markets</h3>
-        <EvmWalletSettings />
-      </div>
+      {/* The house build has no bounded markets, so no EVM wallet to connect. */}
+      {!isHouseProduct() && (
+        <div>
+          <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">EVM testnets · bounded markets</h3>
+          <EvmWalletSettings />
+        </div>
+      )}
     </div>
   );
 }

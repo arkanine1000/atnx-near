@@ -39,7 +39,7 @@ function quoteAfterResponse(checked: CheckedDelegate, result: RelayResult): void
     try {
       const { quoteOnDemand } = await import('@/lib/bm/house-keeper');
       const r = await quoteOnDemand(id);
-      if (!r.ok) console.warn('[near/relay] quote on demand did not send', { positionId: r.positionId, reason: r.reason });
+      if (!r.ok) console.warn('[near/relay] quote on demand did not send', { positionId: r.positionId, reason: r.reason, error: r.error?.slice(0, 200) ?? null });
     } catch (err) {
       console.error('[near/relay] quote on demand failed', (err as Error)?.message ?? err);
     }

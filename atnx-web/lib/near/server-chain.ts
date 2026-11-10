@@ -5,6 +5,7 @@ import { Account, JsonRpcProvider, KeyPair, KeyPairSigner, PublicKey, actions, n
 import { USER_METHODS } from './config';
 import type { AccountKey } from './house-account';
 import { normalisePermission, rpcChainReader } from './relay';
+import { rpcProvider } from './rpc';
 import type { AccountChain, HouseAccountChain } from './routes';
 
 // The function-call key's allowance. The relayer pays all gas, so it never
@@ -30,49 +31,63 @@ export function houseAccountCreationActions(publicKey: string, houseId: string):
 
 const MISSING_ACCOUNT = /does not exist|UNKNOWN_ACCOUNT|doesn't exist/i;
 
+type KeyListProvider = Pick<JsonRpcProvider, 'viewAccessKeyList' | 'viewAccount'>;
+
+async function accountExistsOn(provider: Pick<JsonRpcProvider, 'viewAccount'>, accountId: string): Promise<boolean> {
+  try {
+    await provider.viewAccount({ accountId });
+    return true;
+  } catch (e) {
+    if (MISSING_ACCOUNT.test(String((e as Error)?.message ?? e))) return false;
+    throw e;
+  }
+}
+
+// An account's access keys, or null when the account does not exist. The
+// RPC answers view_access_key_list with an empty list for an account that
+// is not there, so an empty list is checked against the account itself: an
+// account that exists with no key is an empty list, a missing one null.
+export async function readAccessKeys(provider: KeyListProvider, accountId: string): Promise<AccountKey[] | null> {
+  let list: { keys?: Array<{ public_key: string; access_key: { permission: unknown } }> };
+  try {
+    list = (await provider.viewAccessKeyList({ accountId })) as unknown as typeof list;
+  } catch (e) {
+    if (MISSING_ACCOUNT.test(String((e as Error)?.message ?? e))) return null;
+    throw e;
+  }
+  // A kind of key this code does not know reads as full access: never
+  // something to reuse.
+  const permission = (p: unknown) => {
+    try {
+      return normalisePermission(p);
+    } catch {
+      return 'FullAccess' as const;
+    }
+  };
+  const keys = (list.keys ?? []).map((k) => ({ publicKey: String(k.public_key), permission: permission(k.access_key.permission) }));
+  if (keys.length === 0 && !(await accountExistsOn(provider, accountId))) return null;
+  return keys;
+}
+
 // The parent signs CreateAccount + AddKey for <handle>.<parent>: zero
 // NEAR (a zero-balance account, under 770 bytes) and one key, the user's
 // browser key, as a function-call key for the rounds contract and the user
 // methods only. No custody key. With `houseId`, it also makes house
 // accounts (createHouseAccount) and lists an account's keys (accessKeys).
 export function parentAccountChain(opts: {
-  rpcUrl: string;
+  // One endpoint, or several tried in order (lib/near/rpc.ts).
+  rpcUrl: string | readonly string[];
   parentId: string;
   parentKey: string;
   roundsId: string;
   houseId?: string;
 }): AccountChain & HouseAccountChain & { spendable(): Promise<bigint> } {
-  const provider = new JsonRpcProvider({ url: opts.rpcUrl });
+  const provider = rpcProvider(opts.rpcUrl);
   const parent = new Account(opts.parentId, provider, new KeyPairSigner(KeyPair.fromString(opts.parentKey as KeyPairString)));
   const reader = rpcChainReader(provider);
   return {
-    async accountExists(accountId) {
-      try {
-        await provider.viewAccount({ accountId });
-        return true;
-      } catch (e) {
-        if (MISSING_ACCOUNT.test(String((e as Error)?.message ?? e))) return false;
-        throw e;
-      }
-    },
-    async accessKeys(accountId): Promise<AccountKey[] | null> {
-      try {
-        const list = (await provider.viewAccessKeyList({ accountId })) as unknown as { keys?: Array<{ public_key: string; access_key: { permission: unknown } }> };
-        // A kind of key this code does not know reads as full access: never
-        // something to reuse.
-        const permission = (p: unknown) => {
-          try {
-            return normalisePermission(p);
-          } catch {
-            return 'FullAccess' as const;
-          }
-        };
-        return (list.keys ?? []).map((k) => ({ publicKey: String(k.public_key), permission: permission(k.access_key.permission) }));
-      } catch (e) {
-        if (MISSING_ACCOUNT.test(String((e as Error)?.message ?? e))) return null;
-        throw e;
-      }
-    },
+    accountExists: (accountId) => accountExistsOn(provider, accountId),
+    accessKeys: (accountId) => readAccessKeys(provider, accountId),
     async createHouseAccount({ accountId, publicKey }) {
       if (!opts.houseId) throw new Error('house accounts are not configured');
       const res = await parent.signAndSendTransaction({

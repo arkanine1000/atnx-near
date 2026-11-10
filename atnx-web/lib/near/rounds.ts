@@ -8,7 +8,8 @@
 // serve both chains.
 import { JsonRpcProvider } from 'near-api-js';
 import { payoutIf, type PositionLike, type RoundLike, type RoundSide } from '@/lib/bm/dpm';
-import { NEAR_ROUNDS, NEAR_RPC } from './config';
+import { NEAR_ROUNDS } from './config';
+import { nearRpcProvider, rpcProvider } from './rpc';
 
 export type { RoundSide };
 export type NearRoundState = 'presale' | 'live' | 'settled' | 'void';
@@ -193,7 +194,7 @@ export function viewFn(provider: JsonRpcProvider, contractId: string): ViewFn {
 }
 
 export function roundsViewer(opts: { rpcUrl?: string; contractId?: string; provider?: JsonRpcProvider } = {}): RoundsViewer {
-  const provider = opts.provider ?? new JsonRpcProvider({ url: opts.rpcUrl ?? NEAR_RPC });
+  const provider = opts.provider ?? (opts.rpcUrl ? rpcProvider(opts.rpcUrl) : nearRpcProvider());
   const view = viewFn(provider, opts.contractId ?? NEAR_ROUNDS);
   return {
     async seriesByReference(reference) {

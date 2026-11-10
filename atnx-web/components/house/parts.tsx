@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { fmtUsdg } from "@/components/bm/format";
 import { closePrice, quotePrices, newestQuote } from "@/lib/bm/house-math";
 import {
@@ -21,6 +21,7 @@ import type { ActResult, NearMethod } from "@/lib/near/client";
 import { friendlyNearError } from "@/lib/near/errors";
 import type { HouseAccountData } from "./useNearHouse";
 import { lastSeenPosition, seenAsClosing } from "./useNearHouse";
+import { addTrack, dropTrack, emptyTracks, settleTrack, subscribeTracks, tracksOf, type StoredTrack } from "./track-store";
 
 // The parts the house ticket and the house portfolio share: a position's
 // line with its value and its Close button, the lines that follow an order
@@ -44,21 +45,31 @@ export function signedUsdg(units: bigint): string {
 
 // ---------------------------------------------------------------- tracks
 
-// The orders and closes this view sent, followed until they resolve.
-export function useTracks() {
-  const [tracks, setTracks] = useState<Tracked[]>([]);
-  const add = useCallback((id: bigint, kind: Tracked["kind"]) => {
-    setTracks((ts) => [...ts.filter((t) => t.id !== id), { id, kind, sentAtMs: Date.now(), last: null }].slice(-6));
-  }, []);
-  const dismiss = useCallback((id: bigint) => setTracks((ts) => ts.filter((t) => t.id !== id)), []);
-  return { tracks, add, dismiss };
+// The orders and closes this account sent from this tab, followed until
+// they resolve. Kept for the tab (./track-store.ts), so a reload, or the
+// portfolio after the market page, still says what became of them. With
+// `market`, only that market's.
+export function useTracks(accountId: string | null, market?: number | null) {
+  const all = useSyncExternalStore(subscribeTracks, () => tracksOf(accountId), emptyTracks);
+  const tracks: StoredTrack[] = market === undefined || market === null ? all : all.filter((t) => t.market === undefined || t.market === market);
+  const add = useCallback(
+    (id: bigint, kind: Tracked["kind"], onMarket?: number) => {
+      if (accountId) addTrack(accountId, { id, kind, sentAtMs: Date.now(), last: null, market: onMarket });
+    },
+    [accountId],
+  );
+  const dismiss = useCallback((id: bigint) => accountId && dropTrack(accountId, id), [accountId]);
+  const settle = useCallback((id: bigint) => accountId && settleTrack(accountId, id), [accountId]);
+  return { tracks, add, dismiss, settle };
 }
 
 // A track's outcome now, from the account's positions and history and its
 // market; the position as last read while it waited fills in what a gone
 // order looked like.
-export function outcomeOf(t: Tracked, account: HouseAccountData | null, market: HouseMarket | null, cfg: HouseConfig | null, nowMs: number): TrackedOutcome | null {
-  if (!account || !cfg) return null;
+// Null while there is nothing to say yet: the account, the config or (when
+// `market` is undefined) the market not read yet.
+export function outcomeOf(t: Tracked, account: HouseAccountData | null, market: HouseMarket | null | undefined, cfg: HouseConfig | null, nowMs: number): TrackedOutcome | null {
+  if (!account || !cfg || market === undefined) return null;
   const position = account.positions.find((p) => p.id === t.id) ?? null;
   const full: Tracked = { ...t, last: t.last ?? lastSeenPosition(t.id), sawClosing: t.sawClosing || seenAsClosing(t.id) };
   return trackOutcome(full, { position, history: account.history, market }, cfg, nowMs);
@@ -66,10 +77,10 @@ export function outcomeOf(t: Tracked, account: HouseAccountData | null, market: 
 
 export function trackLine(t: Tracked, o: TrackedOutcome): string {
   if (o.phase === "waiting") {
-    if (t.kind === "close") return "Closing… This usually takes 5 to 10 seconds.";
+    if (t.kind === "close") return "Closing… This usually takes about 10 seconds.";
     if (o.cancellable) return "Your order has not filled. You can cancel it now and get your stake and fee back.";
     if (o.slow) return "This is taking longer than usual. If it has not filled after 15 minutes, you can cancel it and get your stake and fee back.";
-    return "Confirming your order… This usually takes 5 to 10 seconds.";
+    return "Confirming your order… This usually takes about 10 seconds.";
   }
   if (o.phase === "filled") return o.entryE2 > 0n ? `Filled at ${fmtPriceE2(o.entryE2)}.` : "Filled.";
   if (o.phase === "refunded") return refundLine(o.reason);
@@ -87,23 +98,34 @@ export function TrackLines({
   nowMs,
   act,
   onDismiss,
+  onSettled,
 }: {
   tracks: Tracked[];
   account: HouseAccountData | null;
-  marketOf: (id: bigint) => HouseMarket | null;
+  // Undefined while the market is still being read.
+  marketOf: (id: bigint) => HouseMarket | null | undefined;
   cfg: HouseConfig | null;
   nowMs: number;
   act: Act;
   onDismiss: (id: bigint) => void;
+  // A line now shows how its order or close ended.
+  onSettled?: (id: bigint) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const outcomes = tracks.map((t) => [t, outcomeOf(t, account, marketOf(t.id), cfg, nowMs)] as const);
+  const settled = outcomes
+    .filter(([, o]) => o && o.phase !== "waiting")
+    .map(([t]) => t.id.toString())
+    .join(",");
+  useEffect(() => {
+    if (!onSettled || !settled) return;
+    for (const id of settled.split(",")) onSettled(BigInt(id));
+  }, [settled, onSettled]);
   if (tracks.length === 0) return null;
   return (
     <div className="mt-3 space-y-2">
-      {tracks.map((t) => {
-        const market = marketOf(t.id);
-        const o = outcomeOf(t, account, market, cfg, nowMs);
+      {outcomes.map(([t, o]) => {
         if (!o) return null;
         const done = o.phase !== "waiting";
         const bad = o.phase === "refunded" || o.phase === "close_missed";
@@ -216,6 +238,7 @@ export function PositionLine({
           <button
             type="button"
             disabled={busy}
+            aria-label="Close position"
             onClick={() => onClose(p, limitPastE2(closeAt!, p.side, "close"))}
             title={`Closes at the ${p.side === "Long" ? "sell" : "buy"} price, no worse than ${fmtPriceE2(limitPastE2(closeAt!, p.side, "close"))}`}
             className="h-7 px-3 rounded-lg border border-surface text-secondary btn-quiet font-bold cursor-pointer disabled:opacity-50"
@@ -257,10 +280,10 @@ export function ClosedLine({ c, name }: { c: HouseClosed; name?: string | null }
 
 // Sends a close at `limitE2` and starts following it; a refusal comes back
 // as words.
-export async function sendClose(act: Act, p: HousePosition, limitE2: bigint, add: (id: bigint, kind: Tracked["kind"]) => void): Promise<string | null> {
+export async function sendClose(act: Act, p: HousePosition, limitE2: bigint, add: (id: bigint, kind: Tracked["kind"], market?: number) => void): Promise<string | null> {
   try {
     await act("close", closeArgs(p.id, limitE2));
-    add(p.id, "close");
+    add(p.id, "close", p.market);
     return null;
   } catch (e) {
     return friendlyNearError(e);

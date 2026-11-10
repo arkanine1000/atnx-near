@@ -8,7 +8,8 @@
 // nonce. The server holds a lock too; this one keeps a page from tripping
 // over itself.
 import { Account, JsonRpcProvider, actions, base64Encode, buildDelegateAction, encodeSignedDelegate, type Signer } from 'near-api-js';
-import { DELEGATE_TTL_BLOCKS, METHOD_GAS, NEAR_ROUNDS, NEAR_RPC, type HouseMethod, type UserMethod } from './config';
+import { DELEGATE_TTL_BLOCKS, METHOD_GAS, NEAR_ROUNDS, type HouseMethod, type UserMethod } from './config';
+import { isRetryableRpcError, nearRpcProvider, rpcProvider } from './rpc';
 import type { RoundsEvent } from './relay';
 
 export interface SignedCall {
@@ -109,7 +110,7 @@ function oneAtATime<T>(key: string, fn: () => Promise<T>): Promise<T> {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export function createActor(cfg: ActorConfig): { act: Act } {
-  const provider = new JsonRpcProvider({ url: cfg.rpcUrl ?? NEAR_RPC });
+  const provider = cfg.rpcUrl ? rpcProvider(cfg.rpcUrl) : nearRpcProvider();
   const contractId = cfg.contractId ?? NEAR_ROUNDS;
   const endpoint = cfg.endpoint ?? '/api/near/relay';
   const doFetch: FetchLike = cfg.fetch ?? ((url, init) => fetch(url, { ...init, credentials: cfg.guest ? 'omit' : 'same-origin' }));
@@ -119,7 +120,15 @@ export function createActor(cfg: ActorConfig): { act: Act } {
   async function once(method: NearMethod, args: Record<string, unknown>): Promise<ActResult> {
     const gas = gasTable[method];
     if (gas === undefined) throw new NearActError('method_not_allowed', 0, null, null, method);
-    const { signedDelegateBase64 } = await signCall({ provider, accountId: cfg.accountId, signer: cfg.signer, contractId, methodName: method, args, gas });
+    let signedDelegateBase64: string;
+    try {
+      ({ signedDelegateBase64 } = await signCall({ provider, accountId: cfg.accountId, signer: cfg.signer, contractId, methodName: method, args, gas }));
+    } catch (err) {
+      // The reads a signature needs (the key's nonce, a recent block) did
+      // not get through: nothing was sent.
+      if (isRetryableRpcError(err)) throw new NearActError('rpc_busy', 503, null, null);
+      throw err;
+    }
     const res = await doFetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

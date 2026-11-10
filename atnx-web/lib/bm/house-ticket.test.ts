@@ -268,6 +268,8 @@ test('notListedReason: too young, too small, or not on chain yet', () => {
   assert.equal(notListedReason({ ...base, createdAtSecs: NOW - 5 * 86400, score: 99.4 }), 'low_score');
   assert.equal(notListedReason({ ...base, createdAtSecs: NOW - 5 * 86400, score: 100 }), 'not_listed');
   assert.equal(notListedReason({ ...base, createdAtSecs: null, score: 300 }), 'not_listed');
+  // Young and under the minimum: the score is what keeps it out.
+  assert.equal(notListedReason({ ...base, createdAtSecs: NOW - 3600, score: 2 }), 'low_score');
 });
 
 test('fundingState: enough, the faucet, or the faucet used up', () => {
@@ -354,6 +356,9 @@ test('trackOutcome: a close settles, or misses its limit and goes back to Open',
   assert.deepEqual(trackOutcome({ ...t, sawClosing: true }, { position: position(), history: [], market: market() }, CFG, (NOW + 8) * 1000), { phase: 'close_missed' });
   assert.deepEqual(trackOutcome(t, { position: position(), history: [], market: market() }, CFG, (NOW + 21) * 1000), { phase: 'close_missed' });
   assert.deepEqual(trackOutcome(t, { position: null, history: [closed(7n)], market: market() }, CFG, (NOW + 8) * 1000), { phase: 'closed', closed: closed(7n) });
+  // Gone, the history not read since: still closing for a minute, then closed.
+  assert.equal(trackOutcome(t, { position: null, history: [], market: market() }, CFG, (NOW + 8) * 1000).phase, 'waiting');
+  assert.deepEqual(trackOutcome(t, { position: null, history: [], market: market() }, CFG, (NOW + 61) * 1000), { phase: 'closed', closed: null });
 });
 
 test('inferRefundReason: from the quote the order was due to fill at', () => {

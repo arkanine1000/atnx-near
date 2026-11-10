@@ -30,7 +30,8 @@ import {
   type HouseSide,
   type HouseVault,
 } from '@/lib/bm/house-types';
-import { NEAR_HOUSE, NEAR_RPC } from './config';
+import { NEAR_HOUSE } from './config';
+import { nearRpcProvider, rpcProvider } from './rpc';
 
 export interface HouseViewer {
   readonly contractId: string;
@@ -70,7 +71,7 @@ export function houseContractMissing(err: unknown): boolean {
 }
 
 export function houseViewer(opts: { rpcUrl?: string; contractId?: string; provider?: JsonRpcProvider } = {}): HouseViewer {
-  const provider = opts.provider ?? new JsonRpcProvider({ url: opts.rpcUrl ?? NEAR_RPC });
+  const provider = opts.provider ?? (opts.rpcUrl ? rpcProvider(opts.rpcUrl) : nearRpcProvider());
   const contractId = opts.contractId ?? NEAR_HOUSE;
   const view = async (method: string, args: Record<string, unknown>): Promise<unknown> => {
     if (!contractId) throw new Error('the house contract is not configured (does not exist)');

@@ -30,6 +30,7 @@ import {
   type SignedDelegate,
 } from 'near-api-js';
 import { deserialize } from 'borsh';
+import { rpcProvider } from './rpc';
 
 // Refused before anything was sent: nothing spent. `reason` is a stable code
 // for the API response.
@@ -446,7 +447,8 @@ export function callEvents(res: TxResponseLike, contractId: string, standard = '
 export interface RelayerConfig {
   relayerId: string;
   relayerKey: string; // "ed25519:..." secret key
-  rpcUrl: string;
+  // One endpoint, or several tried in order (lib/near/rpc.ts).
+  rpcUrl: string | readonly string[];
   // One policy per contract the relayer relays for.
   policy: RelayPolicy | readonly RelayPolicy[];
   // Refuse to send when the relayer's spendable balance is below this (in
@@ -472,7 +474,7 @@ export interface Relayer {
 }
 
 export function createRelayer(cfg: RelayerConfig): Relayer {
-  const provider = new JsonRpcProvider({ url: cfg.rpcUrl });
+  const provider = rpcProvider(cfg.rpcUrl);
   const signer = new KeyPairSigner(KeyPair.fromString(cfg.relayerKey as KeyPairString));
   const relayer = new Account(cfg.relayerId, provider, signer);
   const chain = rpcChainReader(provider);

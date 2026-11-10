@@ -12,7 +12,7 @@ import { faucetArgs, type HousePosition } from "@/lib/bm/house-types";
 import { HOUSE_FAUCET_UNITS, isNearHouseDeployed, nearTxUrl } from "@/lib/near/config";
 import { friendlyNearError } from "@/lib/near/errors";
 import { ClosedLine, PositionLine, TESTNET, TrackLines, sendClose, signedUsdg, useTracks } from "./parts";
-import { anyWaiting, useHouseAccount, useHouseBasics, useHouseMarkets } from "./useNearHouse";
+import { useHouseAccount, useHouseBasics, useHouseMarkets } from "./useNearHouse";
 
 // The house portfolio (NEXT_PUBLIC_BM_NEAR_PRODUCT=house), read from the
 // contract: the balance; orders still confirming; open positions with the
@@ -39,12 +39,19 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
   const nowMs = useNow() ?? 0;
   const accountId = near.status === "ready" || near.status === "other-browser" || near.status === "none" ? near.accountId : null;
   const basics = useHouseBasics();
-  const { tracks, add, dismiss } = useTracks();
+  const { tracks, add, dismiss, settle } = useTracks(accountId);
   const sentRecently = tracks.some((t) => nowMs - t.sentAtMs < 20_000);
   const account = useHouseAccount(accountId, { enabled: basics.status === "ready", fast: sentRecently });
   const data = account.data;
-  const ids = useMemo(() => [...(data?.positions ?? []).map((p) => p.market), ...(data?.history ?? []).map((c) => c.market)], [data]);
-  const chainMarkets = useHouseMarkets(ids, { enabled: basics.status === "ready", fast: sentRecently || anyWaiting(data?.positions) });
+  // The markets of the positions still running (their prices value them)
+  // and of the orders and closes being followed (to say why an order was
+  // refunded). Closed ones need no market read: their names come from
+  // `markets`.
+  const ids = useMemo(
+    () => [...(data?.positions ?? []).map((p) => p.market), ...tracks.flatMap((t) => (t.market === undefined ? [] : [t.market]))],
+    [data, tracks],
+  );
+  const chainMarkets = useHouseMarkets(ids, { enabled: basics.status === "ready" });
   const meta = useMemo(() => new Map(markets.map((m) => [m.id, m])), [markets]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -147,10 +154,20 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
         </div>
       )}
       {error && <p className="text-xs text-atnx-magenta mb-3 break-words">{error}</p>}
-      <TrackLines tracks={tracks} account={data} marketOf={(id) => {
-        const p = data.positions.find((x) => x.id === id) ?? data.history.find((x) => x.id === id);
-        return p ? (chainMarkets.get(p.market) ?? null) : null;
-      }} cfg={cfg} nowMs={nowMs} act={near.act} onDismiss={dismiss} />
+      <TrackLines
+        tracks={tracks}
+        account={data}
+        marketOf={(id) => {
+          const m = tracks.find((t) => t.id === id)?.market ?? (data.positions.find((x) => x.id === id) ?? data.history.find((x) => x.id === id))?.market;
+          // Undefined while that market is still being read: the line waits.
+          return m === undefined ? null : chainMarkets.get(m);
+        }}
+        cfg={cfg}
+        nowMs={nowMs}
+        act={near.act}
+        onDismiss={dismiss}
+        onSettled={settle}
+      />
 
       {pending.length > 0 && (
         <Card className="p-4 mt-4">
