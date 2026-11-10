@@ -2,6 +2,7 @@
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { Help } from "@/components/house/parts";
 import { fmtDuration, fmtFee, fmtUsdc, ORIGINS, originByChain, parseUsdcAmount, quoteErrorText, type OriginChain, type QuotePreview } from "@/lib/near/intents";
 
 // "Fund from any chain", in the NEAR block of Settings: pick the chain your
@@ -90,16 +91,17 @@ export function FundFromAnyChain() {
   const dataOrigin = data ? originByChain(data.chain) : null;
   const dim = typing || quote.isPlaceholderData;
   const row = "flex items-baseline justify-between gap-3 py-1";
+  const amountTone = "text-base font-semibold tabular-nums text-primary text-right";
 
   return (
-    <div ref={ref} id={FUND_ANCHOR} className="py-3 border-b border-surface scroll-mt-24">
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="text-xs text-primary">Fund from any chain</div>
-        <div className="text-[10px] text-tertiary">Live price from NEAR Intents</div>
+    <div ref={ref} id={FUND_ANCHOR} className="py-4 border-b border-surface scroll-mt-24">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <div className="text-base font-bold text-primary">Fund from any chain</div>
+        <span className="inline-flex items-center rounded-md border border-surface bg-elevated px-2 py-1 text-[13px] font-bold leading-none text-secondary">Live price from NEAR Intents</span>
       </div>
-      <p className="text-[11px] text-tertiary mt-0.5 mb-3">What it would cost to bring USDC to NEAR from another chain.</p>
+      <p className="text-sm text-secondary mt-1 mb-3">What it would cost to bring USDC to NEAR from another chain.</p>
 
-      <div role="radiogroup" aria-label="The chain your USDC is on" className="flex flex-wrap gap-2 mb-2">
+      <div role="radiogroup" aria-label="The chain your USDC is on" className="flex flex-wrap gap-2 mb-2.5">
         {ORIGINS.map((o) => {
           const active = o.chain === chain;
           return (
@@ -109,7 +111,7 @@ export function FundFromAnyChain() {
               role="radio"
               aria-checked={active}
               onClick={() => setChain(o.chain)}
-              className={`h-8 px-3 rounded-full border text-xs font-bold cursor-pointer transition-colors ${active ? "border-atnx-cyan text-atnx-cyan" : "border-surface text-secondary btn-quiet"}`}
+              className={`h-9 px-4 rounded-full border text-sm font-bold cursor-pointer transition-colors ${active ? "border-atnx-cyan text-atnx-cyan light:border-atnx-cyan-light light:text-atnx-cyan-light" : "border-surface text-secondary btn-quiet"}`}
             >
               {o.label}
             </button>
@@ -117,65 +119,71 @@ export function FundFromAnyChain() {
         })}
       </div>
 
-      <label className="flex items-center gap-2 rounded-xl border border-surface bg-elevated px-3 h-10 focus-within:border-atnx-cyan/60">
+      <label className="flex items-center gap-2 rounded-xl border border-surface bg-elevated px-3 h-11 focus-within:border-atnx-cyan/60">
         <input
           inputMode="decimal"
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
-          className="flex-1 bg-transparent outline-none font-mono text-sm text-primary tabular-nums min-w-0"
+          className="flex-1 bg-transparent outline-none font-mono text-base text-primary tabular-nums min-w-0"
           aria-label="Amount of USDC to send"
         />
-        <span className="text-xs text-tertiary">USDC</span>
+        <span className="text-sm text-secondary">USDC</span>
       </label>
 
-      <div className="mt-2 min-h-[1.5rem]" aria-live="polite">
+      <div className="mt-2.5 min-h-[1.75rem]" aria-live="polite">
         {invalid ? (
-          <p className="text-[11px] text-atnx-magenta">{invalid}</p>
+          <p className="text-sm text-atnx-magenta light:text-atnx-magenta-light">{invalid}</p>
         ) : failure && !typing ? (
           <div className="flex items-center justify-between gap-3">
-            <p className="text-[11px] text-atnx-magenta break-words">{failure.message}</p>
+            <p className="text-sm text-atnx-magenta light:text-atnx-magenta-light break-words">{failure.message}</p>
             {RETRYABLE.has(failure.code) && (
               <button
                 type="button"
                 onClick={() => void quote.refetch()}
                 disabled={quote.isFetching}
-                className="h-7 px-3 rounded-lg border border-surface text-[11px] text-secondary btn-quiet cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                className="h-8 px-3 rounded-lg border border-surface text-sm text-secondary btn-quiet cursor-pointer disabled:opacity-50 whitespace-nowrap"
               >
                 Try again
               </button>
             )}
           </div>
         ) : data && dataOrigin && units !== null ? (
-          <dl className={`text-xs transition-opacity ${dim ? "opacity-50" : ""}`}>
+          <dl className={`text-sm transition-opacity ${dim ? "opacity-50" : ""}`}>
             <div className={row}>
-              <dt className="text-tertiary">You send</dt>
-              <dd className="text-primary tabular-nums text-right">
+              <dt className="text-secondary">You send</dt>
+              <dd className={amountTone}>
                 {fmtUsdc(data.sendUnits)} USDC on {dataOrigin.label}
               </dd>
             </div>
             <div className={row}>
-              <dt className="text-tertiary">Arrives on NEAR</dt>
-              <dd className="text-primary tabular-nums text-right font-bold">{fmtUsdc(data.receiveUnits)} USDC</dd>
+              <dt className="text-secondary">Arrives on NEAR</dt>
+              <dd className={`${amountTone} font-bold`}>{fmtUsdc(data.receiveUnits)} USDC</dd>
             </div>
             <div className={row}>
-              <dt className="text-tertiary">Fee</dt>
-              <dd className="text-secondary tabular-nums text-right">{fmtFee(data.feeUnits)}</dd>
+              <dt className="text-secondary">Fee</dt>
+              <dd className={amountTone}>{fmtFee(data.feeUnits)}</dd>
             </div>
             <div className={row}>
-              <dt className="text-tertiary">Time</dt>
-              <dd className="text-secondary text-right">
+              <dt className="text-secondary">Time</dt>
+              <dd className="text-primary text-right">
                 {fmtDuration(data.timeSecs)}, once {dataOrigin.label} confirms the transfer
               </dd>
             </div>
           </dl>
         ) : quote.isFetching || typing ? (
-          <p className="text-[11px] text-secondary animate-pulse">Getting a live price…</p>
+          <p className="text-sm text-secondary animate-pulse">Getting a live price…</p>
         ) : null}
       </div>
 
-      <p className="text-[11px] text-tertiary mt-2" title={STAND_IN}>
-        {PREVIEW_LINE}
-      </p>
+      {/* The stand-in recipient behind the line's "?". */}
+      <Help label="About the preview" note={STAND_IN} noteClassName="mt-1.5">
+        {(help) => (
+          <p className="mt-2 flex items-center gap-2 text-sm text-secondary">
+            {PREVIEW_LINE}
+            {help}
+          </p>
+        )}
+      </Help>
     </div>
   );
 }

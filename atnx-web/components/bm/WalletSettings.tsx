@@ -14,6 +14,9 @@ import { shortAddress } from "./format";
 // Loaded only in the NEAR build, so the Solana build does not carry near-api-js.
 const NearAccountSettings = dynamic(() => import("@/components/rounds/NearAccountSettings").then((m) => m.NearAccountSettings));
 
+// Each block's network and use, as a chip line: 13 px, in the secondary ink.
+const CHIP_LINE = "inline-flex items-center rounded-md border border-surface bg-elevated px-2 py-1 mb-3 font-mono text-[13px] font-bold uppercase leading-none tracking-wider text-secondary";
+
 // The wallet section of Settings, one block per kind of chain: the EVM
 // testnets (bounded markets, the first iteration) and Solana devnet (the
 // rounds). Each has its address, network, a mock USDG faucet and
@@ -26,19 +29,19 @@ export function WalletSettings() {
     <div className="space-y-5">
       {isNearChain() ? (
         <div>
-          <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">{isHouseProduct() ? "NEAR testnet · trading account" : "NEAR testnet · rounds"}</h3>
+          <h3 className={CHIP_LINE}>{isHouseProduct() ? "NEAR testnet · trading account" : "NEAR testnet · rounds"}</h3>
           <NearAccountSettings />
         </div>
       ) : (
         <div>
-          <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">Solana devnet · rounds</h3>
+          <h3 className={CHIP_LINE}>Solana devnet · rounds</h3>
           <SolanaWalletSettings />
         </div>
       )}
       {/* The house build has no bounded markets, so no EVM wallet to connect. */}
       {!isHouseProduct() && (
         <div>
-          <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">EVM testnets · bounded markets</h3>
+          <h3 className={CHIP_LINE}>EVM testnets · bounded markets</h3>
           <EvmWalletSettings />
         </div>
       )}
