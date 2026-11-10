@@ -37,6 +37,64 @@ export function isNearRoundsDeployed(): boolean {
   return !!NEAR_ROUNDS && !!NEAR_PARENT;
 }
 
+// ----------------------------------------------------------------- house
+
+export type NearProduct = 'rounds' | 'house';
+
+// Which product the NEAR build shows. "house" (NEXT_PUBLIC_BM_NEAR_PRODUCT=
+// house on a NEAR build) is the long/short market against a vault
+// (near/house); anything else keeps the rounds exactly as they were. Read at
+// build time, like every NEXT_PUBLIC_ variable.
+export const NEAR_PRODUCT: NearProduct = BM_CHAIN === 'near' && process.env.NEXT_PUBLIC_BM_NEAR_PRODUCT === 'house' ? 'house' : 'rounds';
+
+// The house contract's account id.
+export const NEAR_HOUSE: string = process.env.NEXT_PUBLIC_BM_NEAR_HOUSE || '';
+
+export function isHouseProduct(): boolean {
+  return NEAR_PRODUCT === 'house';
+}
+
+// The house is usable once the switch is on and the contract and the parent
+// are configured. Whether the contract is really there is read from the
+// chain (lib/near/house.ts, houseContractMissing).
+export function isNearHouseDeployed(): boolean {
+  return isHouseProduct() && !!NEAR_HOUSE && !!NEAR_PARENT;
+}
+
+// The methods the relayer relays on the house contract for a signed-in
+// user. The house key's method list on chain is empty, so this list is the
+// gate. None takes a deposit.
+export const HOUSE_USER_METHODS = ['faucet', 'open', 'close', 'cancel', 'crank', 'withdraw'] as const;
+export type HouseMethod = (typeof HOUSE_USER_METHODS)[number];
+
+// A guest's list: the same without `withdraw`, as on the rounds.
+export const HOUSE_GUEST_METHODS = ['faucet', 'open', 'close', 'cancel', 'crank'] as const;
+
+export function isHouseMethod(m: string): m is HouseMethod {
+  return (HOUSE_USER_METHODS as readonly string[]).includes(m);
+}
+
+const HOUSE_TGAS = 10n ** 12n;
+
+// Gas each house call attaches. Only withdraw leaves the contract (a token
+// transfer and its callback); crank may act on up to 20 positions. Unused
+// gas goes back to the relayer.
+export const HOUSE_METHOD_GAS: Record<HouseMethod, bigint> = {
+  faucet: 30n * HOUSE_TGAS,
+  open: 30n * HOUSE_TGAS,
+  close: 30n * HOUSE_TGAS,
+  cancel: 30n * HOUSE_TGAS,
+  crank: 150n * HOUSE_TGAS,
+  withdraw: 50n * HOUSE_TGAS,
+};
+
+// The relayer refuses a house delegate asking for more than this per call.
+export const HOUSE_MAX_CALL_GAS = 150n * HOUSE_TGAS;
+
+// "Get test USDG" on the house: the contract gives each account at most
+// 10,000 in all, so the button asks for that much at once.
+export const HOUSE_FAUCET_UNITS = 10_000n * 1_000_000n;
+
 // The only methods a user key may call, and the only ones the relayer
 // relays. All take no deposit (near/README.md, rounds methods).
 export const USER_METHODS = ['commit', 'buy', 'claim', 'claim_rollover', 'faucet', 'withdraw'] as const;

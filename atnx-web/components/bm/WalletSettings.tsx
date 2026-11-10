@@ -7,7 +7,7 @@ import { waitForTransactionReceipt } from "wagmi/actions";
 import { mockUsdgAbi } from "@/lib/bm/abi";
 import { BM_CHAINS, USDG_UNIT, chainById, isDeployed } from "@/lib/bm/chains";
 import { SolanaWalletSettings } from "@/components/rounds/SolanaWalletSettings";
-import { isNearChain } from "@/lib/near/config";
+import { isHouseProduct, isNearChain } from "@/lib/near/config";
 import { ConnectButton } from "./ConnectButton";
 import { shortAddress } from "./format";
 
@@ -24,7 +24,7 @@ export function WalletSettings() {
     <div className="space-y-5">
       {isNearChain() ? (
         <div>
-          <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">NEAR testnet · rounds</h3>
+          <h3 className="text-[10px] font-mono uppercase tracking-[0.15em] text-tertiary mb-2">{isHouseProduct() ? "NEAR testnet · trading account" : "NEAR testnet · rounds"}</h3>
           <NearAccountSettings />
         </div>
       ) : (

@@ -36,3 +36,12 @@ export async function loadMarketMeta(ids: string[]): Promise<Map<string, MarketM
   }
   return meta;
 }
+
+// When an atnx market was created (its life on atnx.app began), or null.
+// The house ticket says from it how long a young market has left before it
+// can trade.
+export async function loadMarketCreatedAt(id: string): Promise<string | null> {
+  const { data, error } = await createAdminClient().from('markets').select('created_at').eq('id', id).maybeSingle();
+  if (error) throw error;
+  return (data as { created_at?: string } | null)?.created_at ?? null;
+}

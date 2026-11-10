@@ -27,6 +27,10 @@ import {
 import { CATEGORY_LABELS, type Category } from "@/lib/categories";
 import type { Capture, MarketsPage } from "@/lib/store";
 import type { RoundsMap } from "@/lib/bm/round-badges";
+import { isHouseProduct } from "@/lib/near/config";
+
+// The house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) has no rounds tabs.
+const HOUSE = isHouseProduct();
 
 // A new VI point lands every five minutes; thirty seconds is plenty to
 // catch a fresh capture. Behind it the server memoizes the feed for 15 s,
@@ -439,9 +443,10 @@ export function MarketsView({
       </div>
 
       {/* Live: a round is open now. Up next: a round waiting to open, or
-          none yet. The order is a small control at the end of the row. */}
-      <div className="flex items-center justify-between gap-2 mb-4">
-        <Segmented
+          none yet. The order is a small control at the end of the row. The
+          house build has no rounds, so only the order is there. */}
+      <div className={`flex items-center gap-2 mb-4 ${HOUSE ? "justify-end" : "justify-between"}`}>
+        {!HOUSE && <Segmented
           ariaLabel="Markets by round"
           value={shownTab}
           onChange={setTab}
@@ -455,7 +460,7 @@ export function MarketsView({
               label: <TabLabel label="Up next" count={tabCounts?.next} />,
             },
           ]}
-        />
+        />}
         <SortControl value={sort} onChange={setSort} />
       </div>
 

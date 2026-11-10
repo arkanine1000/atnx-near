@@ -8,7 +8,7 @@
 // nonce. The server holds a lock too; this one keeps a page from tripping
 // over itself.
 import { Account, JsonRpcProvider, actions, base64Encode, buildDelegateAction, encodeSignedDelegate, type Signer } from 'near-api-js';
-import { DELEGATE_TTL_BLOCKS, METHOD_GAS, NEAR_ROUNDS, NEAR_RPC, type UserMethod } from './config';
+import { DELEGATE_TTL_BLOCKS, METHOD_GAS, NEAR_ROUNDS, NEAR_RPC, type HouseMethod, type UserMethod } from './config';
 import type { RoundsEvent } from './relay';
 
 export interface SignedCall {
@@ -84,9 +84,13 @@ export interface ActorConfig {
   // A guest account (/api/near/guest): the relay's guest branch, which
   // needs no session, so no cookie is sent.
   guest?: boolean;
+  // The gas each method attaches (default METHOD_GAS, the rounds'; the
+  // house passes HOUSE_METHOD_GAS).
+  gas?: Readonly<Record<string, bigint>>;
 }
 
-export type Act = (method: UserMethod, args: Record<string, unknown>) => Promise<ActResult>;
+export type NearMethod = UserMethod | HouseMethod;
+export type Act = (method: NearMethod, args: Record<string, unknown>) => Promise<ActResult>;
 
 const inFlight = new Map<string, Promise<unknown>>();
 
@@ -110,8 +114,12 @@ export function createActor(cfg: ActorConfig): { act: Act } {
   const endpoint = cfg.endpoint ?? '/api/near/relay';
   const doFetch: FetchLike = cfg.fetch ?? ((url, init) => fetch(url, { ...init, credentials: cfg.guest ? 'omit' : 'same-origin' }));
 
-  async function once(method: UserMethod, args: Record<string, unknown>): Promise<ActResult> {
-    const { signedDelegateBase64 } = await signCall({ provider, accountId: cfg.accountId, signer: cfg.signer, contractId, methodName: method, args, gas: METHOD_GAS[method] });
+  const gasTable: Readonly<Record<string, bigint>> = cfg.gas ?? METHOD_GAS;
+
+  async function once(method: NearMethod, args: Record<string, unknown>): Promise<ActResult> {
+    const gas = gasTable[method];
+    if (gas === undefined) throw new NearActError('method_not_allowed', 0, null, null, method);
+    const { signedDelegateBase64 } = await signCall({ provider, accountId: cfg.accountId, signer: cfg.signer, contractId, methodName: method, args, gas });
     const res = await doFetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

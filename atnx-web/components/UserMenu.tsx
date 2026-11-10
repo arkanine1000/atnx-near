@@ -8,8 +8,9 @@ import { useAuth } from "@/context/AuthContext";
 import { Identicon } from "@/components/Identicon";
 import { ConnectButton } from "@/components/bm/ConnectButton";
 import { shortAddress } from "@/components/bm/format";
-import { isNearChain } from "@/lib/near/config";
+import { NEAR_PARENT, isHouseProduct, isNearChain } from "@/lib/near/config";
 import { useGuestAccountId } from "@/lib/near/guest-local";
+import { houseAccountId } from "@/lib/near/house-account";
 
 // The account is the wallet. Disconnected: a Connect pill where Login
 // used to be. Connected: the face and the menu (handle or address,
@@ -19,6 +20,7 @@ import { useGuestAccountId } from "@/lib/near/guest-local";
 // A guest there (no sign-in, a test account in this browser) gets a
 // "Guest" pill whose menu names the account and offers Settings and Sign in.
 const NEAR_BUILD = isNearChain();
+const HOUSE = isHouseProduct();
 export function UserMenu() {
   const { user, loading, openLoginModal, signOut } = useAuth();
   const { address, isConnected } = useAccount();
@@ -27,8 +29,10 @@ export function UserMenu() {
   const [role, setRole] = useState<"user" | "admin" | "moderator" | null>(null);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  // Read only in the NEAR build and only while signed out.
-  const guestId = useGuestAccountId(NEAR_BUILD && !loading && !user);
+  // Read only in the NEAR build and only while signed out. With the house
+  // on, the guest trades from its house account, so that is the one named.
+  const roundsGuestId = useGuestAccountId(NEAR_BUILD && !loading && !user);
+  const guestId = HOUSE && roundsGuestId ? (houseAccountId(roundsGuestId, NEAR_PARENT) ?? roundsGuestId) : roundsGuestId;
 
   // Load profile when a user is present. When the user becomes null we render
   // the Login button branch below, so stale handle/role state is never shown.

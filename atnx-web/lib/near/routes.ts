@@ -5,9 +5,11 @@
 // chain and relayer (lib/near/server.ts); the tests and the e2e script wire
 // in fakes or the in-memory store.
 import { PublicKey } from 'near-api-js';
+import { HOUSE_GUEST_METHODS } from './config';
 import { GUEST_CAPS, GUEST_LOCK, GUEST_METHODS, guestAccountId, isGuestAccountId, type GuestCaps } from './guest';
 import { handleCandidates, pickAccountId, type HandleSource } from './handle';
-import { RelayFailed, RelayRejected, delegateSenderId, type CheckedDelegate, type Relayer } from './relay';
+import { houseAccountId, houseKeyVerdict, roundsAccountOf, type AccountKey } from './house-account';
+import { RelayFailed, RelayRejected, delegateTarget, type CheckedDelegate, type RelayResult, type Relayer } from './relay';
 import type { LockResult, NearAccountRow, NearAccountStore, NearGuestRow, NearGuestStore, RelayLockOptions } from './store';
 
 export interface RouteUser extends HandleSource {
@@ -32,10 +34,76 @@ export interface AccountChain {
   createAccount(args: { accountId: string; publicKey: string }): Promise<{ txHash: string }>;
 }
 
+// The house side of account creation (NEXT_PUBLIC_BM_NEAR_PRODUCT=house):
+// every rounds account, user or guest, also gets its derived house account
+// (lib/near/house-account.ts), made by the same parent with the same
+// browser key.
+export interface HouseAccountChain {
+  // The account's access keys, or null when the account does not exist.
+  accessKeys(accountId: string): Promise<AccountKey[] | null>;
+  // <accountId> with zero NEAR and `publicKey` as its only key, a
+  // function-call key for the house contract with an empty method list.
+  createHouseAccount(args: { accountId: string; publicKey: string }): Promise<{ txHash: string }>;
+}
+
+export interface HouseAccountDeps {
+  contractId: string;
+  chain: HouseAccountChain;
+}
+
+export type HouseSetup =
+  | { ok: true; accountId: string; created: boolean; txHash: string | null }
+  | { ok: false; status: number; error: 'house_name' | 'house_account_clash' | 'house_create_failed'; accountId: string | null; detail?: string };
+
+// The house account of `roundsAccountId` for this browser key. The name is
+// looked up on chain first:
+//   - not there: created (a send that failed but landed counts);
+//   - there with exactly this key, scoped to the house contract with an
+//     empty method list: used as it is;
+//   - there with anything else: refused (house_account_clash), and nothing
+//     is sent.
+export async function ensureHouseAccount(house: HouseAccountDeps, roundsAccountId: string, publicKey: string, parentId: string): Promise<HouseSetup> {
+  const accountId = houseAccountId(roundsAccountId, parentId);
+  if (!accountId) return { ok: false, status: 409, error: 'house_name', accountId: null };
+  const keys = await house.chain.accessKeys(accountId);
+  if (keys) {
+    return houseKeyVerdict(keys, publicKey, house.contractId) === 'match'
+      ? { ok: true, accountId, created: false, txHash: null }
+      : { ok: false, status: 409, error: 'house_account_clash', accountId };
+  }
+  try {
+    const { txHash } = await house.chain.createHouseAccount({ accountId, publicKey });
+    return { ok: true, accountId, created: true, txHash };
+  } catch (err) {
+    const landed = await house.chain.accessKeys(accountId).catch(() => null);
+    if (landed && houseKeyVerdict(landed, publicKey, house.contractId) === 'match') return { ok: true, accountId, created: true, txHash: null };
+    return { ok: false, status: 502, error: 'house_create_failed', accountId, detail: String((err as Error)?.message ?? err).slice(0, 200) };
+  }
+}
+
+// A successful account or guest answer, with its house account made sure
+// of when the house is on; without it, the answer as it was.
+async function withHouse(house: HouseAccountDeps | undefined, parentId: string, r: RouteResult, roundsAccountId: string, publicKey: string): Promise<RouteResult> {
+  if (!house) return r;
+  const h = await ensureHouseAccount(house, roundsAccountId, publicKey, parentId);
+  if (!h.ok) return json(h.status, { error: h.error, accountId: roundsAccountId, houseAccountId: h.accountId, detail: h.detail ?? null });
+  return json(r.status, { ...r.body, houseAccountId: h.accountId, houseCreated: h.created, houseTxHash: h.txHash });
+}
+
+// A new rounds name is free only when its house name is free too (or the
+// house is off), so a new account never meets a clash.
+async function houseNameTaken(house: HouseAccountDeps | undefined, chain: AccountChain, roundsAccountId: string, parentId: string): Promise<boolean> {
+  if (!house) return false;
+  const h = houseAccountId(roundsAccountId, parentId);
+  return !h || (await chain.accountExists(h));
+}
+
 export interface AccountDeps {
   store: NearAccountStore;
   chain: AccountChain;
   parentId: string;
+  // The house is on: each account also gets its house account.
+  house?: HouseAccountDeps;
   // A user may start over with a fresh account (lost browser key) this many
   // times in all; each account costs the parent about 0.007 NEAR.
   maxAccountsPerUser?: number;
@@ -94,7 +162,7 @@ export async function handleAccountCreate(deps: AccountDeps, user: RouteUser | n
   }
 
   if (row?.state === 'active') {
-    if (row.publicKey === publicKey) return json(200, { ...publicView(row), created: false });
+    if (row.publicKey === publicKey) return withHouse(deps.house, deps.parentId, json(200, { ...publicView(row), created: false }), row.accountId, publicKey);
     if (!fresh) return json(409, { error: 'other_key', accountId: row.accountId });
     if (row.previousAccountIds.length + 1 >= maxAccounts) return json(429, { error: 'account_limit' });
   } else if (row?.state === 'creating' && !stale(row)) {
@@ -102,7 +170,8 @@ export async function handleAccountCreate(deps: AccountDeps, user: RouteUser | n
   }
 
   const own = row?.accountId ?? null;
-  const isTaken = async (id: string) => (id !== own && (await store.accountIdTaken(id))) || (await chain.accountExists(id));
+  const isTaken = async (id: string) =>
+    (id !== own && (await store.accountIdTaken(id))) || (await chain.accountExists(id)) || (await houseNameTaken(deps.house, chain, id, deps.parentId));
   const candidates = handleCandidates(user, deps.parentId);
 
   let accountId: string | null = null;
@@ -123,7 +192,7 @@ export async function handleAccountCreate(deps: AccountDeps, user: RouteUser | n
   const txHash = made.txHash;
   await store.markActive(user.id, accountId, txHash);
   const done = await store.getByUser(user.id);
-  return json(201, { ...(done ? publicView(done) : { accountId, publicKey, state: 'active', previousAccountIds: [] }), created: true, txHash });
+  return withHouse(deps.house, deps.parentId, json(201, { ...(done ? publicView(done) : { accountId, publicKey, state: 'active', previousAccountIds: [] }), created: true, txHash }), accountId, publicKey);
 }
 
 // The parent's CreateAccount for a user or a guest. A send that failed may
@@ -145,6 +214,8 @@ export interface GuestDeps {
   store: NearGuestStore;
   chain: AccountChain;
   parentId: string;
+  // The house is on: each guest also gets its house account.
+  house?: HouseAccountDeps;
   // The salted hash of the client's IP (lib/near/guest.ts hashIp with the
   // server's salt). Null when the request carried no address.
   hashIp: (ip: string | null) => Promise<string>;
@@ -181,7 +252,7 @@ export async function handleGuestCreate(deps: GuestDeps, client: { ip: string | 
   const { store, chain } = deps;
 
   let row = await store.getByPublicKey(publicKey);
-  if (row?.state === 'active') return json(200, { ...guestView(row), created: false });
+  if (row?.state === 'active') return withHouse(deps.house, deps.parentId, json(200, { ...guestView(row), created: false }), row.accountId, publicKey);
   if (row?.state === 'failed') return json(409, { error: 'key_used' });
   if (row?.state === 'creating') {
     if (now() - new Date(row.updatedAt).getTime() <= staleMs) return json(409, { error: 'in_progress' });
@@ -189,14 +260,14 @@ export async function handleGuestCreate(deps: GuestDeps, client: { ip: string | 
     // row already counted against the caps.
     if (await chain.hasKey(row.accountId, publicKey)) {
       await store.markActive(row.accountId, row.createTx);
-      return json(200, { ...guestView({ ...row, state: 'active' }), created: false });
+      return withHouse(deps.house, deps.parentId, json(200, { ...guestView({ ...row, state: 'active' }), created: false }), row.accountId, publicKey);
     }
   } else {
     if (deps.hasFunds && !(await deps.hasFunds())) return json(503, { error: 'relayer_empty' });
     const ipHash = await deps.hashIp(client.ip);
     for (let attempt = 0; attempt < 3 && !row; attempt++) {
       const accountId = guestAccountId(deps.parentId, deps.rand);
-      if (await chain.accountExists(accountId)) continue;
+      if ((await chain.accountExists(accountId)) || (await houseNameTaken(deps.house, chain, accountId, deps.parentId))) continue;
       const r = await store.reserve({ accountId, publicKey, ipHash }, caps);
       if (r === 'ip_limit') return json(429, { error: 'guest_limit_ip' });
       if (r === 'day_limit') return json(429, { error: 'guest_limit_day' });
@@ -214,7 +285,7 @@ export async function handleGuestCreate(deps: GuestDeps, client: { ip: string | 
     return json(502, { error: 'create_failed', detail: made.detail });
   }
   await store.markActive(row.accountId, made.txHash);
-  return json(201, { ...guestView({ ...row, state: 'active' }), created: true, txHash: made.txHash });
+  return withHouse(deps.house, deps.parentId, json(201, { ...guestView({ ...row, state: 'active' }), created: true, txHash: made.txHash }), row.accountId, publicKey);
 }
 
 // ----------------------------------------------------------------- relay
@@ -231,9 +302,21 @@ export interface RelayDeps {
     methods?: readonly string[];
   };
   relayer: Pick<Relayer, 'check' | 'preflight' | 'send'>;
-  // Rounds-level checks before paying: the round is the right one, the
-  // balance covers it, the quote meets min_shares (lib/near/rounds-check.ts).
+  // Contract-level checks before paying (lib/near/rounds-check.ts,
+  // lib/near/house-check.ts; appCheckByReceiver picks one per contract).
   appCheck?: (checked: CheckedDelegate) => Promise<void>;
+  // The house is on: a delegate to `contractId` is relayed for the house
+  // account derived from the user's or guest's rounds account (same row,
+  // same key, same lock and caps), a guest with `guestMethods` only
+  // (default HOUSE_GUEST_METHODS).
+  house?: { contractId: string; parentId: string; guestMethods?: readonly string[] };
+  // Called after a successful send, before the answer goes back: schedules
+  // follow-up work such as the house quote on demand. It must not wait for
+  // that work; if it throws, the relay still succeeds.
+  afterSend?: (checked: CheckedDelegate, result: RelayResult) => void;
+  // Reads a delegate's sender and receiver before it is checked (default
+  // delegateTarget).
+  peek?: (signedDelegateBase64: string) => { senderId: string; receiverId: string } | null;
   lock?: Partial<RelayLockOptions> & { waitMs?: number; pollMs?: number };
   sleep?: (ms: number) => Promise<void>;
   newToken?: () => string;
@@ -241,6 +324,23 @@ export interface RelayDeps {
 }
 
 export const DEFAULT_LOCK: RelayLockOptions = { ttlSecs: 60, windowSecs: 3600, maxPerWindow: 200 };
+
+// Whether a delegate is for the house contract (the house is on and its
+// receiver is the house contract).
+function toHouse(deps: RelayDeps, target: { receiverId: string } | null): boolean {
+  return !!deps.house && !!target && target.receiverId === deps.house.contractId;
+}
+
+// One check per contract, chosen by the delegate's receiver; a receiver
+// with no check is refused.
+export function appCheckByReceiver(checks: Record<string, (checked: CheckedDelegate) => Promise<void>>): (checked: CheckedDelegate) => Promise<void> {
+  return async (checked) => {
+    const receiver = checked.da?.receiverId ?? checked.policy?.contractId ?? '';
+    const fn = Object.prototype.hasOwnProperty.call(checks, receiver) ? checks[receiver] : undefined;
+    if (!fn) throw new RelayRejected('receiver_not_allowed', receiver);
+    return fn(checked);
+  };
+}
 
 // POST { signedDelegate }: check it against the user's account, take the
 // user's relay lock (one delegate in flight per user, so nonces land in
@@ -259,9 +359,15 @@ export async function handleRelay(deps: RelayDeps, user: RouteUser | null, body:
   const signedDelegate = (body as { signedDelegate?: unknown } | null)?.signedDelegate;
   if (typeof signedDelegate !== 'string') return json(400, { error: 'bad_request', detail: 'expected signedDelegate' });
 
+  // A house delegate comes from the user's house account; anything else
+  // from the rounds account on record.
+  const house = deps.house && toHouse(deps, (deps.peek ?? delegateTarget)(signedDelegate)) ? deps.house : null;
+  const expectedSenderId = house ? houseAccountId(row.accountId, house.parentId) : row.accountId;
+  if (!expectedSenderId) return json(409, { error: 'no_account' });
+
   let checked: CheckedDelegate;
   try {
-    checked = await deps.relayer.check(signedDelegate, { expectedSenderId: row.accountId, expectedPublicKey: row.publicKey });
+    checked = await deps.relayer.check(signedDelegate, { expectedSenderId, expectedPublicKey: row.publicKey });
   } catch (err) {
     if (err instanceof RelayRejected) return json(400, { error: err.reason, detail: err.detail ?? null });
     throw err;
@@ -283,20 +389,26 @@ async function handleGuestRelay(deps: RelayDeps, body: unknown): Promise<RouteRe
   if (!deps.guests) return json(404, { error: 'guests_off' });
   const signedDelegate = (body as { signedDelegate?: unknown } | null)?.signedDelegate;
   if (typeof signedDelegate !== 'string') return json(400, { error: 'bad_request', detail: 'expected signedDelegate' });
-  const sender = delegateSenderId(signedDelegate);
-  if (!sender) return json(400, { error: 'malformed', detail: 'expected a base64 SignedDelegate' });
-  if (!isGuestAccountId(sender, deps.guests.parentId)) return json(403, { error: 'not_a_guest' });
+  const target = (deps.peek ?? delegateTarget)(signedDelegate);
+  if (!target) return json(400, { error: 'malformed', detail: 'expected a base64 SignedDelegate' });
+  // A house delegate comes from the guest's house account: its row is the
+  // rounds guest account the name derives from.
+  const house = deps.house && toHouse(deps, target) ? deps.house : null;
+  const sender = house ? roundsAccountOf(target.senderId, house.parentId) : target.senderId;
+  if (!sender || !isGuestAccountId(sender, deps.guests.parentId)) return json(403, { error: 'not_a_guest' });
   const row = await deps.guests.store.getByAccount(sender);
   if (!row || row.state !== 'active') return json(409, { error: 'no_account' });
+  const expectedSenderId = house ? houseAccountId(row.accountId, house.parentId) : row.accountId;
+  if (!expectedSenderId) return json(409, { error: 'no_account' });
 
   let checked: CheckedDelegate;
   try {
-    checked = await deps.relayer.check(signedDelegate, { expectedSenderId: row.accountId, expectedPublicKey: row.publicKey });
+    checked = await deps.relayer.check(signedDelegate, { expectedSenderId, expectedPublicKey: row.publicKey });
   } catch (err) {
     if (err instanceof RelayRejected) return json(400, { error: err.reason, detail: err.detail ?? null });
     throw err;
   }
-  const methods = deps.guests.methods ?? GUEST_METHODS;
+  const methods: readonly string[] = house ? (house.guestMethods ?? HOUSE_GUEST_METHODS) : (deps.guests.methods ?? GUEST_METHODS);
   if (!methods.includes(checked.methodName)) return json(400, { error: 'method_not_allowed', detail: checked.methodName });
 
   const opts: RelayLockOptions = { ...GUEST_LOCK, ...deps.guests.lock };
@@ -333,6 +445,13 @@ async function relayLocked(
     await deps.relayer.preflight(checked);
     if (deps.appCheck) await deps.appCheck(checked);
     const r = await deps.relayer.send(checked);
+    if (deps.afterSend) {
+      try {
+        deps.afterSend(checked, r);
+      } catch {
+        // Follow-up work never fails a relay that went through.
+      }
+    }
     return json(200, { txHash: r.txHash, value: r.value ?? null, events: r.events, method: checked.methodName });
   } catch (err) {
     if (err instanceof RelayRejected) return json(400, { error: err.reason, detail: err.detail ?? null });

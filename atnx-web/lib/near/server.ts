@@ -5,13 +5,15 @@
 // BM_NEAR_RELAYER_SECRET).
 import { createHash } from 'node:crypto';
 import { createClient } from '@/lib/supabase/server';
-import { NEAR_PARENT, NEAR_ROUNDS, NEAR_RPC, USER_METHODS } from './config';
+import { HOUSE_USER_METHODS, NEAR_HOUSE, NEAR_PARENT, NEAR_ROUNDS, NEAR_RPC, USER_METHODS, isHouseProduct } from './config';
 import { hashIp } from './guest';
-import { createRelayer, roundsRelayPolicy, type Relayer } from './relay';
+import { houseViewer } from './house';
+import { houseAppCheck } from './house-check';
+import { createRelayer, houseRelayPolicy, roundsRelayPolicy, type RelayPolicy, type Relayer } from './relay';
 import { parentAccountChain } from './server-chain';
 import { roundsAppCheck } from './rounds-check';
 import { roundsViewer } from './rounds';
-import type { AccountDeps, GuestDeps, RelayDeps, RouteUser } from './routes';
+import { appCheckByReceiver, type AccountDeps, type GuestDeps, type HouseAccountDeps, type RelayDeps, type RouteUser } from './routes';
 import { supabaseNearAccountStore, supabaseNearGuestStore } from './store-supabase';
 import type { NearAccountStore, NearGuestStore } from './store';
 
@@ -32,14 +34,27 @@ let store: NearAccountStore | null = null;
 let guestStore: NearGuestStore | null = null;
 let parentChain: ReturnType<typeof parentAccountChain> | null = null;
 
+// The house is on (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) and its contract is
+// named. Off, everything below is the rounds alone, as before.
+function houseOn(): boolean {
+  return isHouseProduct() && !!NEAR_HOUSE && !!NEAR_PARENT;
+}
+
 export function nearRelayer(): Relayer {
   if (!relayer) {
-    if (!NEAR_ROUNDS || !NEAR_PARENT) throw new NearNotConfigured('NEXT_PUBLIC_BM_NEAR_ROUNDS / NEXT_PUBLIC_BM_NEAR_PARENT');
+    const house = houseOn();
+    if ((!NEAR_ROUNDS && !house) || !NEAR_PARENT) throw new NearNotConfigured('NEXT_PUBLIC_BM_NEAR_ROUNDS / NEXT_PUBLIC_BM_NEAR_PARENT');
+    // One policy per contract, chosen by the delegate's receiver: the
+    // rounds (kept as they are, the fallback) and, with the house on, the
+    // house.
+    const policies: RelayPolicy[] = [];
+    if (NEAR_ROUNDS) policies.push(roundsRelayPolicy(NEAR_ROUNDS, NEAR_PARENT, USER_METHODS));
+    if (house) policies.push(houseRelayPolicy(NEAR_HOUSE, NEAR_PARENT, HOUSE_USER_METHODS));
     relayer = createRelayer({
       relayerId: env('BM_NEAR_RELAYER_ACCOUNT'),
       relayerKey: env('BM_NEAR_RELAYER_SECRET'),
       rpcUrl: NEAR_RPC,
-      policy: roundsRelayPolicy(NEAR_ROUNDS, NEAR_PARENT, USER_METHODS),
+      policy: policies.length === 1 ? policies[0] : policies,
     });
   }
   return relayer;
@@ -60,12 +75,26 @@ export function nearGuestStore(): NearGuestStore {
 
 function parentAccount(): ReturnType<typeof parentAccountChain> {
   if (!NEAR_ROUNDS || !NEAR_PARENT) throw new NearNotConfigured('NEXT_PUBLIC_BM_NEAR_ROUNDS / NEXT_PUBLIC_BM_NEAR_PARENT');
-  if (!parentChain) parentChain = parentAccountChain({ rpcUrl: NEAR_RPC, parentId: NEAR_PARENT, parentKey: env('BM_NEAR_PARENT_SECRET'), roundsId: NEAR_ROUNDS });
+  if (!parentChain) {
+    parentChain = parentAccountChain({
+      rpcUrl: NEAR_RPC,
+      parentId: NEAR_PARENT,
+      parentKey: env('BM_NEAR_PARENT_SECRET'),
+      roundsId: NEAR_ROUNDS,
+      houseId: houseOn() ? NEAR_HOUSE : undefined,
+    });
+  }
   return parentChain;
 }
 
+// With the house on, every account and guest also gets its house account.
+function houseAccounts(chain: ReturnType<typeof parentAccountChain>): HouseAccountDeps | undefined {
+  return houseOn() ? { contractId: NEAR_HOUSE, chain } : undefined;
+}
+
 export function accountDeps(): AccountDeps {
-  return { store: nearAccountStore(), chain: parentAccount(), parentId: NEAR_PARENT };
+  const chain = parentAccount();
+  return { store: nearAccountStore(), chain, parentId: NEAR_PARENT, house: houseAccounts(chain) };
 }
 
 // The parent's floor for making a guest: the relayer's own floor (0.05 NEAR,
@@ -89,6 +118,7 @@ export function guestDeps(): GuestDeps {
     store: nearGuestStore(),
     chain,
     parentId: NEAR_PARENT,
+    house: houseAccounts(chain),
     hashIp: (ip) => hashIp(salt, ip),
     hasFunds: async () => (await nearRelayer().hasFloat()) && (await chain.spendable()) >= PARENT_FLOOR_YOCTO,
   };
@@ -96,11 +126,25 @@ export function guestDeps(): GuestDeps {
 
 export function relayDeps(): RelayDeps {
   const r = nearRelayer();
+  const roundsCheck = roundsAppCheck(roundsViewer({ provider: r.provider, contractId: NEAR_ROUNDS }));
+  if (!houseOn()) {
+    return {
+      store: nearAccountStore(),
+      guests: { store: nearGuestStore(), parentId: NEAR_PARENT },
+      relayer: r,
+      appCheck: roundsCheck,
+    };
+  }
+  const checks: Record<string, (c: Parameters<typeof roundsCheck>[0]) => Promise<void>> = {
+    [NEAR_HOUSE]: houseAppCheck(houseViewer({ provider: r.provider, contractId: NEAR_HOUSE })),
+  };
+  if (NEAR_ROUNDS) checks[NEAR_ROUNDS] = roundsCheck;
   return {
     store: nearAccountStore(),
     guests: { store: nearGuestStore(), parentId: NEAR_PARENT },
     relayer: r,
-    appCheck: roundsAppCheck(roundsViewer({ provider: r.provider, contractId: NEAR_ROUNDS })),
+    appCheck: appCheckByReceiver(checks),
+    house: { contractId: NEAR_HOUSE, parentId: NEAR_PARENT },
   };
 }
 

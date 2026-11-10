@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { Card } from "@/components/ui";
 import { fmtUsdg, parseUsdg, shortHash } from "@/components/bm/format";
 import { useAuth } from "@/context/AuthContext";
@@ -13,11 +13,11 @@ import { friendlyNearError } from "@/lib/near/errors";
 import { callArgs, u128 } from "@/lib/near/rounds";
 import type { BmRoundRow, BmSeriesRow } from "@/lib/supabase/database-bm";
 import { FUND_HREF } from "./FundFromAnyChain";
-import { NearGuestChoice } from "./NearGuestChoice";
+import { AccountGate, useAutoAccount } from "./NearAccountGate";
 import { holdsAnything, liveRoundRow, presaleRoundRow } from "./round-math";
 import { ClaimList, HowRounds, LivePane, NextRoundLine, PresalePane, Question, RegistryLine } from "./ticket-parts";
 import { useNow } from "./time";
-import { useNearAccount, type NearAccount } from "./useNearAccount";
+import { useNearAccount } from "./useNearAccount";
 import { useNearClaimables, useNearRoundState, type NearClaimable } from "./useNearRounds";
 
 // The rounds ticket on NEAR testnet: the same states, panes and copy as the
@@ -80,108 +80,6 @@ export function NearRoundTicket(props: Props) {
   }
   if (!props.series || props.series.state === "pending") return <StartSeries {...props} />;
   return <SeriesTicket {...props} series={props.series} />;
-}
-
-// ------------------------------------------------------------ the account
-
-// Sets the account up once, on its own, when a signed-in user without one
-// opens a ticket that needs it.
-function useAutoAccount(near: NearAccount, enabled: boolean) {
-  const tried = useRef(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!enabled || near.status !== "none" || tried.current) return;
-    tried.current = true;
-    near.ensureAccount().catch((e) => setError(friendlyNearError(e)));
-  }, [enabled, near]);
-  const retry = () => {
-    setError(null);
-    near.ensureAccount().catch((e) => setError(friendlyNearError(e)));
-  };
-  return { error, retry };
-}
-
-// What stands between the user and the ticket: signing in (or, where
-// `guest` is set, trying it as a guest), the account being set up, or an
-// account whose key is in another browser.
-function AccountGate({ near, label, autoError, onRetry, guest = false }: { near: NearAccount; label: string; autoError: string | null; onRetry: () => void; guest?: boolean }) {
-  const { user, openLoginModal } = useAuth();
-  const [fresh, setFresh] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  switch (near.status) {
-    case "loading":
-      // Signed in, reading the account; before the session is known, the
-      // sign-in button (disabled) holds the place.
-      if (user) return <p className="text-sm text-secondary animate-pulse">Loading your account…</p>;
-      return (
-        <button type="button" disabled className={BUTTON}>
-          {label}
-        </button>
-      );
-    case "signed-out":
-      return (
-        <>
-          <button type="button" onClick={openLoginModal} className={BUTTON}>
-            {label}
-          </button>
-          {guest && (
-            <div className="mt-2.5">
-              <NearGuestChoice />
-            </div>
-          )}
-        </>
-      );
-    case "none":
-    case "creating":
-      if (near.isGuest) return <p className="text-sm text-secondary animate-pulse">Setting up your test account…</p>;
-      if (autoError && near.status === "none") {
-        return (
-          <>
-            <p className="text-xs text-atnx-magenta mb-3 break-words">{autoError}</p>
-            <button type="button" onClick={onRetry} className={BUTTON}>
-              Try again
-            </button>
-          </>
-        );
-      }
-      return <p className="text-sm text-secondary animate-pulse">Setting up your account…</p>;
-    case "other-browser":
-      return (
-        <>
-          <p className="text-xs text-secondary mb-3">Your account was set up in another browser. Start a new one here to trade; the old one keeps what it holds.</p>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              setFresh(null);
-              near
-                .startFresh()
-                .catch((e) => setFresh(friendlyNearError(e)))
-                .finally(() => setBusy(false));
-            }}
-            className={BUTTON}
-          >
-            {busy ? "Setting up your account…" : "Start a new account here"}
-          </button>
-          {fresh && <p className="text-xs text-atnx-magenta mt-3 break-words">{fresh}</p>}
-        </>
-      );
-    case "unsupported":
-      return <p className="text-sm text-secondary">This browser can&apos;t hold your trading account. Try a recent Chrome, Firefox or Safari.</p>;
-    case "error":
-      return (
-        <>
-          <p className="text-xs text-atnx-magenta mb-3">{near.error ?? "Your account could not be read just now."}</p>
-          <button type="button" onClick={near.refetch} className={BUTTON}>
-            Try again
-          </button>
-        </>
-      );
-    default:
-      return null;
-  }
 }
 
 // ------------------------------------------------------------- no series

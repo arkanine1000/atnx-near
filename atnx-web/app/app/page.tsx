@@ -4,6 +4,7 @@ import { MarketsView, type BoundsMap } from "./MarketsView";
 import { listLive } from "@/lib/bm/registry";
 import { isRoundsDeployed } from "@/lib/bm/chains";
 import { getRoundBadges, liveMarketIds, type RoundsMap } from "@/lib/bm/round-badges";
+import { isHouseProduct } from "@/lib/near/config";
 
 // Rendered on the server with the listing already in it, so the first paint
 // has the hero and the grid instead of "0 live markets" and a fetch.
@@ -25,6 +26,16 @@ export default async function MarketsPage({
   };
   const bounded: BoundsMap = {};
   let rounds: RoundsMap = {};
+  // NEXT_PUBLIC_BM_NEAR_PRODUCT=house: no rounds, so no round badges and no
+  // Live / Up next tabs; the listing is the plain one.
+  if (isHouseProduct()) {
+    try {
+      data = await getMarketsPage(query);
+    } catch (err) {
+      console.error("[markets] initial page failed", err);
+    }
+    return <MarketsView initial={data} query={query} bounded={bounded} rounds={rounds} />;
+  }
   try {
     const [live, badges] = await Promise.all([
       // Bounded markets no longer badge the list once rounds are deployed.

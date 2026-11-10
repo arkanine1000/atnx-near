@@ -44,7 +44,7 @@ import { sentimentColor, timeAgo, viChange24h } from "@/lib/capture-view";
 import type { Capture, MarketNeighbor, MarketRow } from "@/lib/store";
 import type { BmMarketRow, BmRoundRow, BmSeriesRow } from "@/lib/supabase/database-bm";
 import { isRoundsDeployed } from "@/lib/bm/chains";
-import { isNearChain, isNearRoundsDeployed } from "@/lib/near/config";
+import { isHouseProduct, isNearChain, isNearRoundsDeployed } from "@/lib/near/config";
 import type { TrendsResult } from "@/lib/trends";
 import { viTier } from "@/lib/vi/score";
 import { startPolling } from "@/lib/poll";
@@ -68,6 +68,12 @@ const RoundsTicket = isNearChain()
 // The header's round chip, NEAR's in its own chunk for the same reason.
 const SeriesChip = isNearChain() ? dynamic(() => import("@/components/rounds/NearRoundChip").then((m) => m.NearRoundChip)) : RoundChip;
 
+// NEXT_PUBLIC_BM_NEAR_PRODUCT=house: the house ticket (long/short against
+// the vault) replaces the rounds on the page, in its own chunk. No round
+// chip, history or "Start rounds" then.
+const HOUSE = isHouseProduct();
+const HouseTicket = HOUSE ? dynamic(() => import("@/components/house/HouseTicket").then((m) => m.HouseTicket)) : null;
+
 interface Props {
   market: MarketRow;
   // The markets either side of this one in virality order: a swipe on a
@@ -85,6 +91,8 @@ interface Props {
   // testnet with NEXT_PUBLIC_BM_CHAIN=near) and its rounds, newest first;
   // null when none has been started.
   rounds?: { series: BmSeriesRow; rounds: BmRoundRow[] } | null;
+  // When the market went live on atnx.app (house mode only).
+  createdAt?: string | null;
 }
 
 type Tab = "pulse" | "activity" | "overview";
@@ -234,6 +242,7 @@ export function MarketDetailClient({
   bounded,
   rounds = null,
   neighbors,
+  createdAt = null,
 }: Props) {
   const router = useRouter();
   const myTrades = useMyTrades(bounded);
@@ -299,7 +308,7 @@ export function MarketDetailClient({
   // here. It stays listed in the portfolio's EVM section (which redeems a
   // win but cannot sell) and resolves on its own when the index touches a
   // bound.
-  const roundsOnly = isNearChain() ? isNearRoundsDeployed() : isRoundsDeployed();
+  const roundsOnly = HOUSE || (isNearChain() ? isNearRoundsDeployed() : isRoundsDeployed());
   const series = rounds?.series ?? null;
   const roundRows = useMemo(() => rounds?.rounds ?? [], [rounds]);
   const showRounds = !!series || roundsOnly;
@@ -715,7 +724,15 @@ export function MarketDetailClient({
                 )}
 
                 {tab === "activity" &&
-                  (series ? (
+                  (HOUSE ? (
+                    <p className="text-sm text-secondary">
+                      Your open positions and your last closed ones are in your{" "}
+                      <Link href="/app/portfolio" className="link-quiet underline">
+                        portfolio
+                      </Link>
+                      .
+                    </p>
+                  ) : series ? (
                     <RoundHistory series={series} rounds={roundRows} />
                   ) : roundsOnly ? (
                     <p className="text-sm text-secondary">No rounds yet on this market.</p>
@@ -862,7 +879,16 @@ export function MarketDetailClient({
 
           {/* ------------------------------------------------ side column */}
           <aside className="hidden lg:block lg:sticky lg:top-24">
-            {showRounds ? (
+            {HouseTicket ? (
+              <HouseTicket
+                atnxMarketId={market.id}
+                name={name}
+                score={viralityScore}
+                scoring={scoring}
+                createdAt={createdAt}
+                onToast={handleToast}
+              />
+            ) : showRounds ? (
               <RoundsTicket
                 atnxMarketId={market.id}
                 name={name}
@@ -892,7 +918,18 @@ export function MarketDetailClient({
           not move with the page. */}
       <TradeDock
         renderTicket={(side) =>
-          showRounds ? (
+          HouseTicket ? (
+            <HouseTicket
+              key={side}
+              atnxMarketId={market.id}
+              name={name}
+              score={viralityScore}
+              scoring={scoring}
+              createdAt={createdAt}
+              onToast={handleToast}
+              initialSide={side}
+            />
+          ) : showRounds ? (
             <RoundsTicket
               key={side}
               atnxMarketId={market.id}

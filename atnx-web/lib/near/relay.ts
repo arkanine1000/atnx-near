@@ -60,7 +60,8 @@ export class RelayFailed extends Error {
 const TGAS = 10n ** 12n;
 
 export interface RelayPolicy {
-  // The only receiver allowed.
+  // The only receiver allowed. A relayer may hold several policies, one per
+  // contract; a delegate is checked against the one its receiver names.
   contractId: string;
   // The methods allowed on it.
   methods: readonly string[];
@@ -73,12 +74,20 @@ export interface RelayPolicy {
   maxTtlBlocks?: number;
   // Only relay for keys scoped to contractId (never a full-access key).
   requireFunctionCallKey?: boolean;
+  // The NEP-297 standard of the contract's events (default atnx_rounds).
+  eventStandard?: string;
 }
 
 type FullPolicy = Required<Omit<RelayPolicy, 'senderPattern'>> & { senderPattern?: RegExp };
 
 export function fullPolicy(p: RelayPolicy): FullPolicy {
-  return { maxGas: 100n * TGAS, maxArgsBytes: 4096, maxTtlBlocks: 1000, requireFunctionCallKey: false, ...p };
+  return { maxGas: 100n * TGAS, maxArgsBytes: 4096, maxTtlBlocks: 1000, requireFunctionCallKey: false, eventStandard: 'atnx_rounds', ...p };
+}
+
+// The policy for a receiver, or null when no policy names it.
+export function selectPolicy(policies: RelayPolicy | readonly RelayPolicy[], receiverId: string): RelayPolicy | null {
+  const list: readonly RelayPolicy[] = Array.isArray(policies) ? policies : [policies as RelayPolicy];
+  return list.find((p) => p.contractId === receiverId) ?? null;
 }
 
 export interface CheckContext {
@@ -89,10 +98,12 @@ export interface CheckContext {
   expectedPublicKey?: string;
 }
 
-// What check() hands on: the decoded delegate and the one call it makes.
+// What check() hands on: the decoded delegate, the one call it makes and
+// the policy it was checked against (the one its receiver names).
 export interface CheckedDelegate {
   sd: SignedDelegate;
   da: DelegateAction;
+  policy: RelayPolicy;
   publicKey: PublicKey;
   senderId: string;
   methodName: string;
@@ -124,28 +135,36 @@ interface RawSignedDelegate {
   signature: { ed25519Signature?: { data: ArrayLike<number> } } & Record<string, unknown>;
 }
 
-// The sender a SignedDelegate names, read without checking anything else,
-// or null when it does not decode. Untrusted: the guest relay uses it only
-// to find which row to check the delegate against, then check() verifies
-// the delegate against that row (sender, key, signature, policy).
-export function delegateSenderId(signedDelegateBase64: string): string | null {
+// The sender and receiver a SignedDelegate names, read without checking
+// anything else, or null when it does not decode. Untrusted: the relay
+// route uses them only to choose what to check the delegate against (the
+// guest row, the rounds or the house account), then check() verifies the
+// delegate against that (sender, key, signature, policy).
+export function delegateTarget(signedDelegateBase64: string): { senderId: string; receiverId: string } | null {
   if (typeof signedDelegateBase64 !== 'string' || signedDelegateBase64.length === 0 || signedDelegateBase64.length > 16_384) return null;
   try {
     const sd = deserialize(SCHEMA.SignedDelegate, base64Decode(signedDelegateBase64)) as RawSignedDelegate;
-    const id = sd?.delegateAction?.senderId;
-    return typeof id === 'string' ? id : null;
+    const senderId = sd?.delegateAction?.senderId;
+    const receiverId = sd?.delegateAction?.receiverId;
+    return typeof senderId === 'string' && typeof receiverId === 'string' ? { senderId, receiverId } : null;
   } catch {
     return null;
   }
 }
 
-/** Parse and check a SignedDelegate without touching the chain. */
+// The sender alone (delegateTarget's senderId).
+export function delegateSenderId(signedDelegateBase64: string): string | null {
+  return delegateTarget(signedDelegateBase64)?.senderId ?? null;
+}
+
+/** Parse and check a SignedDelegate without touching the chain. With
+ * several policies, the delegate is checked against the one its receiver
+ * names; a receiver no policy names is refused. */
 export async function checkDelegate(
   signedDelegateBase64: string,
-  policyIn: RelayPolicy,
+  policies: RelayPolicy | readonly RelayPolicy[],
   ctx: CheckContext & { relayerId?: string } = {},
 ): Promise<CheckedDelegate> {
-  const policy = fullPolicy(policyIn);
   if (typeof signedDelegateBase64 !== 'string' || signedDelegateBase64.length === 0 || signedDelegateBase64.length > 16_384) {
     throw new RelayRejected('malformed', 'expected a base64 SignedDelegate');
   }
@@ -170,6 +189,11 @@ export async function checkDelegate(
   }
 
   const da = sd.delegateAction;
+  // The policy the receiver names. The sender is checked first, as with a
+  // single policy, against that policy (or the first one when the receiver
+  // names none, which is then refused just after).
+  const chosen = selectPolicy(policies, da.receiverId);
+  const policy = fullPolicy(chosen ?? (Array.isArray(policies) ? (policies as readonly RelayPolicy[])[0] : (policies as RelayPolicy)));
   if (ctx.expectedSenderId && da.senderId !== ctx.expectedSenderId) {
     throw new RelayRejected('sender_mismatch', `${da.senderId} is not the signed-in user's account`);
   }
@@ -177,10 +201,10 @@ export async function checkDelegate(
     throw new RelayRejected('sender_not_allowed', da.senderId);
   }
   if (ctx.relayerId && da.senderId === ctx.relayerId) throw new RelayRejected('sender_not_allowed', 'relayer itself');
-  if (da.receiverId !== policy.contractId) throw new RelayRejected('receiver_not_allowed', da.receiverId);
+  if (!chosen || da.receiverId !== policy.contractId) throw new RelayRejected('receiver_not_allowed', da.receiverId);
 
-  // A function-call key may sign exactly one FunctionCall; the rounds
-  // contract needs no batching.
+  // A function-call key may sign exactly one FunctionCall; neither contract
+  // needs batching.
   if (da.actions.length !== 1) throw new RelayRejected('one_action_only', String(da.actions.length));
   const action = da.actions[0];
   const keys = Object.keys(action);
@@ -215,6 +239,7 @@ export async function checkDelegate(
   return {
     sd: sd as unknown as SignedDelegate,
     da: da as unknown as DelegateAction,
+    policy: chosen,
     publicKey,
     senderId: da.senderId,
     methodName: fc.methodName,
@@ -262,7 +287,7 @@ export function rpcChainReader(provider: JsonRpcProvider): ChainReader {
   };
 }
 
-function normalisePermission(p: unknown): KeyPermission {
+export function normalisePermission(p: unknown): KeyPermission {
   if (p === 'FullAccess') return 'FullAccess';
   const fc = (p as { FunctionCall?: { receiver_id: string; method_names: string[] } })?.FunctionCall;
   if (fc) return { receiverId: fc.receiver_id, methodNames: fc.method_names ?? [] };
@@ -270,7 +295,7 @@ function normalisePermission(p: unknown): KeyPermission {
 }
 
 /** Cheap chain checks so the relayer does not pay for a delegate the runtime would refuse. */
-export async function preflightDelegate(chain: ChainReader, checked: CheckedDelegate, policyIn: RelayPolicy): Promise<void> {
+export async function preflightDelegate(chain: ChainReader, checked: CheckedDelegate, policyIn: RelayPolicy = checked.policy): Promise<void> {
   const policy = fullPolicy(policyIn);
   const [height, key] = await Promise.all([chain.finalHeight(), chain.accessKey(checked.senderId, checked.publicKey.toString())]);
   if (checked.maxBlockHeight <= height) throw new RelayRejected('expired', `max ${checked.maxBlockHeight} <= ${height}`);
@@ -284,9 +309,16 @@ export async function preflightDelegate(chain: ChainReader, checked: CheckedDele
     return;
   }
   if (key.permission.receiverId !== policy.contractId) throw new RelayRejected('key_scope', key.permission.receiverId);
-  if (key.permission.methodNames.length && !key.permission.methodNames.includes(checked.methodName)) {
-    throw new RelayRejected('key_scope', checked.methodName);
+  const listed = key.permission.methodNames;
+  if (listed.length > 0) {
+    // A rounds key names its methods: the call has to be one of them.
+    if (!listed.includes(checked.methodName)) throw new RelayRejected('key_scope', checked.methodName);
+    return;
   }
+  // A house key has an empty method list, so the runtime would let it call
+  // any method on its receiver; the policy's own list is then the only
+  // gate, checked again here against the policy the key is scoped to.
+  if (!policy.methods.includes(checked.methodName)) throw new RelayRejected('key_scope', checked.methodName);
 }
 
 // ------------------------------------------------------------- outcomes
@@ -415,7 +447,8 @@ export interface RelayerConfig {
   relayerId: string;
   relayerKey: string; // "ed25519:..." secret key
   rpcUrl: string;
-  policy: RelayPolicy;
+  // One policy per contract the relayer relays for.
+  policy: RelayPolicy | readonly RelayPolicy[];
   // Refuse to send when the relayer's spendable balance is below this (in
   // yoctoNEAR); every call in flight needs about 0.03 NEAR of float.
   minFloatYocto?: bigint;
@@ -423,7 +456,9 @@ export interface RelayerConfig {
 
 export interface Relayer {
   readonly relayerId: string;
+  // The first policy (the rounds'), and all of them.
   readonly policy: RelayPolicy;
+  readonly policies: readonly RelayPolicy[];
   readonly provider: JsonRpcProvider;
   check(signedDelegateBase64: string, ctx?: CheckContext): Promise<CheckedDelegate>;
   preflight(checked: CheckedDelegate): Promise<void>;
@@ -441,6 +476,8 @@ export function createRelayer(cfg: RelayerConfig): Relayer {
   const signer = new KeyPairSigner(KeyPair.fromString(cfg.relayerKey as KeyPairString));
   const relayer = new Account(cfg.relayerId, provider, signer);
   const chain = rpcChainReader(provider);
+  const policies: readonly RelayPolicy[] = Array.isArray(cfg.policy) ? cfg.policy : [cfg.policy as RelayPolicy];
+  if (policies.length === 0) throw new Error('createRelayer: no policy');
   const minFloat = cfg.minFloatYocto ?? 50_000_000_000_000_000_000_000n; // 0.05 NEAR
 
   // The relayer's balance, re-read at most every 30 s.
@@ -454,8 +491,8 @@ export function createRelayer(cfg: RelayerConfig): Relayer {
     if (float.available < minFloat) throw new RelayRejected('relayer_empty', 'the relayer is out of NEAR');
   }
 
-  const check = (b64: string, ctx: CheckContext = {}) => checkDelegate(b64, cfg.policy, { ...ctx, relayerId: cfg.relayerId });
-  const preflight = (checked: CheckedDelegate) => preflightDelegate(chain, checked, cfg.policy);
+  const check = (b64: string, ctx: CheckContext = {}) => checkDelegate(b64, policies, { ...ctx, relayerId: cfg.relayerId });
+  const preflight = (checked: CheckedDelegate) => preflightDelegate(chain, checked, checked.policy);
 
   async function send(checked: CheckedDelegate): Promise<RelayResult> {
     await ensureFloat();
@@ -471,7 +508,8 @@ export function createRelayer(cfg: RelayerConfig): Relayer {
     // The delegate receipt and the inner FunctionCall receipt both have to succeed.
     const failure = findFailure(res);
     if (failure) throw new RelayFailed(txHash, failure, contractMessage(failure));
-    return { txHash, value: callReturnValue(res, cfg.policy.contractId), events: callEvents(res, cfg.policy.contractId) };
+    const p = fullPolicy(checked.policy);
+    return { txHash, value: callReturnValue(res, p.contractId), events: callEvents(res, p.contractId, p.eventStandard) };
   }
 
   // One relay at a time per sender in this process: delegate nonces must
@@ -508,7 +546,7 @@ export function createRelayer(cfg: RelayerConfig): Relayer {
     }
   }
 
-  return { relayerId: cfg.relayerId, policy: cfg.policy, provider, check, preflight, send, hasFloat, relay, relayerAccount: relayer };
+  return { relayerId: cfg.relayerId, policy: policies[0], policies, provider, check, preflight, send, hasFloat, relay, relayerAccount: relayer };
 }
 
 // The relay policy for the rounds contract: user methods only, senders
@@ -523,5 +561,24 @@ export function roundsRelayPolicy(contractId: string, parentId: string, methods:
     maxArgsBytes: 1024,
     maxTtlBlocks: 600,
     requireFunctionCallKey: true,
+  };
+}
+
+// The relay policy for the house contract: the house methods only (the
+// guests' shorter list is applied by the route), senders that are house
+// accounts (<label>-h.<parent>, lib/near/house-account.ts), function-call
+// keys only. Its keys have an empty method list, so this list is the gate
+// (preflightDelegate checks it again against the key).
+export function houseRelayPolicy(contractId: string, parentId: string, methods: readonly string[], maxGas: bigint = 150n * TGAS): RelayPolicy {
+  const escaped = parentId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    contractId,
+    methods,
+    senderPattern: new RegExp(`^[a-z0-9]+([_-][a-z0-9]+)*-h\\.${escaped}$`),
+    maxGas,
+    maxArgsBytes: 1024,
+    maxTtlBlocks: 600,
+    requireFunctionCallKey: true,
+    eventStandard: 'atnx_house',
   };
 }

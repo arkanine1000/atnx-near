@@ -2,6 +2,7 @@ import { getMarketsPage } from '@/lib/store';
 import { parseMarketsQuery } from '@/lib/markets-query';
 import { corsHeaders, corsPreflight } from '@/lib/cors';
 import { getRoundBadges, liveMarketIds, type RoundsMap } from '@/lib/bm/round-badges';
+import { isHouseProduct } from '@/lib/near/config';
 
 // The dashboard's market listing (the top `limit`, after any search and
 // category filter) plus the hero's featured set, sorted in the database.
@@ -17,7 +18,8 @@ export async function GET(request: Request) {
   const headers = corsHeaders(request);
   const query = parseMarketsQuery(new URL(request.url).searchParams);
   try {
-    if (!query.tab) {
+    // The house build has no rounds: the plain listing, whatever the tab.
+    if (!query.tab || isHouseProduct()) {
       const page = await getMarketsPage(query);
       return Response.json(page, { headers: { ...headers, 'Cache-Control': FEED_CACHE } });
     }

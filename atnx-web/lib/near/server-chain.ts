@@ -3,8 +3,9 @@
 // directly). Server only: it holds the parent key.
 import { Account, JsonRpcProvider, KeyPair, KeyPairSigner, PublicKey, actions, nearToYocto, type Action, type KeyPairString } from 'near-api-js';
 import { USER_METHODS } from './config';
-import { rpcChainReader } from './relay';
-import type { AccountChain } from './routes';
+import type { AccountKey } from './house-account';
+import { normalisePermission, rpcChainReader } from './relay';
+import type { AccountChain, HouseAccountChain } from './routes';
 
 // The function-call key's allowance. The relayer pays all gas, so it never
 // drains; it caps what the key could spend if NEAR ever landed on the
@@ -19,11 +20,28 @@ export function accountCreationActions(publicKey: string, roundsId: string): Act
   return [actions.createAccount(), actions.addFunctionCallAccessKey(PublicKey.from(publicKey), roundsId, [...USER_METHODS], KEY_ALLOWANCE)];
 }
 
+// The same for a house account (<handle>-h.<parent>): CreateAccount, then
+// the same browser key as a function-call key for the house contract with
+// an empty method list (the relayer's method list is the gate), the same
+// allowance. No Transfer and no full-access key.
+export function houseAccountCreationActions(publicKey: string, houseId: string): Action[] {
+  return [actions.createAccount(), actions.addFunctionCallAccessKey(PublicKey.from(publicKey), houseId, [], KEY_ALLOWANCE)];
+}
+
+const MISSING_ACCOUNT = /does not exist|UNKNOWN_ACCOUNT|doesn't exist/i;
+
 // The parent signs CreateAccount + AddKey for <handle>.<parent>: zero
 // NEAR (a zero-balance account, under 770 bytes) and one key, the user's
 // browser key, as a function-call key for the rounds contract and the user
-// methods only. No custody key.
-export function parentAccountChain(opts: { rpcUrl: string; parentId: string; parentKey: string; roundsId: string }): AccountChain & { spendable(): Promise<bigint> } {
+// methods only. No custody key. With `houseId`, it also makes house
+// accounts (createHouseAccount) and lists an account's keys (accessKeys).
+export function parentAccountChain(opts: {
+  rpcUrl: string;
+  parentId: string;
+  parentKey: string;
+  roundsId: string;
+  houseId?: string;
+}): AccountChain & HouseAccountChain & { spendable(): Promise<bigint> } {
   const provider = new JsonRpcProvider({ url: opts.rpcUrl });
   const parent = new Account(opts.parentId, provider, new KeyPairSigner(KeyPair.fromString(opts.parentKey as KeyPairString)));
   const reader = rpcChainReader(provider);
@@ -33,9 +51,36 @@ export function parentAccountChain(opts: { rpcUrl: string; parentId: string; par
         await provider.viewAccount({ accountId });
         return true;
       } catch (e) {
-        if (/does not exist|UNKNOWN_ACCOUNT|doesn't exist/i.test(String((e as Error)?.message ?? e))) return false;
+        if (MISSING_ACCOUNT.test(String((e as Error)?.message ?? e))) return false;
         throw e;
       }
+    },
+    async accessKeys(accountId): Promise<AccountKey[] | null> {
+      try {
+        const list = (await provider.viewAccessKeyList({ accountId })) as unknown as { keys?: Array<{ public_key: string; access_key: { permission: unknown } }> };
+        // A kind of key this code does not know reads as full access: never
+        // something to reuse.
+        const permission = (p: unknown) => {
+          try {
+            return normalisePermission(p);
+          } catch {
+            return 'FullAccess' as const;
+          }
+        };
+        return (list.keys ?? []).map((k) => ({ publicKey: String(k.public_key), permission: permission(k.access_key.permission) }));
+      } catch (e) {
+        if (MISSING_ACCOUNT.test(String((e as Error)?.message ?? e))) return null;
+        throw e;
+      }
+    },
+    async createHouseAccount({ accountId, publicKey }) {
+      if (!opts.houseId) throw new Error('house accounts are not configured');
+      const res = await parent.signAndSendTransaction({
+        receiverId: accountId,
+        actions: houseAccountCreationActions(publicKey, opts.houseId),
+        waitUntil: 'FINAL',
+      });
+      return { txHash: res.transaction.hash };
     },
     async hasKey(accountId, publicKey) {
       return !!(await reader.accessKey(accountId, publicKey));

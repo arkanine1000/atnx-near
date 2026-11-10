@@ -1,6 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { isHouseProduct } from "@/lib/near/config";
+
+// The house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) trades UP or DOWN
+// against a vault instead of in rounds; steps 2 and 3 say so.
+const HOUSE = isHouseProduct();
 
 // Three-step explainer. Each step is an inline SVG "screen" animated with CSS
 // keyframes (the .hiw-* rules in HIW_CSS below) on a shared 6s loop, so a
@@ -20,13 +25,17 @@ const STEPS = [
   {
     n: 2,
     title: "UP or DOWN",
-    body: "Markets run in rounds. Each round opens at the market's Virality Index of that moment, which becomes its target, and runs for 24 hours. Think attention will be higher at the close? Take UP. Lower? Take DOWN. Buy while the round runs. Before a market's first round opens, early commits on a side all pay the same price.",
+    body: HOUSE
+      ? "Think a trend's attention will rise? Go UP. Fall? Go DOWN. Pick 2× or 3× leverage and an amount. Your order fills a few seconds after you tap, at a price read after the tap and never worse than the worst price you accept."
+      : "Markets run in rounds. Each round opens at the market's Virality Index of that moment, which becomes its target, and runs for 24 hours. Think attention will be higher at the close? Take UP. Lower? Take DOWN. Buy while the round runs. Before a market's first round opens, early commits on a side all pay the same price.",
     tone: "magenta" as const,
   },
   {
     n: 3,
     title: "Paid for being right",
-    body: "Trading stops for the round's last 30 minutes, and the close is the index averaged over them, so one late spike cannot decide it. If your side wins, you get your stake back plus a share of the other side's money. Claim it, or roll it into the next round.",
+    body: HOUSE
+      ? "Close whenever you like: the payout goes straight to your balance. You can lose at most what you put in, and an UP win stops at ten times it. A position ends by itself after 14 days."
+      : "Trading stops for the round's last 30 minutes, and the close is the index averaged over them, so one late spike cannot decide it. If your side wins, you get your stake back plus a share of the other side's money. Claim it, or roll it into the next round.",
     tone: "yellow" as const,
   },
 ];
