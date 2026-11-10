@@ -402,19 +402,17 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
   );
 }
 
-// The refusals that are about the market, not the order: the ticket shows
-// the line instead of the form.
+// The refusals that last (the market's state, its age, its score, no price
+// at all): the ticket shows the line instead of the form. Passing ones (the
+// two prices too far apart, new orders paused, a late price feed, the cap)
+// keep the form, with the button off and the line under it.
 function marketLineFor(b: ReturnType<typeof openBlock>): ReturnType<typeof openBlock> {
   switch (b) {
     case "settled":
     case "close_only":
-    case "paused":
     case "cooloff":
     case "no_quote":
-    case "stale":
     case "low_score":
-    case "spread":
-    case "zero_price":
       return b;
     default:
       return null;
