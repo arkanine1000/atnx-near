@@ -66,10 +66,10 @@ export function outcomeOf(t: Tracked, account: HouseAccountData | null, market: 
 
 export function trackLine(t: Tracked, o: TrackedOutcome): string {
   if (o.phase === "waiting") {
-    if (t.kind === "close") return "Closing… This usually takes 5 to 10 seconds.";
+    if (t.kind === "close") return "Closing… This usually takes about 10 seconds.";
     if (o.cancellable) return "Your order has not filled. You can cancel it now and get your stake and fee back.";
     if (o.slow) return "This is taking longer than usual. If it has not filled after 15 minutes, you can cancel it and get your stake and fee back.";
-    return "Confirming your order… This usually takes 5 to 10 seconds.";
+    return "Confirming your order… This usually takes about 10 seconds.";
   }
   if (o.phase === "filled") return o.entryE2 > 0n ? `Filled at ${fmtPriceE2(o.entryE2)}.` : "Filled.";
   if (o.phase === "refunded") return refundLine(o.reason);
