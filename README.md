@@ -351,9 +351,8 @@ The baseline's deployments, still deployed and not part of this entry:
 
 - **Contracts:** near-sdk 5.30 and near-contract-standards 5.30 (the token's NEP-141, NEP-145 and NEP-148); cargo-near 0.23.0 with the `sourcescan/cargo-near:0.23.0-rust-1.99.1` image for reproducible builds; near-workspaces 0.24, tokio, serde_json and anyhow in the sandbox tests.
 - **Web:** Next.js 16.2.2, React 19.2.4, near-api-js 7.4, borsh 2, Supabase (`@supabase/supabase-js`, `@supabase/ssr`), TanStack Query 5, Tailwind CSS 4, tsx for the tests.
-- **Services:** Supabase (database and Google and X sign-in), Vercel (hosting and cron), FastNEAR's public testnet RPC, the NEAR Intents 1Click API (dry quotes only), NearBlocks (explorer links).
+- **Services:** Supabase (database and Google and X sign-in), Vercel (hosting and cron), public NEAR testnet RPC endpoints (FastNEAR first, with Intear and dRPC as fallbacks), the NEAR Intents 1Click API (dry quotes only), NearBlocks (explorer links).
 - **Templates:** none. The relayer was ported from the team's own testnet prototype in `near/relayer-proto`, written in the window.
-- **AI code:** much of this repository was written with an AI coding agent (Claude Code).
 
 ## The team's other entry
 
