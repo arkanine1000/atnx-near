@@ -864,6 +864,57 @@ fn a_position_ends_after_14_days_at_the_first_quote_after_its_end() {
     assert_eq!(t.last_closed(&bob()).reason, "expiry");
 }
 
+/// The end-of-life close has no limit, so it skips a print whose two prices
+/// are more than `max_open_gap_bps` apart and settles at the next narrow
+/// one. A trader's own close, which has a limit, is not affected.
+#[test]
+fn the_end_of_life_close_skips_a_print_with_the_prices_far_apart() {
+    let (mut t, m) = setup(50_000, 50_000);
+    let a = t.filled(&alice(), m, Side::Long, 3, STAKE);
+    let b = t.filled(&bob(), m, Side::Long, 3, STAKE);
+    let end = n(t.pos(a).unwrap().expires_at);
+    t.now = end - 60;
+    t.close(&bob(), b, 1);
+    // At the end: S 500, R 700, so the lead is the reading and the prices are 40 % apart.
+    t.now = end + 10;
+    t.push(m, 50_000, 70_000);
+    let q = t.c.get_market(m).unwrap().quote.unwrap();
+    assert_eq!((q.sell_e2.0, q.buy_e2.0, q.spread_bps.0), (50_000, 70_000, 4_000));
+    let b0 = t.bal(&bob());
+    assert_eq!(t.crank(&keeper(), &[a, b]), ["closing", "closed"]);
+    assert_eq!(t.bal(&bob()) - b0, STAKE, "the trader's close settles there, at the sell price 500");
+    assert_eq!(t.last_closed(&bob()).reason, "close");
+    assert_eq!(t.crank(&keeper(), &[a]), ["waiting"], "the wide print is skipped");
+    t.next(m, 52_000, 52_000);
+    let a0 = t.bal(&alice());
+    assert_eq!(t.crank(&keeper(), &[a]), ["closed"]);
+    // 100 + 300 × (520 − 500) / 500 = 112.
+    assert_eq!(t.bal(&alice()) - a0, 112 * USDG);
+    let h = t.last_closed(&alice());
+    assert_eq!((h.reason.as_str(), h.exit_e2.0), ("expiry", 52_000));
+}
+
+/// While the end-of-life close waits for a narrow print, the position can
+/// still be liquidated at a wide one.
+#[test]
+fn a_waiting_end_of_life_close_can_still_be_liquidated() {
+    let (mut t, m) = setup(60_000, 60_000);
+    let a = t.filled(&alice(), m, Side::Long, 3, STAKE);
+    let end = n(t.pos(a).unwrap().expires_at);
+    t.now = end - 900;
+    t.push(m, 45_000, 45_000);
+    t.walk(m, 40_500, 40_500);
+    assert!(t.now < end);
+    // After the end: the score at the level 400, the reading far below it.
+    t.now = end + 10;
+    t.push(m, 40_000, 20_000);
+    let q = t.c.get_market(m).unwrap().quote.unwrap();
+    assert_eq!((q.buy_e2.0, q.sell_e2.0), (40_000, 20_000));
+    assert_eq!(t.crank(&carol(), &[a]), ["liquidated"]);
+    assert_eq!(t.bal(&carol()), USDG);
+    assert_eq!(t.last_closed(&alice()).reason, "liquidation");
+}
+
 // --------------------------------------------------------- push rules
 
 /// One entry that breaks a rule never fails a push: it is skipped and
@@ -881,7 +932,7 @@ fn a_push_skips_and_counts_entries_that_break_a_rule() {
         qin(m, 10_600, 10_400, 1_001, now - 10, now),     // the same print with other numbers
         qin(m, 10_500, 10_400, 1_001, now - 10, now - 5), // a read time going back
         qin(m, 10_500, 10_400, 1_001, now - 10, now + 1), // a read time after the block time
-        qin(other, 20_000, 20_000, 1_003, now + 1, now),  // a print time after the block time
+        qin(other, 20_000, 20_000, 1_003, now + 31, now), // a print time over 30 s after the block time
         qin(other, 20_000, 20_000, 1_003, now - 1, now),  // a first print: accepted
         qin(m, 10_500, 10_400, 1_001, now - 10, now),     // the same print read again: accepted
     ];
@@ -945,10 +996,11 @@ fn the_score_moves_with_the_print_time_however_many_prints_arrive() {
         assert_eq!(t.score(m), expect);
     }
     assert!(expect * 100 < 107_500 * 117, "{expect}");
-    // One second later: the 10 bps minimum.
+    // One second later: 5 bps, the same rate.
     t.now += 1;
     t.push(m, 300_000, 300_000);
-    assert_eq!(t.score(m), expect + expect / 1_000);
+    let s0 = expect + expect * 5 / 10_000;
+    assert_eq!(t.score(m), s0);
     // A print not later than the stored one is skipped, whatever its id.
     let stored = t.c.get_market(m).unwrap().quote.unwrap();
     t.now += 60;
@@ -960,8 +1012,34 @@ fn the_score_moves_with_the_print_time_however_many_prints_arrive() {
     // stored print, 33 %.
     t.now += 600;
     t.push(m, 1_000, 1_000);
-    let s0 = expect + expect / 1_000;
     assert_eq!(t.score(m), s0 - s0 * 3_300 / 10_000);
+}
+
+/// `print_at` is the index's clock and may run up to 30 s ahead of the
+/// block time; `read_at` is the chain's and may not run ahead at all.
+#[test]
+fn a_print_time_may_be_up_to_30_seconds_after_the_block_time() {
+    let (mut t, m) = setup(50_000, 50_000);
+    t.now += 300;
+    let now = t.now;
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 50_100, 50_100, 2_000, now + 31, now)], commitment()));
+    assert_eq!((r.accepted, r.skipped), (0, 1), "31 s ahead: skipped");
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 50_100, 50_100, 2_000, now + 30, now)], commitment()));
+    assert_eq!((r.accepted, r.skipped), (1, 0), "30 s ahead: accepted");
+    let q = t.c.get_market(m).unwrap().quote.unwrap();
+    assert_eq!((q.print_id.0, q.print_at.0, q.last_read_at.0), (2_000, now + 30, now));
+    // The read time stays strict.
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 50_100, 50_100, 2_000, now + 30, now + 1)], commitment()));
+    assert_eq!((r.accepted, r.skipped), (0, 1), "a read 1 s after the block time: skipped");
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 50_100, 50_100, 2_000, now + 30, now - 1)], commitment()));
+    assert_eq!((r.accepted, r.skipped), (0, 1), "a read before the stored read: skipped");
+    // The next print must still come after the stored print time.
+    t.now += 20;
+    let now = t.now;
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 50_200, 50_200, 2_001, now + 5, now)], commitment()));
+    assert_eq!(r.skipped, 1, "not later than the stored print time");
+    let r = t.call(&keeper(), |c| c.push_quotes(vec![qin(m, 50_200, 50_200, 2_001, now + 11, now)], commitment()));
+    assert_eq!(r.accepted, 1);
 }
 
 /// The ring keeps the numbers as pushed next to the clipped score, so a

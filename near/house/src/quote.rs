@@ -214,19 +214,17 @@ pub fn cap_e2(side: Side, leverage: u8, stake: u64, entry: u64, max_profit: u64)
 /// The score of a new print is limited by the print's own time: real time
 /// sets the speed, however many prints are pushed.
 pub const STEP_SECS: u64 = 300;
-/// The smallest move a new print is allowed, in basis points.
-pub const MIN_STEP_BPS: u64 = 10;
 
 /// The score a new print may take, `elapsed_secs` after the stored print:
-/// within max_step_bps × elapsed / 300 of the stored score (at least
-/// MIN_STEP_BPS, and at least one hundredth so a score near 0 can still
-/// move), rounded towards the stored score. From a stored score of 0 the
-/// pushed score is taken as it is: no share of 0 would let it move.
+/// within max_step_bps × elapsed / 300 of the stored score (and at least one
+/// hundredth, so a small score can still move), rounded towards the stored
+/// score. From a stored score of 0 the pushed score is taken as it is: no
+/// share of 0 would let it move.
 pub fn clip_score(stored: u64, pushed: u64, max_step_bps: u64, elapsed_secs: u64) -> u64 {
     if stored == 0 {
         return pushed;
     }
-    let allowance = (max_step_bps as u128 * elapsed_secs as u128 / STEP_SECS as u128).max(MIN_STEP_BPS as u128);
+    let allowance = max_step_bps as u128 * elapsed_secs as u128 / STEP_SECS as u128;
     let step = sat_u64((stored as u128).saturating_mul(allowance) / BPS as u128).max(1);
     pushed.clamp(stored.saturating_sub(step), stored.saturating_add(step))
 }
@@ -391,8 +389,15 @@ mod tests {
         // Two and a half minutes: 7.5 %; ten minutes: 30 %.
         assert_eq!(clip_score(10_000, 20_000, 1_500, 150), 10_750);
         assert_eq!(clip_score(10_000, 20_000, 1_500, 600), 13_000);
-        // One second: the 10 bps minimum.
-        assert_eq!(clip_score(100_000, 200_000, 1_500, 1), 100_100);
+        // One second: 5 bps; a tenth of that rate compounds no faster.
+        assert_eq!(clip_score(100_000, 200_000, 1_500, 1), 100_050);
+        assert_eq!(clip_score(100_000, 200_000, 1_500, 0), 100_001, "no time: the one-hundredth minimum");
+        // 300 prints a second apart move the score less than e^0.15 − 1 ≈ 16.2 %.
+        let mut s = 100_000u64;
+        for _ in 0..300 {
+            s = clip_score(s, u64::MAX, 1_500, 1);
+        }
+        assert!(s < 116_183, "{s}");
         // From 0, the pushed score; near 0, at least one hundredth either way.
         assert_eq!(clip_score(0, 50_000, 1_500, 300), 50_000);
         assert_eq!(clip_score(0, 50_000, 1_500, 1), 50_000);

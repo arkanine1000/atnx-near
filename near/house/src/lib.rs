@@ -66,6 +66,10 @@ pub const HISTORY_LEN: usize = 20;
 pub const MAX_CRANK_IDS: usize = 20;
 /// Quotes per `push_quotes` call.
 pub const MAX_QUOTES_PER_PUSH: usize = 200;
+/// How far a print's time may be after the block time. `print_at` comes
+/// from the index's database clock, `read_at` and the block time from the
+/// chain's, and the two clocks can differ by a second or two.
+pub const PRINT_CLOCK_SLACK_SECS: u64 = 30;
 /// Shares minted to nobody at init, so the share price is always defined.
 /// Shares have 9 decimals; at this count one share starts at one USDG.
 pub const DEAD_SHARES: u128 = 1_000;
@@ -902,7 +906,7 @@ fn validate_config(c: &Config) {
 fn apply_quote(m: &mut Market, qi: &QuoteIn, now: u64, max_step_bps: u64) -> bool {
     let (score, reading, print_id) = (qi.score_e2.0, qi.reading_e2.0, qi.print_id.0);
     let (print_at, read_at) = (qi.print_at.0, qi.read_at.0);
-    if m.status == MarketStatus::Settled || print_at > now || read_at > now {
+    if m.status == MarketStatus::Settled || print_at > now.saturating_add(PRINT_CLOCK_SLACK_SECS) || read_at > now {
         return false;
     }
     let Some(s) = m.quotes.last().cloned() else {
@@ -1281,16 +1285,17 @@ impl Contract {
     /// Keeper only: the 5-minute batch, or one market on demand. The contract
     /// derives both prices from the score and the reading itself.
     ///
-    /// Per entry, all times against the block time:
+    /// Per entry:
     /// - the stored print again (same `print_id`) must repeat the numbers as
     ///   they were pushed, and moves its `last_read_at` forward;
     /// - a new print needs a larger `print_id` and a later `print_at`, and
     ///   its score may move from the stored score at most
     ///   `max_step_bps × (print_at − stored print_at) / 300` (never less than
-    ///   10 bps, nor less than one hundredth); a larger move is clipped and
-    ///   catches up on later prints;
-    /// - `print_at` and `read_at` are never after the block time, and
-    ///   `read_at` is never before the stored `last_read_at`.
+    ///   one hundredth); a larger move is clipped and catches up on later
+    ///   prints;
+    /// - `print_at` is at most `PRINT_CLOCK_SLACK_SECS` after the block time
+    ///   (it is the index's clock); `read_at` is never after the block time
+    ///   nor before the stored `last_read_at`.
     ///
     /// An entry that breaks a rule, names an unknown or settled market, or
     /// comes after the first `MAX_QUOTES_PER_PUSH`, is skipped and counted; it
@@ -1467,11 +1472,13 @@ impl Contract {
     /// quote came within the time to live.
     ///
     /// An open or closing position, in this order:
-    /// 1. a close (or, past `expires_at`, the expiry close, which has no
-    ///    limit) settles at the earliest quote read at least
+    /// 1. a close (or, past `expires_at`, the end-of-life close, which has
+    ///    no limit) settles at the earliest quote read at least
     ///    `min_fill_delay_secs` after the request (the oldest quote in the
     ///    ring if that one has left it); past the limit or at zero, a close
-    ///    goes back to Open, and an expiry close waits for a non-zero price;
+    ///    goes back to Open; the end-of-life close skips prints at zero or
+    ///    with the two prices more than `max_open_gap_bps` apart, and waits
+    ///    (still open to liquidation and the cap) for one that is neither;
     /// 2. on a settled market, it closes at the final price;
     /// 3. at the newest quote, liquidated if at the liquidation level, the
     ///    caller taking `liq_reward_bps` of the stake;
@@ -1977,8 +1984,9 @@ impl Contract {
     }
 
     /// The quote a close requested at `at` is due to settle at. `limit` 0 is
-    /// the expiry close: no limit, and it waits past a zero price for the
-    /// next quote.
+    /// the end-of-life close: it has no limit, so it skips every print whose
+    /// close-side price is 0 or whose two prices are more than
+    /// `max_open_gap_bps` apart, and waits for the first that is neither.
     fn close_due(&self, m: &Market, side: Side, at: u64, limit: u64) -> CloseDue {
         let from = at.saturating_add(self.config.min_fill_delay_secs.0);
         let start = match find_quote(m, from) {
@@ -1987,7 +1995,11 @@ impl Contract {
             Lookup::NotYet => return CloseDue::Waiting,
         };
         if limit == 0 {
-            return match (start..m.quotes.len()).find(|&j| self.prices_of(&m.quotes[j]).close(side) > 0) {
+            let narrow = |j: &usize| {
+                let px = self.prices_of(&m.quotes[*j]);
+                px.close(side) > 0 && spread_bps(&px) <= self.config.max_open_gap_bps as u64
+            };
+            return match (start..m.quotes.len()).find(narrow) {
                 Some(j) => CloseDue::At(j),
                 None => CloseDue::Waiting,
             };
