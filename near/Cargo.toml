@@ -1,6 +1,6 @@
 [workspace]
-members = ["usdg", "rounds", "integration-tests"]
-default-members = ["usdg", "rounds"]
+members = ["usdg", "rounds", "house", "integration-tests"]
+default-members = ["usdg", "rounds", "house"]
 resolver = "2"
 
 [workspace.package]
