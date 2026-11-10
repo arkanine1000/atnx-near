@@ -840,7 +840,16 @@ test('quoteOnDemand: nothing to do for a position that is not waiting, or one th
   assert.deepEqual([r1.ok, r1.sent, r1.reason], [true, false, 'not_waiting']);
   assert.deepEqual(a.chain.calls, []);
   const r2 = await quoteOnDemand('8', { deps: onDemandScene().d });
-  assert.deepEqual([r2.ok, r2.reason], [false, 'not_found']);
+  assert.deepEqual([r2.ok, r2.reason, r2.retries], [false, 'not_found', 3]);
+});
+
+test('quoteOnDemand: an order the RPC does not show yet is asked for again', async () => {
+  const { chain, d } = onDemandScene();
+  const position = chain.position;
+  let unseen = 1;
+  chain.position = async (id) => (unseen-- > 0 ? null : position(id));
+  const res = await quoteOnDemand('7', { deps: d });
+  assert.deepEqual([res.ok, res.sent, res.retries], [true, true, 1]);
 });
 
 test('quoteOnDemand: a quote already read after the order needs only the crank', async () => {

@@ -91,6 +91,9 @@ const ON_DEMAND_POLL_MS = 500;
 // the longest; the whole stays within ON_DEMAND_MAX_WAIT_MS.
 export const ON_DEMAND_RETRY_MS = 500;
 export const ON_DEMAND_RETRY_MAX_MS = 4_000;
+// A position the RPC does not show yet is asked for this many times (a
+// node a block or two behind the relay's transaction).
+export const ON_DEMAND_UNSEEN_TRIES = 3;
 
 // A failed read of the newest print (the database), worth another try.
 class PrintReadError extends Error {
@@ -1065,6 +1068,9 @@ export async function quoteOnDemand(positionId: string | number | bigint, opts: 
         cfg ??= await chain.config();
         const p = await chain.position(id);
         if (!p) {
+          // The order was just placed: the node answering may not have its
+          // block yet. Asked again a few times before giving up.
+          if (res.retries < ON_DEMAND_UNSEEN_TRIES && (await again(new Error(`position ${id} not seen yet`)))) continue;
           res.reason = 'not_found';
           return res;
         }
