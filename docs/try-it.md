@@ -222,7 +222,7 @@ Use a recent Chrome, Firefox or Safari. The account's key lives in this browser'
 
 **b8.** Open https://atnx-near.vercel.app/app/portfolio. See "Equity" and "Balance", both 10,000 USDG less the fee, plus or minus the result of step b6 (nothing is open, so the two agree), "Open PnL" at 0.00, and the "PnL" chart stepping at the close from b6. Under the tabs, "Open · 0" shows "No open positions." Tap "Closed": see the position from b5 with its "Entry", its "Exit" and "Closed", and above it "Realised <amount> USDG over 1 trade".
 
-**b9.** Open https://atnx-near.vercel.app/app/settings. See "Guest account guest-<8 characters>-h.atnx.testnet ↗" and "Fund from any chain". Keep Solana and 25: after a few seconds see "You send 25.00 USDC on Solana", "Arrives on NEAR", "Fee", "Time", and "Preview only: ATNX runs on NEAR testnet, so no money moves."
+**b9.** Open https://atnx-near.vercel.app/app/settings. See "Guest account guest-<8 characters>-h.atnx.testnet ↗" and "Fund from any chain". Tap the "?" beside the account: see "Holds 0 NEAR.", "One key, which can only call house.atnx.testnet." and "relayer.atnx.testnet sends its calls and pays their gas.", read from public RPC when you tap. Keep Solana and 25: after a few seconds see "You send 25.00 USDC on Solana", "Arrives on NEAR", "Fee", "Time", and "Preview only: ATNX runs on NEAR testnet, so no money moves."
 
 **b10. Your account on chain.** Copy the account id from b9 and run:
 
