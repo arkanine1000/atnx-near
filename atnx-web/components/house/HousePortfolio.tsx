@@ -123,6 +123,11 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
 
   const canAct = near.status === "ready";
   const nameOf = (id: number) => meta.get(id)?.name ?? `Market ${id}`;
+  // A row's name opens its market's page.
+  const hrefOf = (id: number) => {
+    const m = meta.get(id);
+    return m ? `/app/markets/${m.atnxMarketId}` : null;
+  };
   const pending = data.positions.filter((p) => p.state === "Pending");
   const open = data.positions.filter((p) => p.state !== "Pending").sort((a, b) => (a.id < b.id ? 1 : -1));
   const marks = open.map((p) => markPosition(p, chainMarkets.get(p.market) ?? null, cfg));
@@ -201,7 +206,7 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
         <Card className="p-4 mt-4">
           <h3 className="text-base font-bold text-primary">Orders confirming</h3>
           {pending.map((p) => (
-            <PositionLine key={p.id.toString()} p={p} market={chainMarkets.get(p.market) ?? null} cfg={cfg} name={nameOf(p.market)} nowMs={nowMs} busy={false} onClose={close} />
+            <PositionLine key={p.id.toString()} p={p} market={chainMarkets.get(p.market) ?? null} cfg={cfg} name={nameOf(p.market)} href={hrefOf(p.market)} nowMs={nowMs} busy={false} onClose={close} />
           ))}
         </Card>
       )}
@@ -223,6 +228,7 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
               market={chainMarkets.get(p.market) ?? null}
               cfg={cfg}
               name={nameOf(p.market)}
+              href={hrefOf(p.market)}
               nowMs={nowMs}
               busy={busy === `close-${p.id}` || !canAct}
               onClose={close}
@@ -243,7 +249,7 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
         {data.history.length === 0 ? (
           <p className="text-sm text-secondary py-2">Nothing closed yet.</p>
         ) : (
-          data.history.slice(0, 20).map((c) => <ClosedLine key={c.id.toString()} c={c} name={nameOf(c.market)} />)
+          data.history.slice(0, 20).map((c) => <ClosedLine key={c.id.toString()} c={c} name={nameOf(c.market)} href={hrefOf(c.market)} />)
         )}
       </Card>
 

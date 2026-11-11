@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import { fmtUsdg } from "@/components/bm/format";
 import { closePrice, quotePrices, newestQuote } from "@/lib/bm/house-math";
@@ -264,6 +265,7 @@ export function PositionLine({
   market,
   cfg,
   name,
+  href,
   nowMs,
   busy,
   onClose,
@@ -271,8 +273,9 @@ export function PositionLine({
   p: HousePosition;
   market: HouseMarket | null;
   cfg: HouseConfig;
-  // The market's name, in the portfolio.
+  // The market's name, in the portfolio, and its page.
   name?: string | null;
+  href?: string | null;
   nowMs: number;
   busy: boolean;
   onClose: (p: HousePosition, limitE2: bigint) => void;
@@ -297,7 +300,7 @@ export function PositionLine({
           <>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                {name && <div className="text-base font-bold text-primary truncate">{name}</div>}
+                {name && <MarketName name={name} href={href} />}
                 <div className="text-base text-primary">
                   <span className={`font-bold ${sideTone(p.side)}`}>{sideWord(p.side)}</span>{" "}
                   <span className="font-semibold tabular-nums">
@@ -356,6 +359,19 @@ export function PositionLine({
   );
 }
 
+// A row's market name, linking to its market page when there is one. The
+// ink stays primary (.text-primary is unlayered, so a hover colour would
+// not apply); the underline says it is a link.
+function MarketName({ name, href }: { name: string; href?: string | null }) {
+  const cls = "block text-base font-bold text-primary truncate";
+  if (!href) return <div className={cls}>{name}</div>;
+  return (
+    <Link href={href} className={`${cls} underline-offset-2 hover:underline focus-visible:underline`}>
+      {name}
+    </Link>
+  );
+}
+
 // A second line's parts, " · " between them, each kept whole when the line
 // wraps on a phone ("13 d 23 h left", not "13 d" and "23 h left").
 function Parts({ items }: { items: string[] }) {
@@ -374,13 +390,13 @@ function Parts({ items }: { items: string[] }) {
 // A position that has ended, for the history list: side, leverage and
 // stake, with the payout and PnL on the right; entry → exit, how it ended
 // and when on the second line.
-export function ClosedLine({ c, name }: { c: HouseClosed; name?: string | null }) {
+export function ClosedLine({ c, name, href }: { c: HouseClosed; name?: string | null; href?: string | null }) {
   const pnl = c.payout - c.stake;
   const pct = c.stake > 0n ? (Number(pnl) / Number(c.stake)) * 100 : 0;
   return (
     <div className="py-3 border-b border-surface last:border-b-0 flex items-start justify-between gap-3">
       <div className="min-w-0">
-        {name && <div className="text-base font-bold text-primary truncate">{name}</div>}
+        {name && <MarketName name={name} href={href} />}
         <div className="text-base text-primary">
           <span className={`font-bold ${sideTone(c.side)}`}>{sideWord(c.side)}</span>{" "}
           <span className="font-semibold tabular-nums">
