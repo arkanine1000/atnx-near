@@ -36,16 +36,19 @@ Trading is on chain; there is no simulated exchange in this build.
 ```
    production ATNX ── vi_history every 5 min ──┐
                                                ▼
-   /api/bm/keeper (Vercel Cron, 5 min, production only) ── lib/bm/keeper-run.ts
-      ├─ bounded markets (EVM testnets, first iteration): resolve on a bound touch
-      └─ rolling rounds (Solana devnet, vi_rounds; BM_ROUNDS_ENABLED=1): create series, ante, open, settle, void, claim the keeper's antes
+   /api/bm/house-keeper (Vercel Cron, 5 min) and /fast (every minute) ── lib/bm/house-keeper.ts
+      └─ the house market (NEAR testnet, house.atnx.testnet; BM_NEAR_HOUSE_ENABLED=1): push quotes with their commitment, crank, list markets
+   /api/bm/keeper (Vercel Cron, 5 min) ── lib/bm/keeper-run.ts
+      ├─ bounded markets (EVM testnets, the baseline's): resolve on a bound touch
+      └─ rolling rounds (Solana devnet with BM_ROUNDS_ENABLED=1, the baseline's; NEAR testnet with BM_NEAR_ROUNDS_ENABLED=1): create series, ante, open, settle, void, claim the keeper's antes
                                                │
                      registry: bm.markets, bm.series, bm.rounds, bm.keeper_log (Supabase)
                                                │
-   browser ── wagmi (EVM) / Solana wallet adapter ── signs trades and claims directly
+   browser ── NEAR: signs a NEP-366 delegate, /api/near/relay sends it and pays the gas
+           └─ EVM and Solana: wagmi / Solana wallet adapter, signs trades and claims directly
 ```
 
-The registry says which on-chain market or series belongs to which ATNX market and where each round stands; the money and the positions live in the contracts and program accounts. Opening a bounded market and starting a series of rounds go through the server instead: the ticket calls a server action and the keeper key sends the transaction and pays for it, with the connected wallet recorded as opener or finder. Mechanics in [rounds.md](rounds.md) and [bounded-markets.md](bounded-markets.md).
+Vercel runs the crons on production deployments only. The house keeps its markets, quotes and positions in `house.atnx.testnet`; of the registry tables its keeper writes only `bm.keeper_log`, and its trader accounts are in `bm.near_accounts` and `bm.near_guests` ([house.md](house.md#accounts-and-relaying)). For the rounds and the bounded markets the registry says which on-chain market or series belongs to which ATNX market and where each round stands; the money and the positions live in the contracts and program accounts. Opening a bounded market and starting a series of rounds go through the server instead: the ticket calls a server action and the keeper key sends the transaction and pays for it, with the connected wallet or NEAR account recorded as opener or finder. Mechanics in [house.md](house.md), [rounds.md](rounds.md) and, for the baseline's bounded markets, [docs/bounded-markets.md in atnx-markets](https://github.com/arkanine1000/atnx-markets/blob/main/docs/bounded-markets.md).
 
 # Tech stack
 
@@ -58,4 +61,4 @@ The registry says which on-chain market or series belongs to which ATNX market a
 | Extension | Manifest V3, in-worker `OffscreenCanvas` cropping, Shadow DOM + Popover API overlay, `chrome.storage.local` for config |
 | Models | Vercel AI SDK + AI Gateway: Gemini Flash / Flash-Lite for vision and text, Cohere Embed v4 for embeddings. The extension only ships the cropped image |
 | Images | `sharp` for the review step's server-side crop |
-| Chains | Solana devnet: Anchor 0.31.1 programs `vi_rounds` and `bounded_vi`, `@coral-xyz/anchor`, `@solana/web3.js`, `@solana/wallet-adapter-react` (Wallet Standard wallets). EVM testnets: Foundry contracts, wagmi + viem. `@tanstack/react-query` for chain reads |
+| Chains | NEAR testnet: the contracts in `near/` (near-sdk 5.30), `near-api-js` and `borsh` in the app. Solana devnet and EVM testnets, the baseline's (programs and contracts in [atnx-markets](https://github.com/arkanine1000/atnx-markets)): `@coral-xyz/anchor`, `@solana/web3.js`, `@solana/wallet-adapter-react` (Wallet Standard wallets), wagmi + viem. `@tanstack/react-query` for chain reads |
