@@ -162,7 +162,7 @@ The ticket is on every market page with the house on (`atnx-web/components/house
 
 The ticket's title carries a "TESTNET" chip, and the "?" beside it opens "How it works", the rules in seven lines. Prices are written with one decimal from 100 up and two below.
 
-The portfolio (`/app/portfolio`, `atnx-web/components/house/HousePortfolio.tsx`), titled with the same "TESTNET" chip, shows the balance, the value and PnL of open positions, orders confirming, open positions with Close, and the last 20 closed positions as the contract keeps them (`history_of`). Settings shows the trading account with its NearBlocks link, its test USDG and the faucet, and the "Fund from any chain" panel. On all three, what the numbers are worked out from sits behind a "?" beside them (`Help` in `atnx-web/components/house/parts.tsx`), so that every line on screen is legible in a screen recording.
+The portfolio (`/app/portfolio`, `atnx-web/components/house/HousePortfolio.tsx`), titled with the same "TESTNET" chip, shows the balance, the value and PnL of open positions, orders confirming, open positions with Close, and the last 20 closed positions as the contract keeps them (`history_of`); each row's market name opens that market's page. Settings shows the trading account with its NearBlocks link, its test USDG and the faucet, and the "Fund from any chain" panel. On all three, what the numbers are worked out from sits behind a "?" beside them (`Help` in `atnx-web/components/house/parts.tsx`), so that every line on screen is legible in a screen recording.
 
 The ticket works out every number with the same functions the relay checks with (`atnx-web/lib/bm/house-ticket.ts`, `house-math.ts`) from the contract's config and the market's newest quote; the contract decides.
 

@@ -4,8 +4,17 @@ import { useEffect, useRef, useState } from "react";
 import { isHouseProduct } from "@/lib/near/config";
 
 // The house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) trades UP or DOWN
-// against a vault instead of in rounds; steps 2 and 3 say so.
+// against a vault instead of in rounds: steps 2 and 3, and their scenes, say
+// what atnx.app's long/short says, in UP and DOWN. The rules (leverage, the
+// fill, the caps) are in the ticket's "How it works", not here.
 const HOUSE = isHouseProduct();
+
+// Scene 3's numbers: UP at the index of scene 2, 312, closed when it has
+// gone viral at 998. At 1× on 100 USDG the profit is 100 × (998 / 312 − 1)
+// = 219.871…, rounded down as the contract rounds it: +219.87 USDG.
+const SCENE_ENTRY = 312;
+const SCENE_EXIT = 998;
+const SCENE_PNL = `+${(Math.floor((100 * (SCENE_EXIT / SCENE_ENTRY - 1)) * 100) / 100).toFixed(2)} USDG`;
 
 // Three-step explainer. Each step is an inline SVG "screen" animated with CSS
 // keyframes (the .hiw-* rules in HIW_CSS below) on a shared 6s loop, so a
@@ -26,15 +35,15 @@ const STEPS = [
     n: 2,
     title: "UP or DOWN",
     body: HOUSE
-      ? "Think a trend's attention will rise? Go UP. Fall? Go DOWN. Pick an amount and 1× (no leverage), 2× or 3×. Your order fills a few seconds after you tap, at a price read after the tap and never worse than the worst price you accept."
+      ? "Every market has a Virality Index. Think attention is about to climb? Go UP. Think it's peaked? Go DOWN. Pick an amount and you're in."
       : "Markets run in rounds. Each round opens at the market's Virality Index of that moment, which becomes its target, and runs for 24 hours. Think attention will be higher at the close? Take UP. Lower? Take DOWN. Buy while the round runs. Before a market's first round opens, early commits on a side all pay the same price.",
     tone: "magenta" as const,
   },
   {
     n: 3,
-    title: "Paid for being right",
+    title: HOUSE ? "Profit for being right" : "Paid for being right",
     body: HOUSE
-      ? "Close whenever you like: the payout goes straight to your balance. You can lose at most what you put in, and an UP win stops at ten times it. A position ends by itself after 14 days."
+      ? "As the index moves, so does your position. Call it before the crowd and the difference is yours."
       : "Trading stops for the round's last 30 minutes, and the close is the index averaged over them, so one late spike cannot decide it. If your side wins, you get your stake back plus a share of the other side's money. Claim it, or roll it into the next round.",
     tone: "yellow" as const,
   },
@@ -286,7 +295,7 @@ export function HowItWorksModal({
       >
         {/* header */}
         <div className="flex items-center justify-between px-5 pt-4 pb-3">
-          <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-tertiary">
+          <div className="text-[13px] font-mono uppercase tracking-[0.12em] text-secondary">
             How ATNX works
           </div>
           <div className="flex items-center gap-2">
@@ -329,7 +338,7 @@ export function HowItWorksModal({
         <div className="px-5 pt-4 pb-2 min-h-[118px]">
           <div className="flex items-center gap-2.5">
             <span
-              className={`h-7 w-7 shrink-0 rounded-lg inline-flex items-center justify-center text-xs font-bold font-mono border ${TONE[s.tone]}`}
+              className={`h-7 w-7 shrink-0 rounded-lg inline-flex items-center justify-center text-[13px] font-bold font-mono border ${TONE[s.tone]}`}
             >
               {s.n}
             </span>
@@ -370,7 +379,7 @@ export function HowItWorksModal({
               <button
                 type="button"
                 onClick={() => setStep(step - 1)}
-                className="px-3.5 py-2 rounded-full border border-surface text-xs font-bold text-secondary btn-quiet cursor-pointer transition-colors"
+                className="px-4 py-2 rounded-full border border-surface text-sm font-bold text-secondary btn-quiet cursor-pointer transition-colors"
               >
                 Back
               </button>
@@ -378,7 +387,7 @@ export function HowItWorksModal({
             <button
               type="button"
               onClick={() => (last ? onClose() : setStep(step + 1))}
-              className="px-4 py-2 rounded-full btn-magenta text-xs font-bold cursor-pointer"
+              className="px-4 py-2 rounded-full btn-magenta text-sm font-bold cursor-pointer"
             >
               {last ? "Got it" : "Next →"}
             </button>
@@ -418,10 +427,10 @@ function DeviceToggle({
             role="radio"
             aria-checked={active}
             onClick={() => onChange(d.id)}
-            className={`px-2.5 py-1 rounded-full text-[10px] font-bold font-mono uppercase tracking-[0.12em] cursor-pointer transition-colors ${
+            className={`px-2 py-1 rounded-full text-[13px] font-bold font-mono uppercase tracking-[0.06em] cursor-pointer transition-colors ${
               active
                 ? "bg-surface text-primary shadow-sm"
-                : "text-tertiary link-soft"
+                : "text-secondary link-quiet"
             }`}
           >
             {d.label}
@@ -502,7 +511,7 @@ function HintPill({ label }: { label: string }) {
   return (
     <g>
       <rect width="86" height="18" rx="4" fill="#1e1e1e" stroke="#2a2a2a" />
-      <text x="43" y="12.5" textAnchor="middle" fontSize="8.5" fill="#999">
+      <text x="43" y="12.5" textAnchor="middle" fontSize="9" fill="#999">
         {label}
       </text>
     </g>
@@ -752,14 +761,14 @@ function SceneTrade() {
         <text x="66" y="27" fontSize="11" fontWeight="700" fill="#f0f0f0">
           Sad Cat Meme
         </text>
-        <text x="66" y="40" fontSize="8.5" fill="#888">
+        <text x="66" y="40" fontSize="9" fill="#888">
           relationship humor
         </text>
         <text
           x="266"
           y="24"
           textAnchor="end"
-          fontSize="7.5"
+          fontSize="9"
           fill="#777"
           letterSpacing="1"
         >
@@ -773,7 +782,7 @@ function SceneTrade() {
           fontWeight="700"
           fill="#FFE500"
         >
-          312
+          {SCENE_ENTRY}
         </text>
 
         {/* side buttons */}
@@ -832,7 +841,7 @@ function SceneTrade() {
             <tspan className="hiw-amt hiw-amt-2">0</tspan>
             <tspan className="hiw-amt hiw-amt-3">0</tspan>
           </text>
-          <text x="240" y="22" textAnchor="end" fontSize="8" fill="#777">
+          <text x="240" y="22" textAnchor="end" fontSize="9" fill="#777">
             USDG
           </text>
         </g>
@@ -849,7 +858,7 @@ function SceneTrade() {
               fontWeight="700"
               fill="#000"
             >
-              Buy UP {"·"} 100 USDG
+              {HOUSE ? "Open" : "Buy"} UP {"·"} 100 USDG
             </text>
           </g>
         </g>
@@ -894,7 +903,7 @@ function SceneTrade() {
             fontWeight="700"
             fill="#00D4FF"
           >
-            Bought UP
+            {HOUSE ? "UP opened" : "Bought UP"}
           </text>
         </g>
       </g>
@@ -955,9 +964,9 @@ function SceneProfit() {
             />
             <text
               x="26"
-              y="11.5"
+              y="11.8"
               textAnchor="middle"
-              fontSize="8"
+              fontSize="9"
               fontWeight="700"
               fill="#FF00E5"
             >
@@ -969,7 +978,7 @@ function SceneProfit() {
           x="246"
           y="16"
           textAnchor="end"
-          fontSize="7.5"
+          fontSize="9"
           fill="#777"
           letterSpacing="1"
         >
@@ -985,7 +994,7 @@ function SceneProfit() {
             fontWeight="700"
             fill="#FFE500"
           >
-            312
+            {SCENE_ENTRY}
           </text>
           <text
             className="hiw-vi-new"
@@ -996,7 +1005,7 @@ function SceneProfit() {
             fontWeight="700"
             fill="#FFE500"
           >
-            998
+            {SCENE_EXIT}
           </text>
         </g>
 
@@ -1005,11 +1014,17 @@ function SceneProfit() {
           <line key={y} x1="14" x2="266" y1={y} y2={y} stroke="#232323" />
         ))}
 
-        {/* the UP line: where the market pays out, which the index reaches */}
-        <line x1="14" x2="266" y1="44" y2="44" stroke="#00D4FF" strokeOpacity="0.7" strokeDasharray="4 3" />
-        <text x="16" y="40" fontSize="7.5" fontWeight="700" fill="#00D4FF" letterSpacing="0.5">
-          UP PAYS HERE
-        </text>
+        {/* the UP line: where the market pays out, which the index reaches.
+            Rounds only: a house position gains all the way, with no line to
+            reach. */}
+        {!HOUSE && (
+          <>
+            <line x1="14" x2="266" y1="44" y2="44" stroke="#00D4FF" strokeOpacity="0.7" strokeDasharray="4 3" />
+            <text x="16" y="40" fontSize="7.5" fontWeight="700" fill="#00D4FF" letterSpacing="0.5">
+              UP PAYS HERE
+            </text>
+          </>
+        )}
 
         {/* area + line, revealed left to right */}
         <g clipPath="url(#hiw-reveal-clip)">
@@ -1029,16 +1044,16 @@ function SceneProfit() {
           <g className="hiw-entry">
             <circle r="4" fill="#FFE500" stroke="#161616" strokeWidth="2" />
             <rect
-              x="-30"
+              x="-32"
               y="10"
-              width="60"
-              height="14"
-              rx="7"
+              width="64"
+              height="15"
+              rx="7.5"
               fill="#1e1e1e"
               stroke="#2a2a2a"
             />
-            <text x="0" y="20" textAnchor="middle" fontSize="8" fill="#ccc">
-              entry 312
+            <text x="0" y="20.8" textAnchor="middle" fontSize="9" fill="#ccc">
+              entry {SCENE_ENTRY}
             </text>
           </g>
         </g>
@@ -1061,13 +1076,14 @@ function SceneProfit() {
           />
         </g>
 
-        {/* pnl */}
-        <g transform="translate(140,160)">
+        {/* pnl; the house's wider pill sits a little lower, clear of the
+            entry label */}
+        <g transform={`translate(140,${HOUSE ? 164 : 160})`}>
           <g className="hiw-pnl">
             <rect
-              x="-48"
+              x={HOUSE ? -62 : -48}
               y="-12"
-              width="96"
+              width={HOUSE ? 124 : 96}
               height="24"
               rx="12"
               fill="#0b2a31"
@@ -1081,7 +1097,7 @@ function SceneProfit() {
               fontWeight="700"
               fill="#00D4FF"
             >
-              +100 USDG
+              {HOUSE ? SCENE_PNL : "+100 USDG"}
             </text>
           </g>
           <circle
