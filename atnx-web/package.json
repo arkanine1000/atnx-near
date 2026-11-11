@@ -43,6 +43,7 @@
     "rounds:verify:public": "npx --yes tsx scripts/rounds-verify-public.ts",
     "house:tick": "npx --yes tsx --env-file=.env.local scripts/house-tick.ts",
     "house:verify:public": "npx --yes tsx scripts/house-verify-public.ts",
+    "house:trade:public": "npx --yes tsx scripts/house-trade-public.ts",
     "house:seed": "npx --yes tsx --env-file=.env.local scripts/house-seed.ts",
     "vi:source-shift": "npx --yes tsx --env-file=.env.local scripts/vi-source-shift.ts",
     "vi:explain": "npx --yes tsx --env-file=.env.local scripts/vi-explain.ts"
