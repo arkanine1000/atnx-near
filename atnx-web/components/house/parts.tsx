@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { fmtUsdg } from "@/components/bm/format";
 import { closePrice, quotePrices, newestQuote } from "@/lib/bm/house-math";
 import {
@@ -47,21 +48,48 @@ const gainTone = (up: boolean) => (up ? "text-atnx-cyan light:text-atnx-cyan-lig
 
 // ------------------------------------------------------------------- help
 
-// A small visible "?" that opens a short note in place, for what does not
-// need to be on screen all the time. Not a hover tooltip: a tooltip shows
-// neither in a screen recording nor on a touch screen. `children` gets the
-// button to put where it belongs (beside a label, in a header); the note
-// opens after whatever `children` renders. `label` is the button's
-// accessible name and its title: "About <what>", or "How it works".
-export function Help({ label, note, children, noteClassName = "" }: { label: string; note: ReactNode; children: (button: ReactNode) => ReactNode; noteClassName?: string }) {
+// A small visible "?" that opens a short note in a floating window, for
+// what does not need to be on screen all the time. Not a hover tooltip: a
+// tooltip shows neither in a screen recording nor on a touch screen.
+// `children` gets the button to put where it belongs (beside a label, in a
+// header). `label` is the button's accessible name and its title: "About
+// <what>", or "How it works".
+//
+// The window is portalled to the body with fixed positioning worked out
+// from the button's rectangle (placeHelp below), so no card, fold or sheet
+// with overflow hidden or its own scroll can clip it, and it sits above the
+// phone order sheet. It opens below the "?" when it fits, else above, else
+// on the roomier side with its own scroll; it is moved sideways to stay
+// HELP_MARGIN px inside the viewport and is never wider than it. It follows
+// the button when anything scrolls or the viewport resizes, and closes when
+// the button leaves the screen, on Escape, on a tap outside, on the "?"
+// again, or when another one opens. Focus stays where it is (nothing is
+// trapped); the button names the window with aria-controls and is
+// described by it while it is open, so a screen reader reads the note.
+export function Help({ label, note, children }: { label: string; note: ReactNode; children: (button: ReactNode) => ReactNode }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const close = useCallback(() => setOpen(false), []);
+
+  // One window at a time: opening this one closes the one before.
+  useEffect(() => {
+    if (!open) return;
+    if (openHelp && openHelp !== close) openHelp();
+    openHelp = close;
+    return () => {
+      if (openHelp === close) openHelp = null;
+    };
+  }, [open, close]);
+
   const button = (
     <button
+      ref={buttonRef}
       type="button"
       onClick={() => setOpen((v) => !v)}
       aria-expanded={open}
       aria-controls={open ? id : undefined}
+      aria-describedby={open ? id : undefined}
       aria-label={label}
       title={label}
       className={`relative inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[13px] font-bold leading-none align-middle cursor-pointer after:absolute after:-inset-2 after:content-[''] ${
@@ -75,11 +103,151 @@ export function Help({ label, note, children, noteClassName = "" }: { label: str
     <>
       {children(button)}
       {open && (
-        <div id={id} className={`mt-2 rounded-lg border border-surface bg-elevated px-3 py-2 text-sm leading-snug text-secondary ${noteClassName}`}>
+        <HelpWindow id={id} anchor={buttonRef} onClose={close}>
           {note}
-        </div>
+        </HelpWindow>
       )}
     </>
+  );
+}
+
+// The open Help's close, so the next one to open can shut it.
+let openHelp: (() => void) | null = null;
+
+// Gap between the "?" and its window, and the window's least distance from
+// the viewport's edges; the widest it gets (a 390 px phone leaves 366).
+export const HELP_GAP = 8;
+export const HELP_MARGIN = 12;
+const HELP_MAX_WIDTH = 360;
+
+export interface HelpPlacement {
+  left: number;
+  top: number;
+  maxWidth: number;
+  maxHeight: number;
+  side: "below" | "above";
+  // Where the little pointer sits along the window's edge, from its left.
+  caret: number;
+}
+
+// Where the window goes, from the button's rectangle, the window's natural
+// size and the viewport's: below when it fits, else above, else on the
+// roomier side with its height capped there (it scrolls); centred on the
+// button, then moved sideways to keep HELP_MARGIN from both edges.
+export function placeHelp(
+  anchor: { left: number; top: number; width: number; height: number },
+  size: { width: number; height: number },
+  viewport: { width: number; height: number },
+): HelpPlacement {
+  const maxWidth = Math.max(0, Math.min(HELP_MAX_WIDTH, viewport.width - 2 * HELP_MARGIN));
+  const width = Math.min(size.width, maxWidth);
+  const below = viewport.height - (anchor.top + anchor.height) - HELP_GAP - HELP_MARGIN;
+  const above = anchor.top - HELP_GAP - HELP_MARGIN;
+  const side: "below" | "above" = size.height <= below || below >= above ? "below" : "above";
+  const room = Math.max(0, side === "below" ? below : above);
+  const height = Math.min(size.height, room);
+  const top = side === "below" ? anchor.top + anchor.height + HELP_GAP : anchor.top - HELP_GAP - height;
+  const centred = anchor.left + anchor.width / 2 - width / 2;
+  const left = Math.min(Math.max(centred, HELP_MARGIN), viewport.width - HELP_MARGIN - width);
+  const caret = Math.min(Math.max(anchor.left + anchor.width / 2 - left, 14), Math.max(14, width - 14));
+  return { left: Math.round(left), top: Math.round(top), maxWidth, maxHeight: Math.floor(room), side, caret: Math.round(caret) };
+}
+
+function HelpWindow({ id, anchor, onClose, children }: { id: string; anchor: RefObject<HTMLButtonElement | null>; onClose: () => void; children: ReactNode }) {
+  // The window (placed, with its pointer) and the note inside it (which
+  // scrolls when the window is capped).
+  const ref = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<HelpPlacement | null>(null);
+
+  // Measured and placed before the browser paints, then again on every
+  // scroll (any scroller: the page, a card, the phone sheet) and resize.
+  useLayoutEffect(() => {
+    const box = ref.current;
+    const el = body.current;
+    const btn = anchor.current;
+    if (!box || !el || !btn) return;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const r = btn.getBoundingClientRect();
+      const vw = document.documentElement.clientWidth;
+      const vh = window.innerHeight;
+      // The "?" has left the screen (or its sheet closed): so does the note.
+      if (r.width === 0 || r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) {
+        onClose();
+        return;
+      }
+      // The natural size, unconstrained by the last placement; the
+      // window's border (1 px a side) comes on top of the note's.
+      const edge = box.offsetWidth - box.clientWidth;
+      el.style.maxHeight = "none";
+      el.style.maxWidth = `${Math.min(HELP_MAX_WIDTH, vw - 2 * HELP_MARGIN) - edge}px`;
+      const size = { width: el.offsetWidth + edge, height: el.scrollHeight + edge };
+      const next = placeHelp({ left: r.left, top: r.top, width: r.width, height: r.height }, size, { width: vw, height: vh });
+      el.style.maxWidth = `${next.maxWidth - edge}px`;
+      el.style.maxHeight = `${next.maxHeight - edge}px`;
+      setPlace((p) => (p && p.left === next.left && p.top === next.top && p.maxWidth === next.maxWidth && p.maxHeight === next.maxHeight && p.side === next.side && p.caret === next.caret ? p : next));
+    };
+    update();
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    window.addEventListener("scroll", schedule, true);
+    window.addEventListener("resize", schedule);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", schedule, true);
+      window.removeEventListener("resize", schedule);
+    };
+  }, [anchor, onClose]);
+
+  // Escape closes it before anything else hears the key (the phone sheet
+  // and the Show Me modal close on Escape too); a press outside the window
+  // and its "?" closes it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      if (!t || ref.current?.contains(t) || anchor.current?.contains(t)) return;
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [anchor, onClose]);
+
+  const below = place?.side !== "above";
+  return createPortal(
+    <div
+      ref={ref}
+      id={id}
+      role="note"
+      data-help-window=""
+      data-no-swipe=""
+      data-side={place?.side}
+      style={{ position: "fixed", left: place?.left ?? 0, top: place?.top ?? 0, visibility: place ? "visible" : "hidden" }}
+      className="z-[60] rounded-xl border border-surface bg-elevated shadow-[0_12px_32px_rgba(0,0,0,0.45)] light:shadow-[0_12px_32px_rgba(0,0,0,0.14)]"
+    >
+      {/* The pointer to the "?": a square turned 45°, its two outer edges
+          bordered, half outside the window. */}
+      <span
+        aria-hidden="true"
+        style={{ left: (place?.caret ?? 14) - 6 }}
+        className={`absolute h-3 w-3 rotate-45 bg-elevated border-surface ${below ? "-top-1.5 border-l border-t" : "-bottom-1.5 border-r border-b"}`}
+      />
+      <div ref={body} className="relative w-max overflow-y-auto overscroll-contain rounded-xl px-3.5 py-3 text-sm leading-snug text-primary">
+        {children}
+      </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -176,7 +176,7 @@ export function FundFromAnyChain() {
       </div>
 
       {/* The stand-in recipient behind the line's "?". */}
-      <Help label="About the preview" note={STAND_IN} noteClassName="mt-1.5">
+      <Help label="About the preview" note={STAND_IN}>
         {(help) => (
           <p className="mt-2 flex items-center gap-2 text-sm text-secondary">
             {PREVIEW_LINE}
