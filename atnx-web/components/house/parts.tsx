@@ -16,7 +16,7 @@ import {
   type Tracked,
   type TrackedOutcome,
 } from "@/lib/bm/house-ticket";
-import type { HouseClosed, HouseConfig, HouseMarket, HousePosition } from "@/lib/bm/house-types";
+import type { HouseConfig, HouseMarket, HousePosition } from "@/lib/bm/house-types";
 import { cancelArgs, closeArgs } from "@/lib/bm/house-types";
 import type { ActResult, NearMethod } from "@/lib/near/client";
 import { nearTxUrl } from "@/lib/near/config";
@@ -26,7 +26,8 @@ import { lastSeenPosition, seenAsClosing } from "./useNearHouse";
 import { addTrack, dropTrack, emptyTracks, settleTrack, subscribeTracks, tracksOf, type StoredTrack } from "./track-store";
 
 // The parts the house ticket and the house portfolio share: a position's
-// line with its value and its Close button, the lines that follow an order
+// line with its value and its Close button (the close itself, CloseControl,
+// is the portfolio cards' too), the lines that follow an order
 // or a close after the tap, the "How it works" rules, the TESTNET chip and
 // the "?" help control.
 //
@@ -283,10 +284,6 @@ export function PositionLine({
   const mark = markPosition(p, market, cfg);
   const nowSecs = Math.floor(nowMs / 1000);
   const left = secondsLeft(p, cfg, nowSecs);
-  const q = market ? newestQuote(market) : null;
-  const closeAt = q ? closePrice(quotePrices(q.scoreE2, q.readingE2, cfg), p.side) : null;
-  const canClose = p.state === "Open" && market?.status !== "Settled" && closeAt !== null && closeAt > 0n && (left === null || left > 0);
-  const closeLimit = canClose ? limitPastE2(closeAt!, p.side, "close") : null;
   // The second line: entry, liquidation level, time left.
   const details = [
     p.entryE2 !== null ? `Entry ${fmtPriceE2(p.entryE2)}` : null,
@@ -335,22 +332,16 @@ export function PositionLine({
               </div>
             </div>
             <div className="mt-2 flex justify-end">
-              {p.state === "Closing" ? (
-                <span className="text-sm text-secondary animate-pulse">Closing…</span>
-              ) : canClose ? (
-                <button
-                  type="button"
-                  disabled={busy}
-                  aria-label="Close position"
-                  onClick={() => onClose(p, closeLimit!)}
-                  title={`Closes at the ${p.side === "Long" ? "sell" : "buy"} price, no worse than ${fmtPriceE2(closeLimit!)}`}
-                  className="h-9 px-4 rounded-lg border border-surface text-sm text-primary btn-quiet font-bold cursor-pointer disabled:opacity-50"
-                >
-                  {busy ? "Closing…" : "Close"}
-                </button>
-              ) : p.state === "Open" && market?.status === "Settled" ? (
-                <span className="text-sm text-secondary">Closing at the last score</span>
-              ) : null}
+              <CloseControl
+                p={p}
+                market={market}
+                cfg={cfg}
+                nowSecs={nowSecs}
+                busy={busy}
+                onClose={onClose}
+                label="Close"
+                className="h-9 px-4 rounded-lg border border-surface text-sm text-primary btn-quiet font-bold cursor-pointer disabled:opacity-50"
+              />
             </div>
           </>
         )}
@@ -359,11 +350,64 @@ export function PositionLine({
   );
 }
 
+// The worst price a close sends now (1 % past the price it would close at),
+// or null when the position cannot be closed from here: not open yet or
+// already closing, its market ended, no price, or its 14 days are up.
+export function closeLimitOf(p: HousePosition, market: HouseMarket | null, cfg: HouseConfig, nowSecs: number): bigint | null {
+  const left = secondsLeft(p, cfg, nowSecs);
+  const q = market ? newestQuote(market) : null;
+  const closeAt = q ? closePrice(quotePrices(q.scoreE2, q.readingE2, cfg), p.side) : null;
+  const canClose = p.state === "Open" && market?.status !== "Settled" && closeAt !== null && closeAt > 0n && (left === null || left > 0);
+  return canClose ? limitPastE2(closeAt!, p.side, "close") : null;
+}
+
+// A position's close: "Closing…" while one is in flight, the button
+// (named "Close position") while it can be closed, or the line for a market
+// that has ended.
+export function CloseControl({
+  p,
+  market,
+  cfg,
+  nowSecs,
+  busy,
+  onClose,
+  label,
+  className,
+}: {
+  p: HousePosition;
+  market: HouseMarket | null;
+  cfg: HouseConfig;
+  nowSecs: number;
+  busy: boolean;
+  onClose: (p: HousePosition, limitE2: bigint) => void;
+  label: string;
+  className: string;
+}) {
+  const closeLimit = closeLimitOf(p, market, cfg, nowSecs);
+  if (p.state === "Closing") return <span className="text-sm text-secondary animate-pulse">Closing…</span>;
+  if (closeLimit !== null) {
+    return (
+      <button
+        type="button"
+        disabled={busy}
+        aria-label="Close position"
+        onClick={() => onClose(p, closeLimit)}
+        title={`Closes at the ${p.side === "Long" ? "sell" : "buy"} price, no worse than ${fmtPriceE2(closeLimit)}`}
+        className={className}
+      >
+        {busy ? "Closing…" : label}
+      </button>
+    );
+  }
+  if (p.state === "Open" && market?.status === "Settled") return <span className="text-sm text-secondary">Closing at the last score</span>;
+  return null;
+}
+
 // A row's market name, linking to its market page when there is one. The
 // ink stays primary (.text-primary is unlayered, so a hover colour would
 // not apply); the underline says it is a link.
-function MarketName({ name, href }: { name: string; href?: string | null }) {
-  const cls = "block text-base font-bold text-primary truncate";
+export function MarketName({ name, href, className = "block text-base font-bold text-primary truncate" }: { name: string; href?: string | null; className?: string }) {
+  const cls = className;
   if (!href) return <div className={cls}>{name}</div>;
   return (
     <Link href={href} className={`${cls} underline-offset-2 hover:underline focus-visible:underline`}>
@@ -374,7 +418,7 @@ function MarketName({ name, href }: { name: string; href?: string | null }) {
 
 // A second line's parts, " · " between them, each kept whole when the line
 // wraps on a phone ("13 d 23 h left", not "13 d" and "23 h left").
-function Parts({ items }: { items: string[] }) {
+export function Parts({ items }: { items: string[] }) {
   return (
     <>
       {items.map((s, i) => (
@@ -384,42 +428,6 @@ function Parts({ items }: { items: string[] }) {
         </span>
       ))}
     </>
-  );
-}
-
-// A position that has ended, for the history list: side, leverage and
-// stake, with the payout and PnL on the right; entry → exit, how it ended
-// and when on the second line.
-export function ClosedLine({ c, name, href }: { c: HouseClosed; name?: string | null; href?: string | null }) {
-  const pnl = c.payout - c.stake;
-  const pct = c.stake > 0n ? (Number(pnl) / Number(c.stake)) * 100 : 0;
-  return (
-    <div className="py-3 border-b border-surface last:border-b-0 flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        {name && <MarketName name={name} href={href} />}
-        <div className="text-base text-primary">
-          <span className={`font-bold ${sideTone(c.side)}`}>{sideWord(c.side)}</span>{" "}
-          <span className="font-semibold tabular-nums">
-            {c.leverage}× · {fmtUsdg(c.stake)} USDG
-          </span>
-        </div>
-        <div className="mt-0.5 text-[13px] text-secondary tabular-nums">
-          <Parts
-            items={[
-              `${fmtPriceE2(c.entryE2)} → ${fmtPriceE2(c.exitE2)}`,
-              closeReasonLine(c.reason),
-              new Date(c.closedAt * 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
-            ]}
-          />
-        </div>
-      </div>
-      <div className="text-right shrink-0">
-        <div className="text-base tabular-nums font-bold text-primary">{fmtUsdg(c.payout)} USDG</div>
-        <div className={`text-base font-semibold tabular-nums ${pnlTone(pnl)}`}>
-          {signedUsdg(pnl)} ({pctText(pct)})
-        </div>
-      </div>
-    </div>
   );
 }
 
