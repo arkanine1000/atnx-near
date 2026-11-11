@@ -3,12 +3,12 @@
 // generate() makes a NON-extractable private key; IndexedDB stores the
 // CryptoKey as it is (structured clone keeps it), and page script can sign
 // with it but never read the key bytes out. Only WebCrypto and near-api-js,
-// so Node 22 runs the same code (scripts/near-relay-e2e.ts).
+// so Node 20 or later runs the same code (scripts/near-relay-e2e.ts).
 import { KeyType, PublicKey, Signer, base64Encode, baseDecode, type KeyPair } from 'near-api-js';
 
 const b64url = (bytes: Uint8Array) => base64Encode(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-// Ed25519 in WebCrypto: Chrome 137+, Firefox 129+, Safari 17+, Node 22.
+// Ed25519 in WebCrypto: Chrome 137+, Firefox 129+, Safari 17+, Node 20+.
 export async function webCryptoEd25519Supported(): Promise<boolean> {
   try {
     if (typeof crypto === 'undefined' || !crypto.subtle) return false;

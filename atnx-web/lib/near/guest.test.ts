@@ -141,13 +141,13 @@ test('guest: a bad key is refused, nothing written', async () => {
   assert.equal(created.length, 0);
 });
 
-test('guest caps: 3 per IP per hour, then 429; another IP is unaffected; the hour passes', async () => {
+test('guest caps: GUEST_CAPS.perIp per IP per hour, then 429; another IP is unaffected; the hour passes', async () => {
   let t = 10_000_000;
   const { deps } = guestDeps({}, () => t);
   for (let i = 0; i < GUEST_CAPS.perIp; i++) assert.equal((await handleGuestCreate(deps, IP, { publicKey: newKey() })).status, 201);
-  const fourth = await handleGuestCreate(deps, IP, { publicKey: newKey() });
-  assert.equal(fourth.status, 429);
-  assert.equal(fourth.body.error, 'guest_limit_ip');
+  const over = await handleGuestCreate(deps, IP, { publicKey: newKey() });
+  assert.equal(over.status, 429);
+  assert.equal(over.body.error, 'guest_limit_ip');
   // The same address again.
   assert.equal((await handleGuestCreate(deps, { ip: '203.0.113.7' }, { publicKey: newKey() })).body.error, 'guest_limit_ip');
   assert.equal((await handleGuestCreate(deps, { ip: '203.0.113.8' }, { publicKey: newKey() })).status, 201);
@@ -157,9 +157,9 @@ test('guest caps: 3 per IP per hour, then 429; another IP is unaffected; the hou
 
 test('guest caps: one IPv6 /64 is one client; no address is one shared bucket', async () => {
   const { deps } = guestDeps();
-  for (let i = 1; i <= 3; i++) assert.equal((await handleGuestCreate(deps, { ip: `2001:db8:aa:bb::${i}` }, { publicKey: newKey() })).status, 201);
+  for (let i = 1; i <= GUEST_CAPS.perIp; i++) assert.equal((await handleGuestCreate(deps, { ip: `2001:db8:aa:bb::${i}` }, { publicKey: newKey() })).status, 201);
   assert.equal((await handleGuestCreate(deps, { ip: '2001:db8:aa:bb:ffff:ffff:ffff:ffff' }, { publicKey: newKey() })).body.error, 'guest_limit_ip');
-  for (let i = 0; i < 3; i++) assert.equal((await handleGuestCreate(deps, { ip: null }, { publicKey: newKey() })).status, 201);
+  for (let i = 0; i < GUEST_CAPS.perIp; i++) assert.equal((await handleGuestCreate(deps, { ip: null }, { publicKey: newKey() })).status, 201);
   assert.equal((await handleGuestCreate(deps, { ip: null }, { publicKey: newKey() })).body.error, 'guest_limit_ip');
 });
 
@@ -172,9 +172,9 @@ test('guest caps: the overall day cap, whatever the IP, over a rolling 24 hours'
   assert.equal(sixth.body.error, 'guest_limit_day');
   t += 86_400_001;
   assert.equal((await handleGuestCreate(deps, { ip: '198.51.100.99' }, { publicKey: newKey() })).status, 201);
-  // The default is 200 a day.
-  assert.equal(GUEST_CAPS.perDay, 200);
-  assert.equal(GUEST_CAPS.perIp, 3);
+  // The defaults: 10 per IP an hour, 300 a day.
+  assert.equal(GUEST_CAPS.perDay, 300);
+  assert.equal(GUEST_CAPS.perIp, 10);
   assert.equal(GUEST_CAPS.ipWindowSecs, 3_600);
 });
 
@@ -197,8 +197,8 @@ test('guest: a failed creation is kept as failed, counts against the cap, and sp
   assert.equal(r.body.error, 'create_failed');
   assert.equal([...store.rows.values()][0].state, 'failed');
   assert.equal((await handleGuestCreate(deps, IP, { publicKey: pk })).body.error, 'key_used');
-  await handleGuestCreate(deps, IP, { publicKey: newKey() });
-  await handleGuestCreate(deps, IP, { publicKey: newKey() });
+  // The failed one counts: GUEST_CAPS.perIp − 1 more fill the hour.
+  for (let i = 1; i < GUEST_CAPS.perIp; i++) await handleGuestCreate(deps, IP, { publicKey: newKey() });
   assert.equal((await handleGuestCreate({ ...deps, chain: fakeChain().chain }, IP, { publicKey: newKey() })).body.error, 'guest_limit_ip');
 });
 

@@ -46,3 +46,6 @@ next-env.d.ts
 
 # Supabase CLI link state
 supabase/.temp/
+
+# the guest key of npm run house:trade:public (and its temporary file while it is written)
+.house-trade-key.json*

@@ -74,7 +74,7 @@ house_view() {  # house_view <method> '<arguments as JSON>'
 
    See `"ok": true` and three equal hashes: the one in the keeper's call, the one in the contract's event, and the one recomputed from the public rows.
 
-Steps [a1 to a11](docs/try-it.md#a-no-login-no-install) cover the code hash, the vault, the settings, a quote for an order, a refusal, the hash computed by you, and a trader's account and a relayed order on chain. In a clone, `bash scripts/check-public.sh` runs all eleven: see one `ok` line per step and exit status 0. Steps [c1 to c5](docs/try-it.md#c-from-a-clone) run the tests, rebuild the deployed code reproducibly and verify a push on your own machine.
+Steps [a1 to a11](docs/try-it.md#a-no-login-no-install) cover the code hash, the vault, the settings, a quote for an order, a refusal, the hash computed by you, and a trader's account and a relayed order on chain. In a clone, `bash scripts/check-public.sh` runs all eleven: see one `ok` line per step and exit status 0. Steps [c1 to c6](docs/try-it.md#c-from-a-clone) run the tests, rebuild the deployed code reproducibly, verify a push on your own machine, and trade as a guest from the terminal: `cd atnx-web && npm ci && npm run house:trade:public` makes a guest, opens and closes a 10 USDG position through the relayer, and prints each transaction's signer and the account's 0 NEAR.
 
 ## How it works
 

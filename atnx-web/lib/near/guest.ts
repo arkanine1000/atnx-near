@@ -1,6 +1,5 @@
 // Guest accounts on the NEAR build: a gasless account for someone who has
-// not signed in, so the rounds can be tried with no Google or X sign-in
-// (the hackathon's first screening is done by agents that cannot sign in).
+// not signed in, so the market can be tried with no Google or X sign-in.
 //
 // A guest is NOT a Supabase user. The Supabase project is shared with
 // atnx.app, and an anonymous sign-in there would hand every scripted guest
@@ -38,7 +37,7 @@ export function isGuestAccountId(id: string, parent: string): boolean {
 // guests overall per dayWindowSecs (both rolling windows).
 export type GuestCaps = GuestReserveCaps;
 
-export const GUEST_CAPS: GuestCaps = { perIp: 3, ipWindowSecs: 3_600, perDay: 200, dayWindowSecs: 86_400 };
+export const GUEST_CAPS: GuestCaps = { perIp: 10, ipWindowSecs: 3_600, perDay: 300, dayWindowSecs: 86_400 };
 
 // A guest's relays: one in flight, at most 60 an hour (a signed-in user
 // gets 200).
