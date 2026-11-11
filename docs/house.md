@@ -151,7 +151,7 @@ A guest's calls go to `/api/near/relay` with `guest: true` and no cookie. That b
 
 ### Checking it on chain
 
-`view_account` on a house account shows `"amount": "0"`, `view_access_key_list` shows its one function-call key for `house.atnx.testnet`, and a relayed call shows `relayer.atnx.testnet` as the signer with a `Delegate` action whose sender is the house account ([try-it.md](try-it.md#b-in-the-browser-as-a-guest), steps b5 and b10).
+`view_account` on a house account shows `"amount": "0"`, `view_access_key_list` shows its one function-call key for `house.atnx.testnet`, and a relayed call shows `relayer.atnx.testnet` as the signer with a `Delegate` action whose sender is the house account: step [a11](try-it.md#a-no-login-no-install) checks a guest account and one of its orders from a terminal, steps [b5 and b10](try-it.md#b-in-the-browser-as-a-guest) an account and an order of your own.
 
 ## Funding from another chain (preview)
 

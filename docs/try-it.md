@@ -2,7 +2,7 @@
 
 The [README](../README.md#try-it) has the two short paths. This page has every check in full, written as "do X, see Y" for a person or an agent.
 
-Three groups: (a) needs only `curl` and `jq`; (b) needs a browser; (c) needs a clone and toolchains. Amounts are in USDG units of 10⁻⁶ (`"100000000"` is 100 USDG); prices and scores are in hundredths of a VI point (`"114476"` is 1,144.76). Outputs below were taken on 2026-11-10 and trimmed with `…`; the numbers move with every print.
+Three groups: (a) needs only `curl` and `jq`; (b) needs a browser; (c) needs a clone and toolchains. Amounts are in USDG units of 10⁻⁶ (`"100000000"` is 100 USDG); prices and scores are in hundredths of a VI point (`"114476"` is 1,144.76). Outputs below were taken on 2026-11-10 (a11's on 2026-11-11) and trimmed with `…`; the numbers move with every print.
 
 ## (a) No login, no install
 
@@ -17,6 +17,8 @@ house_view() {  # house_view <method> '<arguments as JSON>'
   | jq '.result.result | implode | fromjson'
 }
 ```
+
+To run a1 to a11 in one go from a clone, run `bash scripts/check-public.sh` (needs `curl` and `jq`, reads only). See one line per step, `ok aN` with the value it checked or `FAIL aN` with what it got, and exit status 0 when every step passes.
 
 **a1. The contract and the source it was built from.** Run:
 
@@ -129,7 +131,7 @@ See the site read the transaction from the chain, fetch the `vi_history` rows (5
                       "recorded_at": "2026-11-10T05:00:42.343564+00:00" } } }
 ```
 
-`curl -s "$SITE/api/near/house/verify?tx=o7cE4x2gDKJkxtTREnadMLiFKawdyFY7EswuEu1GUYe"` (a keeper transaction on the rounds contract) answers 422 `{"error":"not_a_push", …}`; an unknown hash answers 404 `unknown_transaction`; a malformed one 400.
+The route reads the transaction from a regular RPC node, which keeps recent transactions only, so take the hash from `/pushes` as above: an old push answers 404 too. A keeper transaction with no `push_quotes` call (one on the rounds contract, say) answers 422 `{"error":"not_a_push", …}`; a hash the RPC does not know answers 404 `unknown_transaction`, as `curl -s "$SITE/api/near/house/verify?tx=11111111111111111111111111111111"` shows; a malformed one answers 400 `bad_request`.
 
 **a9. The hash, computed by you.** Run:
 
@@ -141,7 +143,7 @@ curl -s "$RPC" -H 'content-type: application/json' \
            | select(.event == "quotes_pushed") | .data[0].commitment'
 ```
 
-See the same 64 hex characters twice: the sha256 of the batch the site returns, computed on your machine, and the commitment in the contract's event, read straight from the public RPC:
+See the same 64 hex characters twice: the sha256 of the batch the site returns, computed on your machine, and the commitment in the contract's event, read straight from the public RPC (on macOS, use `shasum -a 256` for `sha256sum`):
 
 ```
 7db3f848cfab5ac3b9ffda91c5f4dc05bb91173710b44b155ed5227b77430d46  -
@@ -156,6 +158,49 @@ See the same 64 hex characters twice: the sha256 of the batch the site returns, 
   "preview": true,
   "recipient": { "kind": "placeholder", "accountId": "0000000000000000000000000000000000000000000000000000000000000000" } }
 ```
+
+**a11. A trader's account and a relayed order, on chain.** `guest-6hy3hp2e-h.atnx.testnet` is a guest account made through the site on 2026-11-10, and `CdUcNMujXLZoampMXFp7k72scgVs8dAoEYHzodafkVJD` is the `open` that `relayer.atnx.testnet` sent for it that day. A regular RPC node keeps recent transactions only, so the transaction is read from FastNEAR's archival endpoint. Run:
+
+```bash
+ACCOUNT=guest-6hy3hp2e-h.atnx.testnet
+ARCHIVAL=https://archival-rpc.testnet.fastnear.com
+curl -s "$RPC" -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"query","params":{"request_type":"view_account","finality":"final","account_id":"'"$ACCOUNT"'"}}' | jq '.result.amount'
+curl -s "$RPC" -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"query","params":{"request_type":"view_access_key_list","finality":"final","account_id":"'"$ACCOUNT"'"}}' \
+  | jq -c '.result.keys[] | {public_key, permission: .access_key.permission}'
+curl -s "$ARCHIVAL" -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tx","params":{"tx_hash":"CdUcNMujXLZoampMXFp7k72scgVs8dAoEYHzodafkVJD","sender_account_id":"relayer.atnx.testnet","wait_until":"FINAL"}}' \
+  | jq '.result.transaction | {signer_id, receiver_id, delegate: (.actions[0].Delegate.delegate_action | {sender_id, receiver_id, public_key,
+        method: .actions[0].FunctionCall.method_name, deposit: .actions[0].FunctionCall.deposit, args: (.actions[0].FunctionCall.args | @base64d | fromjson)})}'
+```
+
+See an account with 0 NEAR and one key, a function-call key that can only call `house.atnx.testnet`; then a transaction signed by `relayer.atnx.testnet`, which paid its gas, carrying a delegate action that the account signed with that same key: `open` on `house.atnx.testnet`, deposit 0, a 20 USDG UP order at 1x on market 36:
+
+```
+"0"
+{"public_key":"ed25519:36tXFL1SNFRiAjtR8FkTFNuM1zEkJztH7Z5rHJ41ckER","permission":{"FunctionCall":{"allowance":"250000000000000000000000","method_names":[],"receiver_id":"house.atnx.testnet"}}}
+{
+  "signer_id": "relayer.atnx.testnet",
+  "receiver_id": "guest-6hy3hp2e-h.atnx.testnet",
+  "delegate": {
+    "sender_id": "guest-6hy3hp2e-h.atnx.testnet",
+    "receiver_id": "house.atnx.testnet",
+    "public_key": "ed25519:36tXFL1SNFRiAjtR8FkTFNuM1zEkJztH7Z5rHJ41ckER",
+    "method": "open",
+    "deposit": "0",
+    "args": {
+      "market": 36,
+      "side": "Long",
+      "leverage": 1,
+      "stake": "20000000",
+      "limit_e2": "117751"
+    }
+  }
+}
+```
+
+Steps b5 and b10 make the same check on an account and an order of your own.
 
 ## (b) In the browser, as a guest
 
@@ -196,13 +241,13 @@ See 0 NEAR, one key that can only call `house.atnx.testnet` (the empty `method_n
 ```
 "0"
 { "FunctionCall": { "allowance": "250000000000000000000000", "method_names": [], "receiver_id": "house.atnx.testnet" } }
-{ "id": "…", "market": 36, "side": "Long", "leverage": 2, "stake": "100000000", "entry_e2": "…", "exit_e2": "…",
+{ "id": "…", "market": 36, "side": "Long", "leverage": 1, "stake": "100000000", "entry_e2": "…", "exit_e2": "…",
   "payout": "…", "reason": "close", "opened_at": "…", "closed_at": "…" }
 ```
 
 ## (c) From a clone
 
-Needs git, Node 20 or later with npm, and for the contract tests rustup and cargo-near 0.23.0 (`near/rust-toolchain.toml` pins Rust 1.99.1, which rustup installs on the first command). The sandbox tests download near-sandbox on their first run.
+Needs git, Node 20 or later with npm, and for the contract tests rustup and cargo-near 0.23.0 (`near/rust-toolchain.toml` pins Rust 1.99.1, which rustup installs on the first command). The sandbox tests download near-sandbox on their first run. Running the site itself locally needs the team's database keys, so judges use the hosted demo; c1 to c5 (the tests, the rebuild and the public verifier) need no keys beyond the public ones c5 reads from the site.
 
 ```bash
 git clone https://github.com/arkanine1000/atnx-near && cd atnx-near
@@ -220,7 +265,7 @@ cargo test -p integration-tests --test house -- --test-threads=1
 
 See `test result: ok. 6 passed; 0 failed` after about three minutes: faucet, deposits and withdraw; orders filling after a fresh read and positions ending; positions at 1x; a push of 75 markets in one call; the vault's exit and `migrate`; a failed withdraw refunded.
 
-**c3. The deployed code, rebuilt** (needs Docker; not run on the machine that wrote this README, which has none; CI run 42915086367 ran it). From the repository root, run:
+**c3. The deployed code, rebuilt** (needs Docker; CI run 42915086367 ran this build and produced the deployed wasm). From the repository root, run:
 
 ```bash
 git checkout 5c019b5
@@ -231,7 +276,7 @@ git checkout -
 
 See `c68f835f30accfef64c43c55705b1d44410af10c6a83b9cb59238339c9584662`, the deployed code hash in hex. While `git diff 5c019b5 -- near/house` prints nothing, the contract source in your checkout is the deployed one.
 
-**c4. The web tests.** From the repository root, run `cd atnx-web && npm ci && npm run test:near && npm run test:bm`. See each suite end with `# fail 0`: accounts and handles, the relayer and its house policy, the house checks, the public push routes, the keeper's rules, the commitment, the ticket's numbers. (`npm ci` was not run here; the suites were, on the existing install: 153 and 202 tests on 2026-11-10.)
+**c4. The web tests.** From the repository root, run `cd atnx-web && npm ci && npm run test:near && npm run test:bm`. See each suite end with `# fail 0`: accounts and handles, the relayer and its house policy, the house checks, the public push routes, the keeper's rules, the commitment, the ticket's numbers. (On 2026-11-11 the two suites ran 170 and 217 tests.)
 
 **c5. A push, verified on your machine.** `house:verify:public` reads the transaction from public RPC and the rows from the database's public REST API, and hashes them itself. It needs the database's public URL and anon key, the ones the site's pages carry; these lines take both from the site's JavaScript. In `atnx-web/`, run:
 
