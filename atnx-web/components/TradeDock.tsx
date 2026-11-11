@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { isHouseProduct } from "@/lib/near/config";
 
 // The market page's order ticket on phones, the way Polymarket does it:
 // UP and DOWN anchored just above the tab bar (Markets, +, Portfolio
@@ -12,6 +13,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 // How long the closing animation runs before the sheet unmounts.
 const CLOSE_MS = 200;
+
+// The sheet's name: the house ticket opens a position ("Open UP 1× · …");
+// rounds and bounded markets buy.
+const OPEN_WORD = isHouseProduct() ? "Open" : "Buy";
 
 export type Side = "up" | "down";
 
@@ -82,7 +87,7 @@ export function TradeDock({
           <div
             role="dialog"
             aria-modal="true"
-            aria-label={side === "up" ? "Buy UP" : "Buy DOWN"}
+            aria-label={`${OPEN_WORD} ${side === "up" ? "UP" : "DOWN"}`}
             onClick={(e) => e.stopPropagation()}
             className={`w-full max-h-[88svh] overflow-y-auto rounded-t-2xl bg-surface border-t border-surface shadow-2xl pb-[env(safe-area-inset-bottom)] ${
               closing ? "animate-sheet-down" : "animate-sheet-up"

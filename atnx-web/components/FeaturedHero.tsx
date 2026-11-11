@@ -93,13 +93,14 @@ const STEPS = [
   },
   {
     n: "2",
-    // The house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) has no rounds.
-    title: isHouseProduct() ? "UP or DOWN, up to 3×" : "UP or DOWN, round by round",
+    // The house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) has no rounds: its
+    // steps are atnx.app's, in UP and DOWN.
+    title: isHouseProduct() ? "UP or DOWN" : "UP or DOWN, round by round",
     cls: "bg-atnx-magenta/10 text-atnx-magenta light:text-atnx-magenta-light border-atnx-magenta/25",
   },
   {
     n: "3",
-    title: isHouseProduct() ? "Right? Close and get paid." : "Right? Stake back, plus a share.",
+    title: isHouseProduct() ? "Profit for being right." : "Right? Stake back, plus a share.",
     cls: "bg-atnx-yellow/10 text-atnx-yellow light:text-atnx-yellow-light border-atnx-yellow/25",
   },
 ];
