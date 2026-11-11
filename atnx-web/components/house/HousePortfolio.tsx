@@ -2,16 +2,19 @@
 
 import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
-import { Card, EmptyState } from "@/components/ui";
+import { Card, EmptyState, Segmented } from "@/components/ui";
 import { fmtUsdg } from "@/components/bm/format";
 import { useNow } from "@/components/rounds/time";
 import { useNearAccount } from "@/components/rounds/useNearAccount";
 import { useAuth } from "@/context/AuthContext";
+import { pnlSeries } from "@/lib/bm/house-pnl";
 import { fundingState, markPosition } from "@/lib/bm/house-ticket";
 import { faucetArgs, type HousePosition } from "@/lib/bm/house-types";
 import { HOUSE_FAUCET_UNITS, isNearHouseDeployed } from "@/lib/near/config";
 import { friendlyNearError } from "@/lib/near/errors";
-import { ClosedLine, Help, LastTxLink, PositionLine, TESTNET, TrackLines, sendClose, pnlTone, signedUsdg, useTracks } from "./parts";
+import { Help, LastTxLink, PositionLine, TESTNET, TrackLines, sendClose, pnlTone, signedUsdg, useTracks } from "./parts";
+import { PnlChart } from "./PnlChart";
+import { ClosedCard, OpenCard, PctChip } from "./portfolio-cards";
 import { useHouseAccount, useHouseBasics, useHouseMarkets } from "./useNearHouse";
 
 // The house portfolio (NEXT_PUBLIC_BM_NEAR_PRODUCT=house), read from the
@@ -25,22 +28,47 @@ import { useHouseAccount, useHouseBasics, useHouseMarkets } from "./useNearHouse
 // pays every close into the balance. The TESTNET chip is beside the page's
 // title (app/app/portfolio/page.tsx); what the numbers are worked out from
 // is behind the "?"s.
+//
+// The layout is atnx.app's portfolio: Equity over Open PnL and Balance on
+// the left with the chart beside them (stacked on phones), then "Open · N"
+// and "Closed" tabs over a grid of position cards. Its chart is portfolio
+// value from a server feed; the house has none, and the chain keeps no
+// balance history, so the chart here is PnL over the last 20 closes plus
+// the open positions (lib/bm/house-pnl.ts). Not ported: "Fees earned" (no
+// per-account counter on chain), the share card and a close-confirm step.
+
+type Tab = "open" | "closed";
 
 // A stat card: the label (with an optional "?") over the number. The
 // shared StatTile's label is 10 to 11 px; this one is 13 px in the
 // secondary ink, so it survives a compressed recording.
-function Stat({ label, value, help, hero = false, className = "" }: { label: string; value: ReactNode; help?: { label: string; note: string }; hero?: boolean; className?: string }) {
+function Stat({
+  label,
+  value,
+  sub,
+  help,
+  hero = false,
+  className = "",
+}: {
+  label: string;
+  value: ReactNode;
+  sub?: ReactNode;
+  help?: { label: string; note: string };
+  hero?: boolean;
+  className?: string;
+}) {
   const body = (button: ReactNode) => (
     <>
       <div className="flex items-center justify-between gap-2 mb-1.5">
         <div className="text-[13px] font-mono uppercase tracking-[0.12em] text-secondary">{label}</div>
         {button}
       </div>
-      <div className={`font-display font-bold tabular-nums text-primary truncate ${hero ? "text-2xl sm:text-3xl" : "text-xl sm:text-2xl"}`}>{value}</div>
+      <div className={`font-display font-bold tabular-nums text-primary truncate ${hero ? "text-3xl sm:text-4xl" : "text-xl sm:text-2xl"}`}>{value}</div>
+      {sub && <div className="mt-2">{sub}</div>}
     </>
   );
   return (
-    <Card className={`p-4 sm:p-5 min-w-0 ${className}`}>
+    <Card className={`p-4 sm:p-5 min-w-0 flex flex-col justify-center ${className}`}>
       {help ? (
         <Help label={help.label} note={help.note}>
           {body}
@@ -84,6 +112,7 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastTx, setLastTx] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("open");
 
   if (!isNearHouseDeployed() || basics.status === "unconfigured" || basics.status === "missing") {
     return <EmptyState title="Trading is not live on NEAR testnet yet" body={TESTNET} />;
@@ -133,6 +162,18 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
   const marks = open.map((p) => markPosition(p, chainMarkets.get(p.market) ?? null, cfg));
   const openValue = marks.reduce((a, m) => a + (m?.value ?? 0n), 0n);
   const openStake = open.reduce((a, p) => a + p.stake, 0n);
+  // Orders still confirming hold their stake until they fill or are
+  // refunded; Equity counts it, so it does not dip for those seconds.
+  const pendingStake = pending.reduce((a, p) => a + p.stake, 0n);
+  const equity = data.balance + openValue + pendingStake;
+  const openPnl = openValue - openStake;
+  const openPnlPct = openStake > 0n ? (Number(openPnl) / Number(openStake)) * 100 : 0;
+  const history = data.history.slice(0, 20);
+  const series = pnlSeries(
+    history,
+    open.map((p, i) => ({ openedAt: p.openedAt, pnl: marks[i]?.pnl ?? null })),
+    Math.floor(nowMs / 1000),
+  );
   const funding = fundingState({ balance: data.balance, claimed: data.claimed, cfg });
   const faucetLeft = cfg.faucetPerAccount !== null && data.claimed !== null ? cfg.faucetPerAccount - data.claimed : HOUSE_FAUCET_UNITS;
   const faucetAmount = faucetLeft > HOUSE_FAUCET_UNITS ? HOUSE_FAUCET_UNITS : faucetLeft;
@@ -159,14 +200,28 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
 
   return (
     <div>
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-4 mb-6">
-        <Stat label="Balance" value={`${fmtUsdg(data.balance)} USDG`} hero className="col-span-2 md:col-span-1" />
-        <Stat label={`Open positions\u00a0·\u00a0${open.length}`} value={`${fmtUsdg(openValue)} USDG`} />
-        <Stat
-          label="Open PnL"
-          value={<span className={pnlTone(openValue - openStake)}>{signedUsdg(openValue - openStake)} USDG</span>}
-          help={{ label: "About Open PnL", note: "At the prices your positions would close at now." }}
-        />
+      {/* Equity over Open PnL | Balance, the chart beside them; stacked on
+          phones. */}
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 sm:gap-4 mb-6">
+        <div className="flex flex-col gap-3 sm:gap-4 min-w-0">
+          <Stat
+            label="Equity"
+            value={`${fmtUsdg(equity)} USDG`}
+            hero
+            className="flex-1"
+            help={{ label: "About Equity", note: "Your balance plus what your open positions would pay back if they closed now (and the stake of any order still confirming)." }}
+          />
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 flex-1">
+            <Stat
+              label={"Open\u00a0PnL"}
+              value={<span className={pnlTone(openPnl)}>{signedUsdg(openPnl)}</span>}
+              sub={open.length > 0 ? <PctChip units={openPnl} pct={openPnlPct} /> : undefined}
+              help={{ label: "About Open PnL", note: "In USDG, at the prices your positions would close at now." }}
+            />
+            <Stat label="Balance" value={fmtUsdg(data.balance)} help={{ label: "About Balance", note: "Test USDG in your account, free to trade. Every close pays into it." }} />
+          </div>
+        </div>
+        <PnlChart series={series} className="min-h-[260px]" />
       </div>
 
       {near.status === "other-browser" && (
@@ -211,47 +266,70 @@ export function HousePortfolio({ markets }: { markets: HousePortfolioMarket[] })
         </Card>
       )}
 
-      <Card className="p-4 mt-4">
-        <h3 className="text-base font-bold text-primary">Open positions</h3>
-        {open.length === 0 ? (
-          <p className="text-sm text-secondary py-2">
-            No open positions.{" "}
-            <Link href="/app" className="link-quiet underline underline-offset-2">
-              Browse markets
-            </Link>
-          </p>
-        ) : (
-          open.map((p) => (
-            <PositionLine
-              key={p.id.toString()}
-              p={p}
-              market={chainMarkets.get(p.market) ?? null}
-              cfg={cfg}
-              name={nameOf(p.market)}
-              href={hrefOf(p.market)}
-              nowMs={nowMs}
-              busy={busy === `close-${p.id}` || !canAct}
-              onClose={close}
-            />
-          ))
+      <div className="mt-6 mb-4 flex flex-wrap items-center justify-between gap-3">
+        <Segmented<Tab>
+          ariaLabel="Positions"
+          size="md"
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: "open", label: `Open · ${open.length}` },
+            { value: "closed", label: "Closed" },
+          ]}
+        />
+        {tab === "closed" && history.length > 0 && (
+          <Help label="About Realised" note="The contract keeps your last 20 closed positions, so this counts at most 20 trades. PnL is what each paid back less its stake.">
+            {(help) => (
+              <span className="inline-flex items-center gap-2 text-sm text-secondary tabular-nums">
+                <span>
+                  Realised <span className={`text-base font-semibold ${pnlTone(series.realised)}`}>{signedUsdg(series.realised)} USDG</span> over {history.length}{" "}
+                  {history.length === 1 ? "trade" : "trades"}
+                </span>
+                {help}
+              </span>
+            )}
+          </Help>
         )}
-      </Card>
+      </div>
 
-      <Card className="p-4 mt-4">
-        <Help label="About Closed" note="The last 20, kept by the contract. Every close is paid straight into your balance." noteClassName="mb-1">
-          {(help) => (
-            <div className="flex items-center gap-2">
-              <h3 className="text-base font-bold text-primary">Closed</h3>
-              {help}
-            </div>
-          )}
-        </Help>
-        {data.history.length === 0 ? (
-          <p className="text-sm text-secondary py-2">Nothing closed yet.</p>
+      {tab === "open" ? (
+        open.length === 0 ? (
+          <Card className="p-6 text-center">
+            <p className="text-sm text-secondary">
+              No open positions.{" "}
+              <Link href="/app" className="link-quiet underline underline-offset-2">
+                Browse markets
+              </Link>
+            </p>
+          </Card>
         ) : (
-          data.history.slice(0, 20).map((c) => <ClosedLine key={c.id.toString()} c={c} name={nameOf(c.market)} href={hrefOf(c.market)} />)
-        )}
-      </Card>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {open.map((p) => (
+              <OpenCard
+                key={p.id.toString()}
+                p={p}
+                market={chainMarkets.get(p.market) ?? null}
+                cfg={cfg}
+                name={nameOf(p.market)}
+                href={hrefOf(p.market)}
+                nowMs={nowMs}
+                busy={busy === `close-${p.id}` || !canAct}
+                onClose={close}
+              />
+            ))}
+          </div>
+        )
+      ) : history.length === 0 ? (
+        <Card className="p-6 text-center">
+          <p className="text-sm text-secondary">Nothing closed yet. Positions you close show here with what they paid back.</p>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {history.map((c) => (
+            <ClosedCard key={c.id.toString()} c={c} name={nameOf(c.market)} href={hrefOf(c.market)} nowMs={nowMs} />
+          ))}
+        </div>
+      )}
 
       {lastTx && <LastTxLink txHash={lastTx} className="mt-3" />}
     </div>

@@ -42,11 +42,12 @@ export function deltaColor(change: number | null): string {
   return change !== null && change < 0 ? DOWN : UP;
 }
 
-// Measure the wrapper ourselves and hand recharts explicit pixel dimensions.
-// Its ResponsiveContainer starts at -1×-1 and logs a warning on the first
+// Measure the wrapper ourselves and hand recharts explicit pixel dimensions
+// (the house portfolio's PnL chart, components/house/PnlChart.tsx, uses it
+// too). Its ResponsiveContainer starts at -1×-1 and logs a warning on the first
 // paint; sizing the chart directly avoids that and a hidden wrapper simply
 // draws nothing.
-function useSize() {
+export function useSize() {
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   useEffect(() => {
@@ -65,7 +66,7 @@ function useSize() {
   return { ref, w: size.w, h: size.h, ready: size.w > 0 && size.h > 0 };
 }
 
-function useChartTheme() {
+export function useChartTheme() {
   const { resolvedTheme } = useTheme();
   const light = resolvedTheme === "light";
   return {
