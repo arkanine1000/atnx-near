@@ -1,6 +1,6 @@
 # NEAR contracts: build spec
 
-This file specifies the port of `programs/vi_rounds` (Anchor, Solana devnet) to NEAR. The mechanics are those in [docs/rounds.md](../docs/rounds.md), which stay authoritative: presale pots, opening at the VI target, Pennock's dynamic pari-mutuel market (variant I, price function I), the 30-minute averaged settle by the keeper, claims, rollovers and fees. Where this spec and `programs/vi_rounds/src/lib.rs` disagree, this spec wins. Everything else follows lib.rs exactly: state transitions, checks, rounding and error cases.
+This file specifies the port of the baseline's Solana program `vi_rounds` (Anchor, Solana devnet; `programs/vi_rounds` in [atnx-markets at 78b6ecd](https://github.com/arkanine1000/atnx-markets/tree/78b6ecd/programs/vi_rounds)) to NEAR. The mechanics are those in the rolling-rounds design, [docs/rounds.md as it stood at commit be66b35](https://github.com/arkanine1000/atnx-near/blob/be66b35a1b26dc7af8e29fd6f832368b6436c8ae/docs/rounds.md#how-it-works), which stay authoritative: presale pots, opening at the VI target, Pennock's dynamic pari-mutuel market (variant I, price function I), the 30-minute averaged settle by the keeper, claims, rollovers and fees. Where this spec and that program's `src/lib.rs` disagree, this spec wins. Everything else follows lib.rs exactly: state transitions, checks, rounding and error cases.
 
 Testnet accounts: parent `atnx.testnet`. Contracts go on `usdg.atnx.testnet` and `rounds.atnx.testnet`; the keeper is `keeper.atnx.testnet`. User accounts may be sub-accounts like `alice.atnx.testnet`.
 
@@ -11,7 +11,7 @@ near/
   Cargo.toml          workspace: members usdg, rounds, house, integration-tests; default-members usdg, rounds, house
   usdg/               NEP-141 test token
   rounds/             the rounds contract
-    src/math.rs       verbatim copy of programs/vi_rounds/src/math.rs (header comment: copied from, keep in sync)
+    src/math.rs       verbatim copy of the Solana program's src/math.rs (header comment: copied from, keep in sync)
   house/              the house contract (README.md, "house")
   integration-tests/  near-workspaces tests against the wasm files
 ```
@@ -40,7 +40,7 @@ Amounts at the interface are `U128` (6-decimal USDG units); internally they're u
 
 - `Config`: `owner`, `keeper`, `treasury`, `token` (the usdg account), `fee_bps` (100), `finder_bps` (2000), `series_count`.
 - `balances: LookupMap<AccountId, u64>`: the internal ledger.
-- `series: LookupMap<u32, Series>`, plus `series_by_reference: LookupMap<String, u32>` (reference = 64 hex characters, the same 32-byte layout as on Solana; see docs/rounds.md, Series).
+- `series: LookupMap<u32, Series>`, plus `series_by_reference: LookupMap<String, u32>` (reference = 64 hex characters, the same 32-byte layout as on Solana; see [Series](https://github.com/arkanine1000/atnx-near/blob/be66b35a1b26dc7af8e29fd6f832368b6436c8ae/docs/rounds.md#series) in the design).
 - `Series`: the lib.rs fields, with `finder: AccountId` and `reference: String`.
 - `rounds: LookupMap<(u32, u32), Round>`, keyed by (series_id, round_index). `Round` has the lib.rs fields, with `commitment` as a 64-hex `String`.
 - `positions: LookupMap<(u32, u32, AccountId), Position>`, with the lib.rs fields, plus `account_positions: LookupMap<AccountId, IterableSet<(u32, u32)>>` so `positions_of` works. Remove an entry from both when its position is closed.
@@ -76,7 +76,7 @@ Events: emit NEP-297 logs, `EVENT_JSON:{"standard":"atnx_rounds","version":"1.0.
 
 1. `cargo test -p rounds --lib` runs math.rs's own tests unchanged.
 2. Unit tests with near-sdk's `unit-testing` feature and `testing_env!` cover:
-   - the worked example from docs/rounds.md with the fee on: commits of 600 and 400, then a buy that nets exactly 100. Shares and payouts must equal the TypeScript and Solana numbers;
+   - the [worked example](https://github.com/arkanine1000/atnx-near/blob/be66b35a1b26dc7af8e29fd6f832368b6436c8ae/docs/rounds.md#worked-example) from the design with the fee on: commits of 600 and 400, then a buy that nets exactly 100. Shares and payouts must equal the TypeScript and Solana numbers;
    - settle UP and DOWN, a tie going UP, void and refunds, a rollover landing in round N+2;
    - pause voiding the presale round, fee withdrawal;
    - the error paths: slippage, ratio cap, trading closed, too early, empty side, access control on keeper and owner methods, a wrong token in `ft_on_transfer`, the faucet cap;

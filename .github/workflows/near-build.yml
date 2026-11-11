@@ -1,9 +1,9 @@
 name: near-build
 
 # The NEAR contracts live under near/: usdg (a NEP-141 test token), rounds
-# (rolling VI rounds, ported from programs/vi_rounds) and house (long or
-# short the VI against a vault). One job: the unit tests, a reproducible
-# build of every wasm file with
+# (rolling VI rounds, ported from the baseline's Solana program vi_rounds)
+# and house (long or short the VI against a vault). One job: the unit
+# tests, a reproducible build of every wasm file with
 # `cargo near build reproducible-wasm`, then the near-sandbox integration
 # tests against those same wasm files, so the tests run the bytes that get
 # uploaded. The reproducible build clones the checked-out commit into a

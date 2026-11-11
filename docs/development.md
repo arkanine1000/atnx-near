@@ -25,7 +25,7 @@ Env vars:
 
 Optional overrides (model ids, link and confirm thresholds, the daily market-creation cap and its exemptions) and the `EVAL_*` variables for the eval script are listed in `atnx-web/.env.local.example`.
 
-Rolling rounds on Solana devnet ([rounds.md](rounds.md)), also in `.env.local.example`:
+The web app's client for the baseline's rolling rounds on Solana devnet (the design is in [docs/rounds.md in atnx-markets](https://github.com/arkanine1000/atnx-markets/blob/main/docs/rounds.md)), also in `.env.local.example`:
 
 | Name | Where | Notes |
 | --- | --- | --- |
@@ -42,11 +42,11 @@ Rolling rounds on Solana devnet ([rounds.md](rounds.md)), also in `.env.local.ex
 | `BM_SETTLE_DELAY_SECS` | server only | How long after a round's close the keeper settles, default 300 |
 | `BM_AUTO_ROLL` | server only | `0` stops the bounded-market keeper from rolling new bounded markets (the first iteration); resolution goes on |
 
-The other bounded-market variables are listed in [bounded-markets.md](bounded-markets.md#operations); `BM_MAX_VI_AGE_MIN` (default 30) is shared: neither a bounded market nor a round opens on an older VI.
+The other bounded-market variables are listed in `.env.local.example`; `BM_MAX_VI_AGE_MIN` (default 30) is shared: neither a bounded market nor a round opens on an older VI.
 
 ### Rolling rounds on NEAR testnet
 
-The NEAR build of the same rounds ([rounds.md](rounds.md#near-testnet)). The names are in `.env.local.example`; that file's comment on `NEXT_PUBLIC_BM_NEAR_PARENT` predates the account routes, and it does not list the relayer's two variables.
+The NEAR build of the same rounds ([rounds.md](rounds.md)). The names are in `.env.local.example`; that file's comment on `NEXT_PUBLIC_BM_NEAR_PARENT` predates the account routes, and it does not list the relayer's two variables.
 
 | Name | Where | Notes |
 | --- | --- | --- |
@@ -124,8 +124,6 @@ npm run rounds:start -- <uuid> --chain near                    # daily rounds on
 BM_ROUNDS_ENABLED=0 BM_NEAR_ROUNDS_ENABLED=1 npm run rounds:tick   # NEAR's rounds step alone, dry; -- --live sends
 ```
 
-`cargo test -p vi_rounds --lib` and `cargo test -p bounded_vi --lib` run the programs' math tests on a plain Rust toolchain; CI runs both on every push under `programs/`.
-
 ## NEAR contracts
 
 The contracts are in `near/`, a Cargo workspace of its own with Rust 1.99.1 pinned in `near/rust-toolchain.toml` and cargo-near 0.23.0 ([near/README.md](../near/README.md)). This machine's compiler crashes under parallel load, so every build runs pinned to four cores with two jobs and its output in `/tmp`, which also keeps the build off `/home`:
@@ -186,7 +184,6 @@ by the web app at `/privacy`, so deploy the web app before submitting. Bump
 
 - Hosted on **Vercel**, project `atnx-markets`, domain `markets.atnx.app`, Root Directory `atnx-web`. The GitHub integration builds every push: a pull request gets a preview, a push to `main` deploys production. (Until 2026-10-02 the root directory was `.` and only CLI deploys from inside `atnx-web` worked; a `vercel deploy` from inside `atnx-web` now fails, so link at the repository root if a CLI deploy is ever needed.)
 - `vercel.json` schedules `/api/bm/keeper` every 5 min (bounded markets unless `BM_BOUNDED_ENABLED=0`, then the rounds: Solana's when `BM_ROUNDS_ENABLED=1`, NEAR's when `BM_NEAR_ROUNDS_ENABLED=1`); Vercel runs crons on the production deployment only. The VI refresh crons stay on production ATNX, whose history this build reads.
-- Solana programs are built on GitHub Actions, never locally: `.github/workflows/solana-build.yml` runs `cargo test -p vi_rounds --lib` and `cargo test -p bounded_vi --lib` on the host toolchain, then `anchor build` for `bounded_vi` and `vi_rounds` with Agave pinned to 4.3.0, and uploads one artifact per program. Deploy from the laptop with `programs/deploy.sh vi_rounds` (needs `gh` and the Solana CLI; pays from `~/.config/solana/devnet.json` unless `PAYER` is set; `--dry` only fetches the artifact and copies the IDL); it deploys the artifact of the newest green run on the current branch (`BRANCH=main` to pick another) with the committed keypair in `keys/` and copies the IDL and types to `atnx-web/lib/bm/idl/`. Then `npm run rounds:sol -- e2e` checks the deploy (after a fresh program id, `npm run rounds:sol -- init` first, and the printed mint goes in `NEXT_PUBLIC_BM_SOL_USDG`), and a commit of the new IDL plus a push to `main` ships it to the site. Details in [programs/README.md](../programs/README.md).
 - The NEAR build is a second Vercel project, `quest-fi/atnx-near` (`atnx-near.vercel.app`), created 2026-11-09: Root Directory `atnx-web`, linked to `main` of `arkanine1000/atnx-near`, so every push builds (a preview for a branch, production for `main`), and the same `vercel.json` cron runs on its production deployment. Production and preview hold the NEAR variables above, `NEXT_PUBLIC_BM_CHAIN` and `BM_BOUNDED_ENABLED`, with the Supabase variables of the shared database. `markets.atnx.app` moves to this project later; until then it stays on `atnx-markets`.
 - NEAR contracts are built on GitHub Actions: `.github/workflows/near-build.yml` runs the unit tests, builds both contracts with `cargo near build reproducible-wasm` in the Docker image pinned in each `Cargo.toml`, runs the near-sandbox tests on those files, and uploads `usdg-wasm` and `rounds-wasm` with their SHA-256 (hex, and base58 as NEAR's `code_hash`) and embedded NEP-330 metadata in the job summary. The wasm names its commit: two runs on one commit built byte-identical files, and the builds of two commits differ only where the commit is written. Details, and how to check a deployed contract against the repository, in [near/README.md](../near/README.md#reproducible-builds). Nothing deploys the contracts from CI.
 - `next.config.ts` is intentionally empty — all routing/CORS lives in `proxy.ts` and route handlers.
@@ -208,9 +205,7 @@ curl -H "x-vercel-protection-bypass: $BYPASS" https://<preview-url>/app
 # Known rough edges
 
 - The per-source caches and the X, TikTok and post-read daily ledgers are in-memory per instance; the ledgers re-read `vi_samples` every few minutes, so a multi-instance deployment overspends by at most that window.
-- Tests cover the VI math (`npm run test:vi`, node:test through tsx) and the market maths (`npm run test:bm`, `cargo test -p vi_rounds --lib`, `cargo test -p bounded_vi --lib`). `npm run eval:capture` is the regression check for the submission pipeline and the review step; the rest is manual.
+- Tests cover the VI math (`npm run test:vi`, node:test through tsx), the market maths and the keeper (`npm run test:bm`), the NEAR web layer (`npm run test:near`) and the NEAR contracts (`cargo test` in `near/`, [NEAR contracts](#near-contracts)). `npm run eval:capture` is the regression check for the submission pipeline and the review step; the rest is manual.
 - Google Trends has no official API. Rate-limit hiccups surface as an unknown reading and the refresh keeps the market's last value.
-- The local Rust compiler crashes, so nothing on the Solana side builds on the laptop; a program change means a push and a CI round trip before it can be deployed.
-- Rounds: the keeper is the oracle and the only key that opens and settles; the faucet and starting a series are open to anyone on devnet; a rollover lands in round N+2; pausing a series ends it. More in [rounds.md](rounds.md#known-limits).
-- Rounds on NEAR: the contracts pay their own storage on testnet; a lost browser key means a fresh account; nothing calls `withdraw_fees` yet, so the fee counters only grow. More in [rounds.md](rounds.md#on-near-testnet).
+- Rounds on NEAR: the keeper is the oracle and the only key that opens and settles; a rollover lands in round N+2; pausing a series ends it; the contracts pay their own storage on testnet; a lost browser key means a fresh account; nothing calls `withdraw_fees` yet, so the fee counters only grow. More in [near/README.md](../near/README.md#known-limits).
 - Each free source has a hard ceiling (YouTube's 100 searches a day, Apify's plan limit, the X tweet budget); when one runs out the source goes dark until its window resets and the stored reading stands in for up to two days.

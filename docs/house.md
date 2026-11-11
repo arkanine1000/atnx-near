@@ -14,7 +14,7 @@ The house replaced the [rolling rounds](rounds.md) as the product on NEAR. `roun
 | `relayer.atnx.testnet` | Sends every trader's call as a NEP-366 meta-transaction and pays its gas |
 | `atnx.testnet` | Owner of the house config, the treasury (it receives half of each fee and the whole fee where a market has no finder), the only vault depositor while `lp_open` is false, and the parent of every trader account |
 | `<handle>-h.atnx.testnet`, `guest-<8 characters>-h.atnx.testnet` | Trader accounts on the house, one per signed-in user or guest ([Accounts and relaying](#accounts-and-relaying)) |
-| `rounds.atnx.testnet` | The earlier market design on NEAR ([rounds.md](rounds.md#near-testnet)). Each trader also has a rounds account, `<handle>.atnx.testnet`, from which the house account's name is derived |
+| `rounds.atnx.testnet` | The earlier market design on NEAR ([rounds.md](rounds.md)). Each trader also has a rounds account, `<handle>.atnx.testnet`, from which the house account's name is derived |
 
 ## The two prices
 
@@ -127,17 +127,31 @@ A trader signs in to ATNX with Google or X (Supabase auth), or taps "Try as a gu
 
 The route makes two accounts under `atnx.testnet` with the same key: the rounds account `<handle>.atnx.testnet` (a guest's is `guest-<8 random characters>.atnx.testnet`) and, with the house on, the house account `<handle>-h.atnx.testnet` (`atnx-web/lib/near/house-account.ts`). A house account holds 0 NEAR and one key, the browser's, as a function-call key for `house.atnx.testnet` with an empty method list and a 0.25 NEAR allowance. Only the parent can make sub-accounts of itself, so a `-h` name can only ever be made by the platform; no rounds handle ends in `-h`. There is no custody key: ATNX holds no key that can move an account's balance. Clearing the site's data or moving to another browser strands the account with what it holds, and the trader starts a new one.
 
+The handle is the X username, else the ATNX profile handle, cleaned to NEAR's rules (lowercase letters and digits, with single `-` or `_` between them). It is never a reserved name such as `admin`, `keeper` or `treasury`, never `guest` or `guest-…`, and never ends in `-h`. A taken name gets a four-character suffix; with no usable name the handle is `u` and seven random characters. A name counts as free only when its `-h` name is free too. The account id is public on chain, so it is never made from the email or the real name (`atnx-web/lib/near/handle.ts`). Each account costs the parent about 0.007 NEAR.
+
+A signed-in trader's account is recorded in `bm.near_accounts` (`atnx-web/supabase/bm/004_near_accounts.sql`): the user, the rounds account id, the public key, the state (`creating` while the transaction is in flight, then `active`), the creation transaction and any previous account ids. A signed-in user can read only their own row; only the service role writes. When the browser no longer holds the key, the ticket and Settings offer "Start a new account here"; the route makes a new account only when asked (`fresh`), at most five per user in all, and keeps the old ids in `previous_account_ids`.
+
 Every trading call is a NEP-366 delegate action that the browser signs and POSTs to `/api/near/relay`. The relayer checks it and wraps it in a transaction that `relayer.atnx.testnet` signs and pays for (`atnx-web/lib/near/relay.ts`, `houseRelayPolicy`):
 
-1. The sender is the caller's house account (`<label>-h.atnx.testnet`), signed by the key on record, and the receiver is the house contract.
+1. The delegate re-encodes to the same bytes. The sender is the caller's house account (`<label>-h.atnx.testnet`), not the relayer, and the delegate is signed by the key on record with a signature that verifies. The receiver is the house contract.
 2. One function call, to `faucet`, `open`, `close`, `cancel`, `crank` or `withdraw` (a guest: the same without `withdraw`), with no deposit, at most 150 TGas and at most 1,024 bytes of arguments. The key's method list on chain is empty, so this list is the gate, checked again against the key.
-3. One delegate in flight per account, at most 200 relays an hour for a signed-in user and 60 for a guest.
-4. The delegate has not expired, its nonce is above the key's, and the key is a function-call key for the house contract.
+3. One delegate in flight per account, because delegate nonces must land in order; the lock expires after 60 seconds. At most 200 relays an hour for a signed-in user and 60 for a guest.
+4. The delegate has not expired and is valid for at most 600 more blocks, its nonce is above the key's, and the key is a function-call key for the house contract. A full-access key is refused.
 5. A courtesy check against the contract (`atnx-web/lib/near/house-check.ts`), because a call that fails on chain still costs the relayer its gas: a faucet claim past the account's cap, an order the contract's `open` would refuse, a close or cancel of a position that is not the signer's or not in that state, a crank of more than 20 ids. The refusal carries the contract's own message. A full market is not refused here (the contract takes the order and refunds it at the fill), and the contract checks everything again.
 
-Guests are capped in the database at 3 per client IP per hour and 200 in any 24 hours; the IP is stored only as a salted hash and cleared after a day ([rounds.md](rounds.md#guest-accounts) has the details, which are shared). No guest is made while the relayer or the parent is under 0.05 NEAR.
+The relayer also refuses to send while its own spendable balance is under 0.05 NEAR.
 
-Checking it on chain: `view_account` on a house account shows `"amount": "0"`, `view_access_key_list` shows its one function-call key for `house.atnx.testnet`, and a relayed call shows `relayer.atnx.testnet` as the signer with a `Delegate` action whose sender is the house account ([README](try-it.md#b-in-the-browser-as-a-guest), steps b5 and b10).
+### Guests
+
+A guest is not a Supabase user. The Supabase project is shared with atnx.app, so an anonymous sign-in would give every scripted guest the `authenticated` role there. A guest is a row in `bm.near_guests` (`atnx-web/supabase/bm/005_near_guests.sql`): the account, its key, the salted hash of the IP that asked for it, its state (`creating`, `active`, or `failed`, which still counts) and the relay lock. Only the service role can read or write it. A second POST to `/api/near/guest` with the same key returns the same account.
+
+What guests cost is capped in the database, in one call per new guest (`bm.near_guest_reserve`, under a transaction-level advisory lock, so two requests cannot both slip under the caps): at most 3 guests per client IP per hour and 200 in all in any 24 hours. The IP is the first entry of `x-forwarded-for` (Vercel overwrites the header), else `x-real-ip`. An IPv6 address counts by its /64, and a request with no readable address falls in one shared bucket. What is stored is HMAC-SHA256 of that bucket under a server-only salt (`BM_NEAR_GUEST_IP_SALT`, or one derived from the parent's key), never the IP, and each reservation clears the hashes older than a day (`atnx-web/lib/near/guest.ts`). No guest is made while the relayer or the parent is under 0.05 NEAR.
+
+A guest's calls go to `/api/near/relay` with `guest: true` and no cookie. That branch never reads the session: the house account must derive from an active row in `bm.near_guests`, and the delegate gets the checks above against that row's key, with the guest's own relay lock. The branches never cross: a guest's delegate on the user branch is refused as `sender_mismatch` (or `signed_out`), and a user's on the guest branch as `not_a_guest`. A guest who signs in gets their own account; the guest account stays in the browser, separate, and is used again after signing out. Nothing merges them.
+
+### Checking it on chain
+
+`view_account` on a house account shows `"amount": "0"`, `view_access_key_list` shows its one function-call key for `house.atnx.testnet`, and a relayed call shows `relayer.atnx.testnet` as the signer with a `Delegate` action whose sender is the house account ([try-it.md](try-it.md#b-in-the-browser-as-a-guest), steps b5 and b10).
 
 ## Funding from another chain (preview)
 
@@ -221,7 +235,7 @@ Watching the keeper:
 As of 2026-11-10.
 
 - [x] Contract `near/house` (near-sdk 5.30): two prices, orders filled at a quote read after them, liquidation, the cap, the 14-day end, the vault with notice-period exits, the faucet pool, close-only and stale markets, `quote_open`, NEP-297 events, `migrate`
-- [x] Tests: 58 unit tests (the worked examples, fill timing, refunds, liquidation and the cap on both sides, the score clip, the vault, the storage floor, access control, the config ranges, and two random sequences checking both invariants after every call) and 5 near-sandbox tests (`near/integration-tests/tests/house.rs`, among them a push of 75 markets in one call)
+- [x] Tests: 58 unit tests (the worked examples, fill timing, refunds, liquidation and the cap on both sides, the score clip, the vault, the storage floor, access control, the config ranges, and two random sequences checking both invariants after every call) and 6 near-sandbox tests (`near/integration-tests/tests/house.rs`, among them a push of 75 markets in one call)
 - [x] Reproducible build in CI with NEP-330 metadata; deployed from CI run 42915086367 (commit `5c019b5`) to `house.atnx.testnet`, upgraded in place with `migrate` on 2026-11-10 when 1x was added (first deployed from run 42746055574, commit `5cff59c`)
 - [x] Seeded: 10,000,000 USDG in the vault, 2,000,000 in the faucet pool; 57 markets listed
 - [x] The keeper's three runs on Vercel cron, with dry mode, the commitment on every push, and `house:verify:public`
