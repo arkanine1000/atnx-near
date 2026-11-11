@@ -38,7 +38,7 @@ export function isGuestAccountId(id: string, parent: string): boolean {
 // guests overall per dayWindowSecs (both rolling windows).
 export type GuestCaps = GuestReserveCaps;
 
-export const GUEST_CAPS: GuestCaps = { perIp: 3, ipWindowSecs: 3_600, perDay: 200, dayWindowSecs: 86_400 };
+export const GUEST_CAPS: GuestCaps = { perIp: 10, ipWindowSecs: 3_600, perDay: 300, dayWindowSecs: 86_400 };
 
 // A guest's relays: one in flight, at most 60 an hour (a signed-in user
 // gets 200).
