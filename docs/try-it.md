@@ -204,7 +204,7 @@ Steps b5 and b10 make the same check on an account and an order of your own.
 
 ## (b) In the browser, as a guest
 
-Use a recent Chrome, Firefox or Safari. The account's key lives in this browser's IndexedDB, so clearing the site's data, or closing a private window, loses the account. Guests are capped at 3 per network per hour and 200 a day; past that the ticket says "Too many guest accounts from your network in the last hour. Sign in, or try again later."
+Use a recent Chrome, Firefox or Safari. The account's key lives in this browser's IndexedDB, so clearing the site's data, or closing a private window, loses the account. Guests are capped at 10 per network per hour and 300 a day; past that the ticket says "Too many guest accounts from your network in the last hour. Sign in, or try again later."
 
 **b1.** Open https://atnx-near.vercel.app/app/markets/46a8890c-25ce-4231-9112-fc1b3ba8ac07 (market 36, "Google"; https://atnx-near.vercel.app/app lists the others). See a card "Trade Google's index" marked "TESTNET", with "Buy price" and "Sell price" (step a5's numbers, written 1,144.8 and 1,140.7), a "Sign in to trade" button and "Try as a guest". Tap the "?" beside "Try as a guest": see "Your test account lives in this browser."
 
@@ -247,7 +247,7 @@ See 0 NEAR, one key that can only call `house.atnx.testnet` (the empty `method_n
 
 ## (c) From a clone
 
-Needs git, Node 20 or later with npm, and for the contract tests rustup and cargo-near 0.23.0 (`near/rust-toolchain.toml` pins Rust 1.99.1, which rustup installs on the first command). The sandbox tests download near-sandbox on their first run. Running the site itself locally needs the team's database keys, so judges use the hosted demo; c1 to c5 (the tests, the rebuild and the public verifier) need no keys beyond the public ones c5 reads from the site.
+Needs git, Node 20 or later with npm, and for the contract tests rustup and cargo-near 0.23.0 (`near/rust-toolchain.toml` pins Rust 1.99.1, which rustup installs on the first command). The sandbox tests download near-sandbox on their first run. Running the site itself locally needs the team's database keys, so judges use the hosted demo; c1 to c6 (the tests, the rebuild, the public verifier and the guest trade) need no keys beyond the public ones c5 reads from the site.
 
 ```bash
 git clone https://github.com/arkanine1000/atnx-near && cd atnx-near
@@ -276,7 +276,7 @@ git checkout -
 
 See `c68f835f30accfef64c43c55705b1d44410af10c6a83b9cb59238339c9584662`, the deployed code hash in hex. While `git diff 5c019b5 -- near/house` prints nothing, the contract source in your checkout is the deployed one.
 
-**c4. The web tests.** From the repository root, run `cd atnx-web && npm ci && npm run test:near && npm run test:bm`. See each suite end with `# fail 0`: accounts and handles, the relayer and its house policy, the house checks, the public push routes, the keeper's rules, the commitment, the ticket's numbers. (On 2026-11-11 the two suites ran 170 and 217 tests.)
+**c4. The web tests.** From the repository root, run `cd atnx-web && npm ci && npm run test:near && npm run test:bm`. See each suite end with `# fail 0`: accounts and handles, the relayer and its house policy, the house checks, the public push routes, the keeper's rules, the commitment, the ticket's numbers. (On 2026-11-11 the two suites ran 199 and 217 tests.)
 
 **c5. A push, verified on your machine.** `house:verify:public` reads the transaction from public RPC and the rows from the database's public REST API, and hashes them itself. It needs the database's public URL and anon key, the ones the site's pages carry; these lines take both from the site's JavaScript. In `atnx-web/`, run:
 
@@ -303,4 +303,19 @@ house quote push FA2svCzRWxonzXqvPp4rXMgNapC1Q4vfepZTa8cFGQr5
   commitment in the event  381d89d7fecbc30c5604c20305d6b2f252bfa6f835fcc5e056a98bf81e489a34
   sha256 computed here     381d89d7fecbc30c5604c20305d6b2f252bfa6f835fcc5e056a98bf81e489a34
 OK: the rows hash to the commitment on chain and every quote matches its row.
+```
+
+**c6. A whole trade as a guest, from your terminal.** In `atnx-web/`, after `npm ci`, run `npm run house:trade:public`. It needs no env file; `--side down`, `--stake 25` or `--market 12` change the order. See seven numbered steps: a new key saved in `.house-trade-key.json`, a guest account made for it, 50 test USDG from the faucet, an order on market 36 with `Filled at <price>` about 10 seconds later, its close with the payout, then each transaction with `signer relayer.atnx.testnet` and its NearBlocks link, the account holding 0 NEAR with one function-call key for `house.atnx.testnet`, and a last line starting `OK:`. The whole run takes under a minute. A second run trades as the same guest, makes no new account and claims nothing more. If the site's guest limit for your network is reached it says so and exits with status 3; run it again later.
+
+```
+5. Order: market 36, UP 1x, 10.00 USDG at a worst price of 1,173.14 (buy price 1,161.52): placed as position 34 (tx uBJ6hqMerofT5Ywamv3zrkuvwXaM2zk8GSzscbPbp4s); waiting for the keeper's next quote
+   Filled at 1,161.20
+6. Close: position 34 at a worst price of 1,145.95 (sell price 1,157.53): requested (tx J7eBWa5ForEYRHTrXHUKqXgy2GdWXXM7DzjmVTF3gtzr)
+   Closed at 1,157.53: payout 9.968394 USDG for a stake of 10.00 (-0.031606 USDG)
+7. Proof, read from https://test.rpc.fastnear.com:
+   open    uBJ6hqMerofT5Ywamv3zrkuvwXaM2zk8GSzscbPbp4s  signer relayer.atnx.testnet, a Delegate from guest-0m2t7goc-h.atnx.testnet calling open on house.atnx.testnet
+   …
+   guest-0m2t7goc-h.atnx.testnet holds 0 NEAR
+   its access keys (1): ed25519:E9wau1nZ6Vran1Dj4zewyWbaX4amHeduJprbqeLtwPEN function call on house.atnx.testnet, no method list, allowance 0.25 NEAR
+OK: guest-0m2t7goc-h.atnx.testnet, a guest with 0 NEAR whose only key is a function-call key for house.atnx.testnet, opened and closed a position; relayer.atnx.testnet signed and paid for every call.
 ```
