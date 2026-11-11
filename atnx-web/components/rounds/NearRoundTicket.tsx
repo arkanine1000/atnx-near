@@ -21,7 +21,7 @@ import { useNearAccount } from "./useNearAccount";
 import { useNearClaimables, useNearRoundState, type NearClaimable } from "./useNearRounds";
 
 // The rounds ticket on NEAR testnet: the same states, panes and copy as the
-// Solana ticket (docs/rounds.md, "What the trader sees"), with the wallet
+// Solana ticket ("What the trader sees" in docs/rounds.md as of be66b35), with the wallet
 // replaced by the ATNX sign-in. A signed-in user gets a gasless account
 // (useNearAccount) the first time the ticket needs one; every action is a
 // call the browser signs and ATNX relays, so there is nothing to connect,
