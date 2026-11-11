@@ -9,6 +9,8 @@ cp .env.local.example .env.local   # fill in the Supabase / CRON values below
 npm run dev                        # http://localhost:3000
 ```
 
+Running the site locally needs the team's database keys (the database is shared with production ATNX), so judges use the hosted demo at https://atnx-near.vercel.app/app. The contract tests, `npm run test:near`, `npm run test:bm` and `npm run house:verify:public` need no keys ([try-it.md](try-it.md#c-from-a-clone)).
+
 Env vars:
 
 | Name | Where | Notes |
@@ -104,7 +106,7 @@ npm run vi:audit                     # every live market's score, breakdown, his
 
 ```bash
 npm run test:bm                      # the pari-mutuel maths (dpm.ts), the settlement rule, the bounded-market tests
-npm run rounds:sol -- e2e            # a full rounds series on devnet against the deployed program; no .env.local needed
+npm run rounds:sol -- e2e            # the baseline's: a full rounds series on Solana devnet against the deployed program; no .env.local, but it needs a funded devnet keypair at ~/.config/solana/devnet.json (SOL_PAYER overrides) and sends devnet transactions
 npm run rounds:start                 # the ten liveliest markets; -- "Name" starts daily rounds, -- <uuid> --fast the demo series
 BM_ROUNDS_ENABLED=1 npm run rounds:tick   # the rounds steps of one keeper tick, dry (they run only with the variable); -- --live for a real one, -- --bounded adds the bounded markets' steps
 npm run bm:keeper:dry                # the same tick as the cron, dry; -- --live for real
@@ -126,21 +128,20 @@ BM_ROUNDS_ENABLED=0 BM_NEAR_ROUNDS_ENABLED=1 npm run rounds:tick   # NEAR's roun
 
 ## NEAR contracts
 
-The contracts are in `near/`, a Cargo workspace of its own with Rust 1.99.1 pinned in `near/rust-toolchain.toml` and cargo-near 0.23.0 ([near/README.md](../near/README.md)). This machine's compiler crashes under parallel load, so every build runs pinned to four cores with two jobs and its output in `/tmp`, which also keeps the build off `/home`:
+The contracts are in `near/`, a Cargo workspace of its own with Rust 1.99.1 pinned in `near/rust-toolchain.toml` and cargo-near 0.23.0 ([near/README.md](../near/README.md)):
 
 ```bash
 cd near
-export CARGO_TARGET_DIR=/tmp/atnx-near-target CARGO_BUILD_JOBS=2
-(cd usdg && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
-(cd rounds && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
-(cd house && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
-taskset -c 0,3-5 cargo test -p rounds --lib     # math.rs's own tests plus the contract's
-taskset -c 0,3-5 cargo test -p usdg
-taskset -c 0,3-5 cargo test -p house --lib
-taskset -c 0,3-5 cargo test -p integration-tests -- --test-threads=1   # near-sandbox, after the three wasm builds; --test house for the house alone
+(cd usdg && cargo near build non-reproducible-wasm)
+(cd rounds && cargo near build non-reproducible-wasm)
+(cd house && cargo near build non-reproducible-wasm)
+cargo test -p rounds --lib     # math.rs's own tests plus the contract's
+cargo test -p usdg
+cargo test -p house --lib
+cargo test -p integration-tests -- --test-threads=1   # near-sandbox, after the three wasm builds; --test house for the house alone
 ```
 
-If a build dies with SIGSEGV or "rustc interrupted", run it again; finished crates are kept. There is no Docker here, so local builds are non-reproducible: they embed `version` and `link` but no build metadata, and their bytes differ from CI's. The wasm files to deploy come from CI, which builds them with `cargo near build reproducible-wasm` (see Deployment).
+These builds are non-reproducible: they embed `version` and `link` but no build metadata, and their bytes differ from CI's. The wasm files to deploy come from CI, which builds them with `cargo near build reproducible-wasm` (see Deployment).
 
 ## Seeding trending markets
 
@@ -185,7 +186,7 @@ by the web app at `/privacy`, so deploy the web app before submitting. Bump
 - Hosted on **Vercel**, project `atnx-markets`, domain `markets.atnx.app`, Root Directory `atnx-web`. The GitHub integration builds every push: a pull request gets a preview, a push to `main` deploys production. (Until 2026-10-02 the root directory was `.` and only CLI deploys from inside `atnx-web` worked; a `vercel deploy` from inside `atnx-web` now fails, so link at the repository root if a CLI deploy is ever needed.)
 - `vercel.json` schedules `/api/bm/keeper` every 5 min (bounded markets unless `BM_BOUNDED_ENABLED=0`, then the rounds: Solana's when `BM_ROUNDS_ENABLED=1`, NEAR's when `BM_NEAR_ROUNDS_ENABLED=1`); Vercel runs crons on the production deployment only. The VI refresh crons stay on production ATNX, whose history this build reads.
 - The NEAR build is a second Vercel project, `quest-fi/atnx-near` (`atnx-near.vercel.app`), created 2026-11-09: Root Directory `atnx-web`, linked to `main` of `arkanine1000/atnx-near`, so every push builds (a preview for a branch, production for `main`), and the same `vercel.json` cron runs on its production deployment. Production and preview hold the NEAR variables above, `NEXT_PUBLIC_BM_CHAIN` and `BM_BOUNDED_ENABLED`, with the Supabase variables of the shared database. `markets.atnx.app` moves to this project later; until then it stays on `atnx-markets`.
-- NEAR contracts are built on GitHub Actions: `.github/workflows/near-build.yml` runs the unit tests, builds both contracts with `cargo near build reproducible-wasm` in the Docker image pinned in each `Cargo.toml`, runs the near-sandbox tests on those files, and uploads `usdg-wasm` and `rounds-wasm` with their SHA-256 (hex, and base58 as NEAR's `code_hash`) and embedded NEP-330 metadata in the job summary. The wasm names its commit: two runs on one commit built byte-identical files, and the builds of two commits differ only where the commit is written. Details, and how to check a deployed contract against the repository, in [near/README.md](../near/README.md#reproducible-builds). Nothing deploys the contracts from CI.
+- NEAR contracts are built on GitHub Actions: `.github/workflows/near-build.yml` runs the unit tests, builds the three contracts with `cargo near build reproducible-wasm` in the Docker image pinned in each `Cargo.toml`, runs the near-sandbox tests on those files, and uploads `usdg-wasm`, `rounds-wasm` and `house-wasm` with their SHA-256 (hex, and base58 as NEAR's `code_hash`) and embedded NEP-330 metadata in the job summary. The wasm names its commit: two runs on one commit built byte-identical files, and the builds of two commits differ only where the commit is written. Details, and how to check a deployed contract against the repository, in [near/README.md](../near/README.md#reproducible-builds). Nothing deploys the contracts from CI.
 - `next.config.ts` is intentionally empty — all routing/CORS lives in `proxy.ts` and route handlers.
 - The fork's extension defaults to `https://markets.atnx.app` (the published upstream extension to www.atnx.app); no rebuild needed to switch between it and a local server.
 

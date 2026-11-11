@@ -17,24 +17,23 @@ Both contracts pay their own storage from their NEAR balance, which is fine on t
 
 ## Build and test
 
-Rust 1.99.1 with the `wasm32-unknown-unknown` target, pinned in `rust-toolchain.toml`, and cargo-near 0.23.0. rustup installs the pinned toolchain the first time a command runs in `near/`. It counts as a separate toolchain from `stable`, even when `stable` is the same release. On this machine the compiler crashes under parallel load, so every command runs pinned to four cores with two jobs and its output in `/tmp`. If a build dies with SIGSEGV or "rustc interrupted", run it again; finished crates are kept.
+Rust 1.99.1 with the `wasm32-unknown-unknown` target, pinned in `rust-toolchain.toml`, and cargo-near 0.23.0. rustup installs the pinned toolchain the first time a command runs in `near/`. It counts as a separate toolchain from `stable`, even when `stable` is the same release.
 
 ```
 cd near
-export CARGO_TARGET_DIR=/tmp/atnx-near-target CARGO_BUILD_JOBS=2
 
-# wasm, written to $CARGO_TARGET_DIR/near/<name>/<name>.wasm
-taskset -c 0,3-5 cargo near build non-reproducible-wasm --manifest-path usdg/Cargo.toml
-taskset -c 0,3-5 cargo near build non-reproducible-wasm --manifest-path rounds/Cargo.toml
-taskset -c 0,3-5 cargo near build non-reproducible-wasm --manifest-path house/Cargo.toml
+# wasm, written to target/near/<name>/<name>.wasm ($CARGO_TARGET_DIR/near/… when that is set)
+cargo near build non-reproducible-wasm --manifest-path usdg/Cargo.toml
+cargo near build non-reproducible-wasm --manifest-path rounds/Cargo.toml
+cargo near build non-reproducible-wasm --manifest-path house/Cargo.toml
 
 # unit tests: math.rs's own tests plus the contract tests
-taskset -c 0,3-5 cargo test -p rounds --lib
-taskset -c 0,3-5 cargo test -p usdg
-taskset -c 0,3-5 cargo test -p house --lib
+cargo test -p rounds --lib
+cargo test -p usdg
+cargo test -p house --lib
 
 # sandbox tests, after the wasm builds; the first run downloads near-sandbox
-taskset -c 0,3-5 cargo test -p integration-tests -- --test-threads=1
+cargo test -p integration-tests -- --test-threads=1
 ```
 
 The integration tests read the wasm files from `$ATNX_NEAR_WASM_DIR/<name>/<name>.wasm` if that variable is set, otherwise from `$CARGO_TARGET_DIR/near/…`, and with neither set from `near/target/near/…`, which is where CI's reproducible build puts them. Point `ATNX_NEAR_WASM_DIR` at a directory laid out the same way to run the sandbox tests on downloaded CI artifacts. `cargo test` without `-p` covers `usdg`, `rounds` and `house`: they are the workspace's default members.
@@ -56,7 +55,7 @@ The image's cargo-near and Rust versions match `CARGO_NEAR_VERSION` in the workf
 
 To check a deployed contract against the repository: read its metadata with the `contract_source_metadata` view, check out the commit it names, run `cargo near build reproducible-wasm` in its `contract_path` on a machine with Docker, and compare the SHA-256 with the account's `code_hash` from `view_account`, which is the same digest in base58 (the job summary prints both forms). The contracts deployed on testnet before this build existed return `version` 0.1.0 with no `link` and no `build_info`. Explorer verification (NearBlocks' "Verify and Publish", backed by SourceScan) clones the repository named in `source_code_snapshot`, so it needs the repository to be public.
 
-This machine has no Docker, so builds here stay `non-reproducible-wasm` (above). They embed `version` and `link` but no `build_info`, and their bytes differ from CI's.
+A `non-reproducible-wasm` build (above) embeds `version` and `link` but no `build_info`, and its bytes differ from CI's.
 
 ## usdg methods
 

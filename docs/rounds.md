@@ -15,16 +15,15 @@ The house replaced the rounds as the product. The rounds contract is still deplo
 
 Every method, view, event and error message of `rounds` and `usdg` is in [near/README.md](../near/README.md#rounds-methods).
 
-The contract's tests run from `near/`, pinned as in [development.md](development.md#near-contracts):
+The contract's tests run from `near/`:
 
 ```bash
 cd near
-export CARGO_TARGET_DIR=/tmp/atnx-near-target CARGO_BUILD_JOBS=2
-taskset -c 0,3-5 cargo test -p rounds --lib    # math.rs's own tests plus the contract's
-taskset -c 0,3-5 cargo test -p usdg
-(cd usdg && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
-(cd rounds && taskset -c 0,3-5 cargo near build non-reproducible-wasm)
-taskset -c 0,3-5 cargo test -p integration-tests --test rounds -- --test-threads=1   # near-sandbox, on the two wasm files
+cargo test -p rounds --lib    # math.rs's own tests plus the contract's
+cargo test -p usdg
+(cd usdg && cargo near build non-reproducible-wasm)
+(cd rounds && cargo near build non-reproducible-wasm)
+cargo test -p integration-tests --test rounds -- --test-threads=1   # near-sandbox, on the two wasm files
 ```
 
 The web layer's tests run from `atnx-web/`: `npm run test:bm` (the pari-mutuel maths in `lib/bm/dpm.ts`, the keeper's rounds steps, the settle commitment) and `npm run test:near` (the relayer's rounds checks, the start action, the settle verification). CI runs the Rust tests on every push under `near/` (`.github/workflows/near-build.yml`).

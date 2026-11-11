@@ -83,13 +83,11 @@ Events: emit NEP-297 logs, `EVENT_JSON:{"standard":"atnx_rounds","version":"1.0.
    - payout conservation: paid out ≤ pots, with dust ≥ 0.
 3. `integration-tests` (near-workspaces): deploy both wasm files to a sandbox and test faucet → balance, `ft_transfer_call` deposit → balance, withdraw, one full round with three accounts, and a failed withdraw being refunded.
 
-## Building on this machine
+## Building
 
-The machine's compiler segfaults under parallel load. Always build pinned and at two jobs, with the target directory in /tmp:
+From `near/`, as in [README.md](README.md#build-and-test):
 
 ```
-CARGO_TARGET_DIR=/tmp/atnx-near-target CARGO_BUILD_JOBS=2 taskset -c 0,3-5 cargo near build non-reproducible-wasm --manifest-path near/rounds/Cargo.toml
-CARGO_TARGET_DIR=/tmp/atnx-near-target CARGO_BUILD_JOBS=2 taskset -c 0,3-5 cargo test -p rounds
+cargo near build non-reproducible-wasm --manifest-path rounds/Cargo.toml
+cargo test -p rounds
 ```
-
-If a build dies with SIGSEGV, run it again: finished crates are kept in the target directory.
