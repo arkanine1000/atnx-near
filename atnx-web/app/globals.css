@@ -375,7 +375,9 @@ a .recharts-wrapper {
   to { transform: translateY(0); }
 }
 @keyframes sheet-down {
-  from { transform: translateY(0); }
+  /* From where a drag on the sheet's header left it (TradeDock sets
+     --sheet-drag), or from the top. */
+  from { transform: translateY(var(--sheet-drag, 0px)); }
   to { transform: translateY(100%); }
 }
 @keyframes fade-in {
@@ -390,6 +392,9 @@ a .recharts-wrapper {
 .animate-sheet-down { animation: sheet-down 0.2s ease-in both; }
 .animate-fade-in { animation: fade-in 0.25s ease-out both; }
 .animate-fade-out { animation: fade-out 0.2s ease-in both; }
+@media (prefers-reduced-motion: reduce) {
+  .animate-sheet-up, .animate-sheet-down { animation-duration: 1ms; }
+}
 
 /* Live pulse */
 @keyframes live-pulse {

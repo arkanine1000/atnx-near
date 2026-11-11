@@ -68,7 +68,7 @@ function Stat({
     </>
   );
   return (
-    <Card className={`p-4 sm:p-5 min-w-0 flex flex-col justify-center ${className}`}>
+    <Card className={`p-4 sm:p-5 min-w-0 flex flex-col ${className}`}>
       {help ? (
         <Help label={help.label} note={help.note}>
           {body}

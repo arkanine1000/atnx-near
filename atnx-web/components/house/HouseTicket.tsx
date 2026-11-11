@@ -446,7 +446,7 @@ function Ticket({ atnxMarketId, name, score, scoring = false, createdAt, initial
                     className="w-24 shrink-0 rounded-md border border-surface bg-elevated px-2 py-1 text-right font-mono text-base tabular-nums text-primary outline-none focus:border-atnx-cyan/60"
                   />
                 </div>
-                <Help label="About Worth on fill" note={`Closing at once pays at the ${up ? "sell" : "buy"} price, so a new position usually starts a little down.`} noteClassName="mb-1.5">
+                <Help label="About Worth on fill" note={`Closing at once pays at the ${up ? "sell" : "buy"} price, so a new position usually starts a little down.`}>
                   {(help) => (
                     <Line
                       k={
