@@ -162,7 +162,19 @@ The ticket is on every market page with the house on (`atnx-web/components/house
 
 The ticket's title carries a "TESTNET" chip, and the "?" beside it opens "How it works", the rules in seven lines. Prices are written with one decimal from 100 up and two below.
 
-The portfolio (`/app/portfolio`, `atnx-web/components/house/HousePortfolio.tsx`), titled with the same "TESTNET" chip, shows the balance, the value and PnL of open positions, orders confirming, open positions with Close, and the last 20 closed positions as the contract keeps them (`history_of`); each row's market name opens that market's page. Settings shows the trading account with its NearBlocks link, its test USDG and the faucet, and the "Fund from any chain" panel. On all three, what the numbers are worked out from sits behind a "?" beside them (`Help` in `atnx-web/components/house/parts.tsx`), so that every line on screen is legible in a screen recording.
+The portfolio (`/app/portfolio`, `atnx-web/components/house/HousePortfolio.tsx`), titled with the same "TESTNET" chip, follows atnx.app's portfolio layout, read from the contract (`balance_of`, `positions_of`, `history_of`):
+
+| Part | What it shows |
+|---|---|
+| Equity | The balance plus what the open positions would pay back if they closed now, and the stake of any order still confirming |
+| Open PnL | The open positions' PnL at the prices they would close at, with its percentage of their stake |
+| Balance | Test USDG free to trade |
+| PnL chart | The running PnL, stepping at each of the last 20 closes the contract keeps and ending now with the open positions' PnL added; the end value is printed in the card's header and beside the line's last point (`pnlSeries` in `atnx-web/lib/bm/house-pnl.ts`). A position's PnL is what it paid back less its stake; the 1 % fee is not in it |
+| "Orders confirming" | Orders not filled yet, each with "Confirming…" |
+| "Open · N" tab | A card per open position: the market's name (a link to its page), "UP 1×" or "DOWN 2×", how long ago it opened, its PnL and percentage, "Entry", "Now" (the price it would close at), "Stake" and "Value", "Liquidation <level>" or "No liquidation" and the time left of its 14 days, "At risk" when it is worth nothing at that price but not liquidated, "View market ↗" and "Close position" |
+| "Closed" tab | "Realised <amount> USDG over N trades" (N is at most 20), and a card per closed position: its PnL and percentage, "Entry", "Exit", "Stake" and "Paid back", how it ended and when, and "View market ↗" |
+
+The notices after a close ("Closing…", "Closed. <payout> USDG is back in your balance.") show above the tabs, as on the ticket. Settings shows the trading account with its NearBlocks link, its test USDG and the faucet, and the "Fund from any chain" panel. On all three, what the numbers are worked out from sits behind a "?" beside them (`Help` in `atnx-web/components/house/parts.tsx`), so that every line on screen is legible in a screen recording.
 
 The ticket works out every number with the same functions the relay checks with (`atnx-web/lib/bm/house-ticket.ts`, `house-math.ts`) from the contract's config and the market's newest quote; the contract decides.
 
