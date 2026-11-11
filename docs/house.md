@@ -137,7 +137,7 @@ Every trading call is a NEP-366 delegate action that the browser signs and POSTs
 
 Guests are capped in the database at 3 per client IP per hour and 200 in any 24 hours; the IP is stored only as a salted hash and cleared after a day ([rounds.md](rounds.md#guest-accounts) has the details, which are shared). No guest is made while the relayer or the parent is under 0.05 NEAR.
 
-Checking it on chain: `view_account` on a house account shows `"amount": "0"`, `view_access_key_list` shows its one function-call key for `house.atnx.testnet`, and a relayed call shows `relayer.atnx.testnet` as the signer with a `Delegate` action whose sender is the house account ([README](../README.md#b-in-the-browser-as-a-guest), steps b5 and b10).
+Checking it on chain: `view_account` on a house account shows `"amount": "0"`, `view_access_key_list` shows its one function-call key for `house.atnx.testnet`, and a relayed call shows `relayer.atnx.testnet` as the signer with a `Delegate` action whose sender is the house account ([README](try-it.md#b-in-the-browser-as-a-guest), steps b5 and b10).
 
 ## Funding from another chain (preview)
 
@@ -246,4 +246,4 @@ As of 2026-11-10.
 - A lost browser key strands its account; there is no recovery.
 - The relayer pays every trader's gas and the parent pays for every account (about 0.007 NEAR each); the keeper pays its own gas. Nothing tops these balances up automatically.
 - Fills wait for a quote: about 10 seconds with the quote on demand, up to about a minute when it fails and the minute run picks the order up, and refunded after 15 minutes with no quote.
-- The known attack vectors and their mitigations are in the [README](../README.md#known-attack-vectors-and-mitigations).
+- What is planned before real money is in the README's [roadmap](../README.md#roadmap).
