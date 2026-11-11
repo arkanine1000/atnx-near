@@ -151,7 +151,7 @@ A guest's calls go to `/api/near/relay` with `guest: true` and no cookie. That b
 
 ### Checking it on chain
 
-`view_account` on a house account shows `"amount": "0"`, `view_access_key_list` shows its one function-call key for `house.atnx.testnet`, and a relayed call shows `relayer.atnx.testnet` as the signer with a `Delegate` action whose sender is the house account ([try-it.md](try-it.md#b-in-the-browser-as-a-guest), steps b5 and b10).
+`view_account` on a house account shows `"amount": "0"`, `view_access_key_list` shows its one function-call key for `house.atnx.testnet`, and a relayed call shows `relayer.atnx.testnet` as the signer with a `Delegate` action whose sender is the house account: step [a11](try-it.md#a-no-login-no-install) checks a guest account and one of its orders from a terminal, steps [b5 and b10](try-it.md#b-in-the-browser-as-a-guest) an account and an order of your own.
 
 ## Funding from another chain (preview)
 
@@ -250,6 +250,13 @@ As of 2026-11-10.
 - [ ] The deploy key removed or held by a multisig
 - [ ] Any check of the index on chain
 - [ ] Mainnet
+
+## If a part stops
+
+- **The keeper stops.** No quote reaches the contract. Fifteen minutes after a market's newest quote was read, `open` refuses new orders on it (`max_quote_age_secs`). An order still waiting after its 15 minutes (`order_ttl_secs`) is refunded in full by the next `crank`, which anyone may call, or by the Cancel button the ticket then shows; a close waits for the next quote. Nothing fills, liquidates or ends without a quote. A day after a market's newest quote was read (`emergency_secs`), anyone can call `settle_stale`, and from then on `crank` closes every position on that market at its last score and refunds its waiting orders.
+- **The relayer runs dry.** Under 0.05 NEAR of spendable balance the relay route sends nothing (`relayer_empty`; the ticket says "Trading is paused for a moment on our side. Try again later.") and no guest account is made. Balances and positions stay in the contract, and the keeper, which pays its own gas, goes on filling, liquidating and ending positions.
+- **A browser key is lost.** The account keeps what it holds, and ATNX has no key for it ([Accounts and relaying](#accounts-and-relaying)). A guest starts again with "Try as a guest"; a signed-in trader gets "Start a new account here" on the ticket and in Settings, at most five accounts in all. The keeper still cranks the old account's positions, and what they pay back stays in that account.
+- **A VI source goes dark.** The index keeps that source's stored reading for up to 48 hours (`MAX_KEPT_MS` in `atnx-web/lib/signals.ts`), so the market goes on getting prints. When a market's prints stop altogether, the keeper leaves it out of the push once its newest print is more than ten minutes old (`MAX_PRINT_AGE_SECS` in `atnx-web/lib/bm/house-rules.ts`), and from there it goes as when the keeper stops.
 
 ## Known limits
 

@@ -15,7 +15,7 @@ import { fmtLeft, fmtSpan } from "./time";
 // "How rounds work" footer. Chain-agnostic: a round, a position and a
 // series are the structural shapes below, which the Solana accounts and
 // the NEAR views both fit, and the math is lib/bm/dpm.ts. Copy and layout
-// follow docs/rounds.md, "What the trader sees".
+// follow "What the trader sees" in docs/rounds.md as of commit be66b35.
 
 const QUICK = [10, 50, 100];
 const DEVNET = "Devnet · mock USDG, no value.";

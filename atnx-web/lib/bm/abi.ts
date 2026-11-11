@@ -1,5 +1,6 @@
-// Generated from contracts/ with scripts/bm-abi.sh (forge inspect <Contract> abi --json).
-// Regenerate after any contract change.
+// Generated with `forge inspect <Contract> abi --json` from the baseline's
+// contracts/, which now live in github.com/arkanine1000/atnx-markets with
+// the script that regenerates this file (atnx-web/scripts/bm-abi.sh).
 
 export const boundedViMarketsAbi = [
   {
