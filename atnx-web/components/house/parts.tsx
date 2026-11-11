@@ -61,7 +61,8 @@ const gainTone = (up: boolean) => (up ? "text-atnx-cyan light:text-atnx-cyan-lig
 // phone order sheet. It opens below the "?" when it fits, else above, else
 // on the roomier side with its own scroll; it is moved sideways to stay
 // HELP_MARGIN px inside the viewport and is never wider than it. It follows
-// the button when anything scrolls or the viewport resizes, and closes when
+// the button when anything scrolls, the viewport resizes or the note changes
+// size (one that reads something first), and closes when
 // the button leaves the screen, on Escape, on a tap outside, on the "?"
 // again, or when another one opens. Focus stays where it is (nothing is
 // trapped); the button names the window with aria-controls and is
@@ -195,10 +196,15 @@ function HelpWindow({ id, anchor, onClose, children }: { id: string; anchor: Ref
     };
     window.addEventListener("scroll", schedule, true);
     window.addEventListener("resize", schedule);
+    // A note that changes size once open (one that reads something first)
+    // is placed again.
+    const resized = new ResizeObserver(schedule);
+    resized.observe(el);
     return () => {
       if (frame) cancelAnimationFrame(frame);
       window.removeEventListener("scroll", schedule, true);
       window.removeEventListener("resize", schedule);
+      resized.disconnect();
     };
   }, [anchor, onClose]);
 

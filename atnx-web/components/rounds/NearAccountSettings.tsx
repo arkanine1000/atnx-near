@@ -7,8 +7,10 @@ import { Help } from "@/components/house/parts";
 import { useAuth } from "@/context/AuthContext";
 import { faucetArgs } from "@/lib/bm/house-types";
 import { FAUCET_UNITS, HOUSE_FAUCET_UNITS, isHouseProduct, isNearHouseDeployed, isNearRoundsDeployed, nearAccountUrl } from "@/lib/near/config";
+import { balanceLine, keysLine, readAccountFacts, relayerLine } from "@/lib/near/account-facts";
 import { friendlyNearError } from "@/lib/near/errors";
 import { nearHouseViewer } from "@/lib/near/house";
+import { nearRpcProvider } from "@/lib/near/rpc";
 import { callArgs } from "@/lib/near/rounds";
 import { FundFromAnyChain } from "./FundFromAnyChain";
 import { NearGuestChoice } from "./NearGuestChoice";
@@ -29,9 +31,36 @@ import { nearViewer } from "./useNearRounds";
 // With the house on (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) the account is the
 // house account, and the balance and the faucet are the house contract's:
 // up to 10,000 test USDG per account in all.
+//
+// The "?" beside the account ("About this account") reads the account from
+// public RPC when it opens: the NEAR it holds, its keys, and who sends its
+// calls (AccountFacts below). `relayerId` is the relayer's account, as the
+// server knows it, or null.
 const HOUSE = isHouseProduct();
 
-export function NearAccountSettings() {
+// What the "?" beside the account says, read when its window opens: the
+// NEAR it holds, its access keys, and that the relayer sends its calls and
+// pays their gas (lib/near/account-facts.ts).
+function AccountFacts({ accountId, relayerId }: { accountId: string; relayerId: string | null }) {
+  const facts = useQuery({
+    queryKey: ["near", "account-facts", accountId],
+    staleTime: 30_000,
+    // The provider already tries each endpoint again and moves on to the next.
+    retry: false,
+    queryFn: () => readAccountFacts(nearRpcProvider(), accountId),
+  });
+  if (facts.isPending) return <p className="text-secondary animate-pulse">Reading this account…</p>;
+  if (facts.isError) return <p className="text-secondary">Could not read this account just now. Its page on the explorer shows the same.</p>;
+  return (
+    <div className="space-y-1">
+      <p>{balanceLine(facts.data.amount)}</p>
+      <p>{keysLine(facts.data.keys)}</p>
+      <p>{relayerLine(relayerId)}</p>
+    </div>
+  );
+}
+
+export function NearAccountSettings({ relayerId = null }: { relayerId?: string | null }) {
   const near = useNearAccount();
   const { user, openLoginModal } = useAuth();
   const [busy, setBusy] = useState<string | null>(null);
@@ -176,9 +205,15 @@ export function NearAccountSettings() {
       {accountId && (
         <div className={row}>
           <span className="text-secondary shrink-0">{near.isGuest ? "Guest account" : "Account"}</span>
-          <a href={nearAccountUrl(accountId)} target="_blank" rel="noreferrer" className="font-mono text-primary link-quiet break-all text-right" title={accountId}>
-            {accountId} ↗
-          </a>
+          <span className="flex min-w-0 items-center justify-end gap-2">
+            <a href={nearAccountUrl(accountId)} target="_blank" rel="noreferrer" className="font-mono text-primary link-quiet break-all text-right" title={accountId}>
+              {accountId} ↗
+            </a>
+            <Help label="About this account" note={<AccountFacts accountId={accountId} relayerId={relayerId} />}>
+              {/* -my-0.5: the 24 px "?" sits in the row without making it taller. */}
+              {(help) => <span className="-my-0.5 inline-flex shrink-0">{help}</span>}
+            </Help>
+          </span>
         </div>
       )}
       <div className={row}>

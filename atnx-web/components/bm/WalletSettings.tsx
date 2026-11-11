@@ -24,13 +24,15 @@ const CHIP_LINE = "inline-flex items-center rounded-md border border-surface bg-
 // trading account instead (NearAccountSettings): no wallet to connect. The
 // house build (NEXT_PUBLIC_BM_NEAR_PRODUCT=house) shows the NEAR account
 // alone.
-export function WalletSettings() {
+// `relayerId`: the NEAR relayer's account as the server knows it, for the
+// account's "?" (or null).
+export function WalletSettings({ relayerId = null }: { relayerId?: string | null }) {
   return (
     <div className="space-y-5">
       {isNearChain() ? (
         <div>
           <h3 className={CHIP_LINE}>{isHouseProduct() ? "NEAR testnet · trading account" : "NEAR testnet · rounds"}</h3>
-          <NearAccountSettings />
+          <NearAccountSettings relayerId={relayerId} />
         </div>
       ) : (
         <div>

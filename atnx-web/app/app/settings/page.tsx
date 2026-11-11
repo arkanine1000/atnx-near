@@ -5,6 +5,11 @@ import { redirect } from "next/navigation";
 import { WalletSettings } from "@/components/bm/WalletSettings";
 import { isNearChain } from "@/lib/near/config";
 
+// The relayer that sends every NEAR account's calls and pays their gas (the
+// account's "?" in the Wallet card names it). A public account id, read on
+// the server where the relay route reads it.
+const relayerId = process.env.BM_NEAR_RELAYER_ACCOUNT || null;
+
 export default async function SettingsPage() {
   const supabase = await createClient();
   const {
@@ -20,7 +25,7 @@ export default async function SettingsPage() {
         <h1 className="font-display text-xl font-bold text-primary mb-6">Settings</h1>
         <div className="bg-surface border border-surface rounded-lg p-6">
           <h2 className="text-base font-bold text-primary mb-3">Wallet</h2>
-          <WalletSettings />
+          <WalletSettings relayerId={relayerId} />
         </div>
       </div>
     );
@@ -53,7 +58,7 @@ export default async function SettingsPage() {
 
       <div className="bg-surface border border-surface rounded-lg p-6 mt-4">
         <h2 className="text-base font-bold text-primary mb-3">Wallet</h2>
-        <WalletSettings />
+        <WalletSettings relayerId={relayerId} />
       </div>
     </div>
   );
