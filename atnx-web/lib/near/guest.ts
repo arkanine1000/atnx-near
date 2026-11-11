@@ -1,6 +1,5 @@
 // Guest accounts on the NEAR build: a gasless account for someone who has
-// not signed in, so the rounds can be tried with no Google or X sign-in
-// (the hackathon's first screening is done by agents that cannot sign in).
+// not signed in, so the market can be tried with no Google or X sign-in.
 //
 // A guest is NOT a Supabase user. The Supabase project is shared with
 // atnx.app, and an anonymous sign-in there would hand every scripted guest
