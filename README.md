@@ -132,6 +132,8 @@ Disclosed under the hackathon's rules (Q-002 to Q-005):
 - **Services:** Supabase (database and Google and X sign-in), Vercel (hosting and cron), public NEAR testnet RPC endpoints (FastNEAR first, with Intear and dRPC as fallbacks), the NEAR Intents 1Click API (dry quotes only), NearBlocks (explorer links).
 - **Templates:** none. The relayer was ported from the team's own testnet prototype in `near/relayer-proto`, written in the window.
 
+Code in this repository was written with AI coding assistants (Claude Code).
+
 ## The team's other entry
 
 QuestFi on NEAR: https://github.com/arkanine1000/questfi-near
