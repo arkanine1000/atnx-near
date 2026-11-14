@@ -124,12 +124,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // holds the session in memory and only a sign-out through it fires
   // SIGNED_OUT, which clears `user` everywhere without a reload. The refresh
   // then drops server-rendered pages cached for the signed-in user.
+  //
+  // Scope "local": only this browser's session ends. The library's default
+  // ends every session of the account, so signing out here used to sign the
+  // same account out in every other browser, where the page went on showing
+  // it as signed in until the server said otherwise.
   const signOut = useCallback(async () => {
     const supabase = createClient();
-    const { error } = await supabase.auth.signOut();
-    // A failed revoke (e.g. offline) leaves the local session in place;
-    // still end it on this device.
-    if (error) await supabase.auth.signOut({ scope: "local" });
+    await supabase.auth.signOut({ scope: "local" });
     setUser(null);
     router.replace("/");
     router.refresh();
