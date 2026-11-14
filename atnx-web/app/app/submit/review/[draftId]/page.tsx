@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { CreateSignIn } from "@/components/CreateSignIn";
 import { loadDraft } from "@/lib/capture";
 import { ReviewError, toView } from "@/lib/review";
 import { ReviewClient } from "./ReviewClient";
@@ -22,7 +22,7 @@ export default async function ReviewPage({
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) redirect(`/?redirect=/app/submit/review/${draftId}`);
+  if (!user) return <CreateSignIn heading="Review" />;
 
   let view;
   try {

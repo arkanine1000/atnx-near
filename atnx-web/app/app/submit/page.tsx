@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { CreateSignIn } from "@/components/CreateSignIn";
 import { SubmitForm } from "./SubmitForm";
 
 // Web entry point: the only way in for the web-only variant, and a fallback
@@ -22,7 +22,8 @@ export default async function SubmitPage({
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user) redirect("/?redirect=/app/submit");
+  // No session: a sign-in prompt in place. Guests have none by design.
+  if (!user) return <CreateSignIn />;
 
   const params = await searchParams;
   const first = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? "";
