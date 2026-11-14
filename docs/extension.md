@@ -1,6 +1,6 @@
 # Chrome extension (`atnx-extension/`)
 
-The hackathon fork of the ATNX extension, "ATNX Bounded (hackathon)" 2.0.0, unpublished: load it unpacked. It talks to markets.atnx.app; the published extension keeps talking to www.atnx.app. Manifest V3, vanilla JS, no build step. Three moving parts (plus `identicon.js`, the avatar drawing shared in spirit with the web component):
+The hackathon fork of the ATNX extension, "ATNX Bounded (hackathon)" 2.0.0, unpublished: load it unpacked. It talks to near.atnx.app, the NEAR demo; the published extension keeps talking to www.atnx.app. Manifest V3, vanilla JS, no build step. Three moving parts (plus `identicon.js`, the avatar drawing shared in spirit with the web component):
 
 - **`background.js`** (service worker) — Owns the capture pipeline. On `Ctrl+Shift+X` or the side panel's Capture button it injects `content.js` on demand (`activeTab` + `scripting`), receives the selected rect, screenshots the tab, crops it in-worker with `createImageBitmap` + `OffscreenCanvas` (longest edge capped at 1080 px, JPEG at 0.85), then POSTs it as `multipart/form-data` to `${webAppUrl}/api/captures/propose` with `credentials: 'include'`. The draft that comes back is parked in storage for the side panel to review. Status is mirrored on the toolbar badge (`…` / `?` awaiting review / `✓` / `!`).
 - **`content.js`** — Drag-to-select overlay and toast notifications, rendered inside a closed Shadow DOM host that is promoted to the browser's top layer via the Popover API, so page CSS and z-index stacking can't interfere. Uses pointer events with pointer capture; Escape cancels. Only injected on pages the user captures.
@@ -11,7 +11,7 @@ Permissions: `activeTab`, `scripting`, `storage`, `sidePanel`, host access to `h
 `activeTab` is granted per tab by the hotkey or a toolbar click, so the panel's Capture button only works on the tab the panel was opened from; on another tab it explains to use the shortcut or click the icon again. Icons are the bare eye-and-beam glyph on a transparent background (16/32/48/128), regenerated from `atnx-web/public/app_icon.png`.
 
 Defaults & config (`chrome.storage.local`):
-- `webAppUrl` — default `https://markets.atnx.app`, editable from the side panel's settings; a stored `https://atnx.app` from an old install is dropped on update
+- `webAppUrl` — default `https://near.atnx.app`, editable from the side panel's settings; a stored `https://atnx.app` from an old install is dropped on update
 - `captureStatus`, `captureStatusAt`, `captureCount` — UI feedback bookkeeping
 - `pendingReview` — the draft awaiting the person's choice, dropped on commit, discard or expiry
 
