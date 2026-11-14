@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ATNX Bounded (hackathon)",
+  "name": "ATNX on NEAR (testnet)",
   "version": "2.0.0",
-  "description": "Capture any part of a page, let AI identify it, and trade UP or DOWN on its Virality Index between fixed bounds. Testnet build.",
+  "description": "Capture any part of a page, let AI identify it, and trade UP or DOWN on its Virality Index. NEAR testnet build.",
   "homepage_url": "https://near.atnx.app",
   "minimum_chrome_version": "116",
   "icons": {
