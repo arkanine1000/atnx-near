@@ -17,7 +17,7 @@ set -u
 
 RPC=${RPC:-https://test.rpc.fastnear.com}
 ARCHIVAL=${ARCHIVAL:-https://archival-rpc.testnet.fastnear.com}
-SITE=${SITE:-https://atnx-near.vercel.app}
+SITE=${SITE:-https://near.atnx.app}
 HOUSE=house.atnx.testnet
 CODE_HASH=EN6eaeUyNxp1VUJ5nWDtv3wTNmHrx53u7eNPwTScEnb3
 SOURCE_COMMIT=5c019b5a2d8466ccdaebcf8b1a943ed082863f0e

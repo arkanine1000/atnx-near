@@ -10,7 +10,7 @@ Paste this first. It defines `house_view`, a read-only view call on `house.atnx.
 
 ```bash
 RPC=https://test.rpc.fastnear.com
-SITE=https://atnx-near.vercel.app
+SITE=https://near.atnx.app
 house_view() {  # house_view <method> '<arguments as JSON>'
   curl -s "$RPC" -H 'content-type: application/json' -d "$(jq -nc --arg m "$1" --arg a "$(printf '%s' "$2" | base64 | tr -d '\n')" \
     '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:"house.atnx.testnet",method_name:$m,args_base64:$a}}')" \
@@ -206,7 +206,7 @@ Steps b5 and b10 make the same check on an account and an order of your own.
 
 Use a recent Chrome, Firefox or Safari. The account's key lives in this browser's IndexedDB, so clearing the site's data, or closing a private window, loses the account. Guests are capped at 10 per network per hour and 300 a day; past that the ticket says "Too many guest accounts from your network in the last hour. Sign in, or try again later."
 
-**b1.** Open https://atnx-near.vercel.app/app/markets/46a8890c-25ce-4231-9112-fc1b3ba8ac07 (market 36, "Google"; https://atnx-near.vercel.app/app lists the others). See a card "Trade Google's index" marked "TESTNET", with "Buy price" and "Sell price" (step a5's numbers, written 1,144.8 and 1,140.7), a "Sign in to trade" button and "Try as a guest". Tap the "?" beside "Try as a guest": see "Your test account lives in this browser."
+**b1.** Open https://near.atnx.app/app/markets/46a8890c-25ce-4231-9112-fc1b3ba8ac07 (market 36, "Google"; https://near.atnx.app/app lists the others). See a card "Trade Google's index" marked "TESTNET", with "Buy price" and "Sell price" (step a5's numbers, written 1,144.8 and 1,140.7), a "Sign in to trade" button and "Try as a guest". Tap the "?" beside "Try as a guest": see "Your test account lives in this browser."
 
 **b2.** Tap "Try as a guest". See "Setting up your test account…" for about 5 to 10 seconds, then "You need test USDG to trade." and a "Get 10,000 test USDG" button.
 
@@ -218,11 +218,11 @@ Use a recent Chrome, Firefox or Safari. The account's key lives in this browser'
 
 **b6.** Tap "Close" on the position. See "Closing… This usually takes about 10 seconds.", then, about 10 seconds after the tap, "Closed. <payout> USDG is back in your balance."
 
-**b7. A refusal.** Run `house_view list_markets '{"limit":100}' | jq -r '.[] | select(.opens == false) | "\(.reason): https://atnx-near.vercel.app/app/markets/\(.reference | "\(.[0:8])-\(.[8:12])-\(.[12:16])-\(.[16:20])-\(.[20:])")"'` and open one of the pages it prints. For "the two prices are too far apart", see the form with the Open button off and "The two prices are too far apart right now. Try again in a few minutes.": that market's reading is more than 10 % away from its score, and the contract takes no order there. For "score is under the minimum to open", see "Not tradable yet: the index has to be 100 or more." A market younger than 48 hours says "Not tradable yet: markets open 48 hours after they go live (in …)." The set of refusing markets changes from one print to the next.
+**b7. A refusal.** Run `house_view list_markets '{"limit":100}' | jq -r '.[] | select(.opens == false) | "\(.reason): https://near.atnx.app/app/markets/\(.reference | "\(.[0:8])-\(.[8:12])-\(.[12:16])-\(.[16:20])-\(.[20:])")"'` and open one of the pages it prints. For "the two prices are too far apart", see the form with the Open button off and "The two prices are too far apart right now. Try again in a few minutes.": that market's reading is more than 10 % away from its score, and the contract takes no order there. For "score is under the minimum to open", see "Not tradable yet: the index has to be 100 or more." A market younger than 48 hours says "Not tradable yet: markets open 48 hours after they go live (in …)." The set of refusing markets changes from one print to the next.
 
-**b8.** Open https://atnx-near.vercel.app/app/portfolio. See "Equity" and "Balance", both 10,000 USDG less the fee, plus or minus the result of step b6 (nothing is open, so the two agree), "Open PnL" at 0.00, and the "PnL" chart stepping at the close from b6. Under the tabs, "Open · 0" shows "No open positions." Tap "Closed": see the position from b5 with its "Entry", its "Exit" and "Closed", and above it "Realised <amount> USDG over 1 trade".
+**b8.** Open https://near.atnx.app/app/portfolio. See "Equity" and "Balance", both 10,000 USDG less the fee, plus or minus the result of step b6 (nothing is open, so the two agree), "Open PnL" at 0.00, and the "PnL" chart stepping at the close from b6. Under the tabs, "Open · 0" shows "No open positions." Tap "Closed": see the position from b5 with its "Entry", its "Exit" and "Closed", and above it "Realised <amount> USDG over 1 trade".
 
-**b9.** Open https://atnx-near.vercel.app/app/settings. See "Guest account guest-<8 characters>-h.atnx.testnet ↗" and "Fund from any chain". Tap the "?" beside the account: see "Holds 0 NEAR.", "One key, which can only call house.atnx.testnet." and "relayer.atnx.testnet sends its calls and pays their gas.", read from public RPC when you tap. Keep Solana and 25: after a few seconds see "You send 25.00 USDC on Solana", "Arrives on NEAR", "Fee", "Time", and "Preview only: ATNX runs on NEAR testnet, so no money moves."
+**b9.** Open https://near.atnx.app/app/settings. See "Guest account guest-<8 characters>-h.atnx.testnet ↗" and "Fund from any chain". Tap the "?" beside the account: see "Holds 0 NEAR.", "One key, which can only call house.atnx.testnet." and "relayer.atnx.testnet sends its calls and pays their gas.", read from public RPC when you tap. Keep Solana and 25: after a few seconds see "You send 25.00 USDC on Solana", "Arrives on NEAR", "Fee", "Time", and "Preview only: ATNX runs on NEAR testnet, so no money moves."
 
 **b10. Your account on chain.** Copy the account id from b9 and run:
 
@@ -281,7 +281,7 @@ See `c68f835f30accfef64c43c55705b1d44410af10c6a83b9cb59238339c9584662`, the depl
 **c5. A push, verified on your machine.** `house:verify:public` reads the transaction from public RPC and the rows from the database's public REST API, and hashes them itself. It needs the database's public URL and anon key, the ones the site's pages carry; these lines take both from the site's JavaScript. In `atnx-web/`, run:
 
 ```bash
-SITE=https://atnx-near.vercel.app
+SITE=https://near.atnx.app
 TX=$(curl -s "$SITE/api/near/house/pushes?limit=1" | jq -r '.items[0].txHash')
 JS=$(curl -s "$SITE/app" | grep -o '/_next/static/chunks/[^"]*\.js' | sort -u | while read -r c; do curl -s "$SITE$c"; done)
 SUPABASE_URL=$(grep -o 'https://[a-z0-9]*\.supabase\.co' <<<"$JS" | head -1)

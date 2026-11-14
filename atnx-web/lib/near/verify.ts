@@ -17,7 +17,7 @@ import { canonicalJson, sha256Hex, verifySettleInputs } from '../bm/commitment';
 import { parseRound, parseSeries, type NearRound, type NearSeries } from '../bm/near';
 
 export const PUBLIC_RPC = 'https://test.rpc.fastnear.com';
-export const PUBLIC_SITE = 'https://atnx-near.vercel.app';
+export const PUBLIC_SITE = 'https://near.atnx.app';
 export const PUBLIC_CONTRACT = 'rounds.atnx.testnet';
 
 export type FetchFn = (

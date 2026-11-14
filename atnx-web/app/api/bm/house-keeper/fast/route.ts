@@ -11,7 +11,7 @@ import { houseEnabled } from '@/lib/bm/house-near';
 // unless BM_NEAR_HOUSE_ENABLED=1. `?dry=1` reports what it would do without
 // sending or writing anything.
 //
-//   curl -H "Authorization: Bearer $CRON_SECRET" https://atnx-near.vercel.app/api/bm/house-keeper/fast?dry=1
+//   curl -H "Authorization: Bearer $CRON_SECRET" https://near.atnx.app/api/bm/house-keeper/fast?dry=1
 
 export const maxDuration = 60;
 
