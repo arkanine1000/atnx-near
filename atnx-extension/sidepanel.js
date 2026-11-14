@@ -1,8 +1,8 @@
 // Production lives on the www host (the apex domain redirects there), and
 // the manifest grants `*.atnx.app`, so either spelling works — but the
 // default skips the redirect.
-// The hackathon build: bounded UP/DOWN markets on the subdomain.
-const DEFAULT_WEB_APP_URL = 'https://markets.atnx.app';
+// This build: the NEAR demo on its own subdomain.
+const DEFAULT_WEB_APP_URL = 'https://near.atnx.app';
 const STALE_STATUS_MS = 10_000;
 // A capture still "busy" after this long means the worker died mid-flight
 // (the upload itself gives up at 75 s); show the button again.

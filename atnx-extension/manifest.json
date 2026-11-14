@@ -3,7 +3,7 @@
   "name": "ATNX Bounded (hackathon)",
   "version": "2.0.0",
   "description": "Capture any part of a page, let AI identify it, and trade UP or DOWN on its Virality Index between fixed bounds. Testnet build.",
-  "homepage_url": "https://markets.atnx.app",
+  "homepage_url": "https://near.atnx.app",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon16.png",
