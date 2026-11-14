@@ -3,7 +3,7 @@
 //
 //   npm run house:trade:public
 //   npm run house:trade:public -- --market 36 --side down --stake 25
-//     --site <url>          default https://atnx-near.vercel.app
+//     --site <url>          default https://near.atnx.app
 //     --market <id>         the market to try first, default 36
 //     --side up|down        default up
 //     --stake <whole USDG>  default 10 (at 1x)

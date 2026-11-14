@@ -6,7 +6,7 @@ ATNX scores how much attention a trend, a person or a brand gets online: the Vir
 
 | | |
 |---|---|
-| Hosted demo | https://atnx-near.vercel.app/app (NEAR testnet, test USDG with no value), kept up through 2026-11-25 |
+| Hosted demo | https://near.atnx.app/app (NEAR testnet, test USDG with no value), kept up through 2026-11-25 |
 | This entry's contract | [`house.atnx.testnet`](https://testnet.nearblocks.io/address/house.atnx.testnet), source in [`near/house`](near/house) |
 | Full description | [docs/house.md](docs/house.md) |
 | Tracks | `defi` and `open`. The tracks' hints: TRADING is the house market; NEAR INTENTS is dry 1Click quotes only, because NEAR Intents has no testnet; CHAIN SIGNATURES is not used; BUILD YOUR OWN is this entry's own contract, `near/house` |
@@ -40,12 +40,12 @@ The app runs on NEAR testnet; the money is test USDG with no value. Two short pa
 
 About two minutes, with no wallet and no sign-in.
 
-1. Open https://atnx-near.vercel.app/app/markets/46a8890c-25ce-4231-9112-fc1b3ba8ac07 (the "Google" market). See the card "Trade Google's index" with a buy price and a sell price.
+1. Open https://near.atnx.app/app/markets/46a8890c-25ce-4231-9112-fc1b3ba8ac07 (the "Google" market). See the card "Trade Google's index" with a buy price and a sell price.
 2. Tap "Try as a guest". See "Setting up your test account…" for 5 to 10 seconds, then a "Get 10,000 test USDG" button.
 3. Tap "Get 10,000 test USDG". See the order form: UP and DOWN, each with "in at <price>", Amount 100, and Leverage with 1× selected.
 4. Tap "Open UP 1× · 100 USDG". See "Confirming your order…", and about 10 seconds after the tap "Filled at <price>." with "View transaction ↗". The link opens the order on NearBlocks: `relayer.atnx.testnet` sent it and paid its gas.
 5. Tap "Close" on the position. About 10 seconds later, see "Closed. <payout> USDG is back in your balance."
-6. Open https://atnx-near.vercel.app/app/portfolio. See "Equity" and the "PnL" chart stepping at that close; tap "Closed" to see the trade.
+6. Open https://near.atnx.app/app/portfolio. See "Equity" and the "PnL" chart stepping at that close; tap "Closed" to see the trade.
 
 Steps [b1 to b10](docs/try-it.md#b-in-the-browser-as-a-guest) say what each screen shows in full, and add a market that refuses orders, Settings with the cross-chain quote, and your account checked on chain.
 
@@ -55,7 +55,7 @@ Needs `curl` and `jq`; no login. Paste this first:
 
 ```bash
 RPC=https://test.rpc.fastnear.com
-SITE=https://atnx-near.vercel.app
+SITE=https://near.atnx.app
 house_view() {  # house_view <method> '<arguments as JSON>'
   curl -s "$RPC" -H 'content-type: application/json' -d "$(jq -nc --arg m "$1" --arg a "$(printf '%s' "$2" | base64 | tr -d '\n')" \
     '{jsonrpc:"2.0",id:1,method:"query",params:{request_type:"call_function",finality:"final",account_id:"house.atnx.testnet",method_name:$m,args_base64:$a}}')" \
@@ -112,7 +112,7 @@ The limits of what is built are listed in [docs/house.md](docs/house.md#known-li
 
 As of 2026-11-10. Details in [docs/house.md](docs/house.md#built--not-built).
 
-Built: the `near/house` contract with 58 unit tests and 6 sandbox tests; a reproducible CI build deployed to `house.atnx.testnet`, seeded and with 57 markets listed; the keeper's three runs on Vercel cron with a commitment on every push; the public push and verify routes and `house:verify:public`; gasless named accounts for signed-in users and guests, with the relayer's house policy; the ticket, the portfolio and Settings on https://atnx-near.vercel.app; "Fund from any chain" with dry 1Click quotes.
+Built: the `near/house` contract with 58 unit tests and 6 sandbox tests; a reproducible CI build deployed to `house.atnx.testnet`, seeded and with 57 markets listed; the keeper's three runs on Vercel cron with a commitment on every push; the public push and verify routes and `house:verify:public`; gasless named accounts for signed-in users and guests, with the relayer's house policy; the ticket, the portfolio and Settings on https://near.atnx.app; "Fund from any chain" with dry 1Click quotes.
 
 Not built: real cross-chain deposits through NEAR Intents (mainnet only); vault deposits from anyone, and a page for vault shares; a Withdraw button (the contract method exists); storage charged to the accounts that add it; the deploy key removed; any check of the index on chain; mainnet.
 

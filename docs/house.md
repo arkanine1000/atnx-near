@@ -115,8 +115,8 @@ One print per market pushed, sorted by market uuid, then by id. Keys are sorted,
 
 The rows are public, so anyone can check a push:
 
-- `GET https://atnx-near.vercel.app/api/near/house/pushes` lists the newest pushes from the keeper's log (`bm.keeper_log`).
-- `GET https://atnx-near.vercel.app/api/near/house/verify?tx=<hash>` reads the transaction from public RPC, the contract's keeper and its markets' references from the contract, and the rows by id from the database's public REST API, rebuilds the batch, hashes it and compares it with the commitment in the call and in the event, and checks each quote's numbers against its row. It returns the three hashes, the canonical batch (`canonical`, the exact string hashed) and each quote beside its row (`atnx-web/lib/near/house-public.ts`).
+- `GET https://near.atnx.app/api/near/house/pushes` lists the newest pushes from the keeper's log (`bm.keeper_log`).
+- `GET https://near.atnx.app/api/near/house/verify?tx=<hash>` reads the transaction from public RPC, the contract's keeper and its markets' references from the contract, and the rows by id from the database's public REST API, rebuilds the batch, hashes it and compares it with the commitment in the call and in the event, and checks each quote's numbers against its row. It returns the three hashes, the canonical batch (`canonical`, the exact string hashed) and each quote beside its row (`atnx-web/lib/near/house-public.ts`).
 - `npm run house:verify:public -- <tx> --supabase-url <url> --anon-key <key>` does the same on any machine, with no env file (`atnx-web/scripts/house-verify-public.ts`).
 
 The commitment shows which public rows a push used. It does not prove that the rows are a correct VI, and nothing on chain checks the index.
@@ -226,7 +226,7 @@ Watching the keeper:
 
 - `bm.keeper_log` rows with `"step": "house"` and `"chain": "near:testnet"` in `detail`: `house-tick` and `house-done` (the run's report) bracket each tick; `house-push`, `house-fast` and `house-on-demand` carry the transaction hash; `house-crank`, `house-list`, `house-close-only` and `house-settle-stale` likewise; `house-push-none` when nothing was fit to push; `house-push-skipped` when the contract skipped quotes; `house-budget` when a run stopped at its time budget; errors carry `error`.
 - `GET /api/near/house/pushes` shows the newest pushes without database access.
-- A dry run on the deployment: `curl -H "Authorization: Bearer $CRON_SECRET" https://atnx-near.vercel.app/api/bm/house-keeper?dry=1` (and `/fast?dry=1`).
+- A dry run on the deployment: `curl -H "Authorization: Bearer $CRON_SECRET" https://near.atnx.app/api/bm/house-keeper?dry=1` (and `/fast?dry=1`).
 - Vercel → Logs, filtered on `/api/bm/house-keeper` and `/api/near/relay` (`quote on demand did not send` lines).
 - On chain: `get_vault`, `active_count`, `list_active`, and `view_account` on `keeper.atnx.testnet` and `relayer.atnx.testnet` for their NEAR.
 

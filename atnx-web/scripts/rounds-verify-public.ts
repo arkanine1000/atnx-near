@@ -3,7 +3,7 @@
 //
 //   npm run rounds:verify:public                     the latest settled round the site lists
 //   npm run rounds:verify:public -- <series> <round> that round (series = the contract's id)
-//     --site <url>       default https://atnx-near.vercel.app
+//     --site <url>       default https://near.atnx.app
 //     --rpc <url>        default https://test.rpc.fastnear.com (public NEAR testnet RPC)
 //     --contract <id>    default rounds.atnx.testnet
 //

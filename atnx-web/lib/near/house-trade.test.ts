@@ -62,7 +62,7 @@ const exitOf = (fn: () => unknown): TradeExit => {
 
 test('flags: the defaults are the live site, market 36, UP, 1x, 10 USDG, the key file here', () => {
   const o = parseTradeArgs([]);
-  assert.equal(o.site, 'https://atnx-near.vercel.app');
+  assert.equal(o.site, 'https://near.atnx.app');
   assert.equal(o.rpc, 'https://test.rpc.fastnear.com');
   assert.equal(o.contract, CONTRACT);
   assert.equal(o.market, 36);
@@ -100,7 +100,7 @@ test('flags: anything malformed is a usage error (exit 2)', () => {
     ['--stake', '0'],
     ['--stake', '10.5'],
     ['--stake', 'ten'],
-    ['--site', 'atnx-near.vercel.app'],
+    ['--site', 'near.atnx.app'],
     ['--site', 'ftp://example.com'],
     ['--key-file', '--fresh'],
     ['--leverage', '3'],
@@ -124,12 +124,12 @@ test('key file: a new key round-trips, and the file names its public key only on
   const r = newKeyRecord(new Date('2026-11-11T00:00:00Z'));
   assert.match(r.publicKey, /^ed25519:/);
   assert.equal(KeyPair.fromString(r.secretKey as `ed25519:${string}`).getPublicKey().toString(), r.publicKey);
-  const text = encodeKeyFile({ ...r, accountId: 'guest-ab12cd34.atnx.testnet', houseAccountId: GUEST, site: 'https://atnx-near.vercel.app' });
+  const text = encodeKeyFile({ ...r, accountId: 'guest-ab12cd34.atnx.testnet', houseAccountId: GUEST, site: 'https://near.atnx.app' });
   const back = decodeKeyFile(text, '/k.json');
   assert.equal(back.publicKey, r.publicKey);
   assert.equal(back.secretKey, r.secretKey);
   assert.equal(back.houseAccountId, GUEST);
-  assert.equal(back.site, 'https://atnx-near.vercel.app');
+  assert.equal(back.site, 'https://near.atnx.app');
   // Two new keys differ.
   assert.notEqual(newKeyRecord().secretKey, r.secretKey);
 });
